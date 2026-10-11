@@ -37,6 +37,11 @@ Settings come from the environment. Bun also reads a local `.env` file, which is
 ## Develop
 
 ```sh
-bun test            # unit tests; no LM Studio needed
-bun run typecheck   # tsc --noEmit over the whole workspace
+bun test               # unit tests; no LM Studio needed
+bun run typecheck      # tsc --noEmit over the whole workspace
+bun run lint           # oxlint; warnings fail too
+bun run format         # oxfmt, 4-space indentation; format:check only checks
+bun run check          # format:check, lint, typecheck and test, as CI would run them
 ```
+
+oxfmt formats code and config files. Markdown, `openspec/`, `.claude/` and `.opencode/` are excluded in `.oxfmtrc.json`, so prose documents and generated command files keep their layout.

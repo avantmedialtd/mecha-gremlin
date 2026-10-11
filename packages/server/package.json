@@ -1,14 +1,14 @@
 {
-  "name": "@mecha-gremlin/server",
-  "version": "0.0.0",
-  "private": true,
-  "description": "The mecha-gremlin app: for now, says hi to the model loaded in LM Studio",
-  "type": "module",
-  "scripts": {
-    "start": "bun src/main.ts"
-  },
-  "dependencies": {
-    "@mecha-gremlin/core": "workspace:*",
-    "openai": "^7.32.0"
-  }
+    "name": "@mecha-gremlin/server",
+    "version": "0.0.0",
+    "private": true,
+    "description": "The mecha-gremlin app: for now, says hi to the model loaded in LM Studio",
+    "type": "module",
+    "scripts": {
+        "start": "bun src/main.ts"
+    },
+    "dependencies": {
+        "@mecha-gremlin/core": "workspace:*",
+        "openai": "^7.32.0"
+    }
 }

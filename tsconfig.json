@@ -1,21 +1,21 @@
 {
-  // Shared compiler options. Packages extend this file with a relative path; Bun reads the
-  // tsconfig.json of the directory it is started from (Brief C7).
-  "compilerOptions": {
-    "lib": ["ESNext"],
-    "target": "ESNext",
-    "module": "Preserve",
-    "moduleDetection": "force",
-    "moduleResolution": "bundler",
-    "allowImportingTsExtensions": true,
-    "verbatimModuleSyntax": true,
-    "noEmit": true,
-    "strict": true,
-    "skipLibCheck": true,
-    "noFallthroughCasesInSwitch": true,
-    "noUncheckedIndexedAccess": true,
-    "noImplicitOverride": true,
-    "types": ["bun"]
-  },
-  "include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts"]
+    // Shared compiler options. Packages extend this file with a relative path; Bun reads the
+    // tsconfig.json of the directory it is started from (Brief C7).
+    "compilerOptions": {
+        "lib": ["ESNext"],
+        "target": "ESNext",
+        "module": "Preserve",
+        "moduleDetection": "force",
+        "moduleResolution": "bundler",
+        "allowImportingTsExtensions": true,
+        "verbatimModuleSyntax": true,
+        "noEmit": true,
+        "strict": true,
+        "skipLibCheck": true,
+        "noFallthroughCasesInSwitch": true,
+        "noUncheckedIndexedAccess": true,
+        "noImplicitOverride": true,
+        "types": ["bun"]
+    },
+    "include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts"]
 }
