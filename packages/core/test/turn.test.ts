@@ -10,7 +10,7 @@ function makeClient(handler: Handler) {
     const bodies: Record<string, unknown>[] = [];
     const client = new OpenAI({
         apiKey: "test-key",
-        baseURL: "http://lmstudio.test/v1",
+        baseURL: "http://model.test/v1",
         maxRetries: 0,
         fetch: async (input, init) => {
             if (typeof init?.body === "string") bodies.push(JSON.parse(init.body));

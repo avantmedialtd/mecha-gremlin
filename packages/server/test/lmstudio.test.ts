@@ -20,8 +20,9 @@ function modelsPayload(...entries: Entry[]) {
 }
 
 const config: Config = {
-    baseUrl: "http://lmstudio.test:1234",
-    apiToken: "test-token",
+    provider: "lmstudio",
+    baseUrl: "http://lmstudio.test:1234/v1",
+    apiKey: "test-key",
     model: undefined,
     reasoningEffort: "none",
 };
@@ -46,7 +47,7 @@ describe("pickModel", () => {
             model: "a",
             note: expect.stringContaining("first of 2"),
         });
-        expect(choice).toMatchObject({ note: expect.stringContaining("LMSTUDIO_MODEL") });
+        expect(choice).toMatchObject({ note: expect.stringContaining("Set MODEL") });
     });
 
     test("accepts a configured instance id or model key that is loaded", () => {
@@ -110,7 +111,7 @@ describe("fetchModels", () => {
         });
         expect(result.ok).toBe(true);
         expect(seen).toEqual([
-            { url: "http://lmstudio.test:1234/api/v1/models", auth: "Bearer test-token" },
+            { url: "http://lmstudio.test:1234/api/v1/models", auth: "Bearer test-key" },
         ]);
     });
 
@@ -129,7 +130,7 @@ describe("fetchModels", () => {
         const result = await fetchModels(config, async () => new Response("denied", { status }));
         expect(result).toMatchObject({
             ok: false,
-            reason: expect.stringContaining("LMSTUDIO_API_TOKEN"),
+            reason: expect.stringContaining("MODEL_API_KEY"),
         });
     });
 

@@ -1,12 +1,8 @@
+// LM Studio specifics: finding out which model is loaded, through LM Studio's native REST API.
 import type { Config } from "./config.ts";
-
-export type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+import type { Fetch, ModelChoice } from "./model.ts";
 
 export type ModelsResult = { ok: true; payload: unknown } | { ok: false; reason: string };
-
-export type ModelChoice =
-    | { ok: true; model: string; note?: string }
-    | { ok: false; reason: string };
 
 interface LoadedModel {
     key: string;
@@ -14,29 +10,30 @@ interface LoadedModel {
 }
 
 /**
- * Lists LM Studio's models through its native REST API. The OpenAI-compatible `/v1/models`
- * lists every downloaded model, and naming one that isn't loaded makes LM Studio JIT-load it
- * with its default context, which this app never relies on (Brief 4.9).
+ * Lists LM Studio's models through its native REST API, which lives at the server's origin.
+ * The OpenAI-compatible `/v1/models` lists every downloaded model, and naming one that isn't
+ * loaded makes LM Studio JIT-load it with its default context, which this app never relies on
+ * (Brief 4.9).
  */
 export async function fetchModels(config: Config, fetch: Fetch): Promise<ModelsResult> {
-    const url = `${config.baseUrl}/api/v1/models`;
+    const url = `${new URL(config.baseUrl).origin}/api/v1/models`;
 
     let response: Response;
     try {
         response = await fetch(url, {
-            headers: { Authorization: `Bearer ${config.apiToken}` },
+            headers: { Authorization: `Bearer ${config.apiKey}` },
             signal: AbortSignal.timeout(10_000),
         });
     } catch (error) {
         const why = error instanceof Error ? error.message : String(error);
         return {
             ok: false,
-            reason: `Can't reach LM Studio at ${config.baseUrl} (${why}). Is its server running? Start it with \`lms server start\`, or set LMSTUDIO_BASE_URL.`,
+            reason: `Can't reach LM Studio at ${config.baseUrl} (${why}). Is its server running? Start it with \`lms server start\`, or set MODEL_BASE_URL.`,
         };
     }
 
     if (response.status === 401 || response.status === 403) {
-        return { ok: false, reason: tokenRejected(response.status) };
+        return { ok: false, reason: lmStudioKeyRejected(response.status) };
     }
     if (!response.ok) {
         return { ok: false, reason: `LM Studio answered HTTP ${response.status} for ${url}.` };
@@ -52,8 +49,8 @@ export async function fetchModels(config: Config, fetch: Fetch): Promise<ModelsR
     }
 }
 
-export function tokenRejected(status: number): string {
-    return `LM Studio rejected the API token (HTTP ${status}). Its "Require Authentication" setting is on, so set LMSTUDIO_API_TOKEN to one of its tokens.`;
+export function lmStudioKeyRejected(status: number): string {
+    return `LM Studio rejected the API key (HTTP ${status}). Its "Require Authentication" setting is on, so set MODEL_API_KEY to one of its tokens.`;
 }
 
 /**
@@ -84,7 +81,7 @@ export function pickModel(payload: unknown, configured?: string): ModelChoice {
             instanceIds.length > 0 ? `Loaded: ${instanceIds.join(", ")}.` : "No model is loaded.";
         return {
             ok: false,
-            reason: `LMSTUDIO_MODEL is "${configured}", but that model isn't loaded in LM Studio. ${loadedList} Load it with \`lms load ${configured}\`.`,
+            reason: `MODEL is "${configured}", but that model isn't loaded in LM Studio. ${loadedList} Load it with \`lms load ${configured}\`.`,
         };
     }
 
@@ -99,7 +96,7 @@ export function pickModel(payload: unknown, configured?: string): ModelChoice {
         return {
             ok: true,
             model: first,
-            note: `Using ${first}, the first of ${instanceIds.length} loaded models (${instanceIds.join(", ")}). Set LMSTUDIO_MODEL to choose another.`,
+            note: `Using ${first}, the first of ${instanceIds.length} loaded models (${instanceIds.join(", ")}). Set MODEL to choose another.`,
         };
     }
     return { ok: true, model: first };

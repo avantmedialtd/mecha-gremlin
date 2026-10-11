@@ -64,44 +64,55 @@ The repo currently holds only OpenSpec scaffolding and the brief. This is the fi
   - The SDK's `responses.stream()` helper with `finalResponse()`. It's equally short, but couples the result to helper semantics. Iterating the raw events also matches what the loop will need for liveness later.
   - Throwing on error, which the brief's design rules out.
 
-**3. Model resolution in `server`: the loaded model, never JIT.**
-- **Request:** `GET {base}/api/v1/models`, LM Studio's native REST, with the bearer token. Loaded models are `type: "llm"` entries with non-empty `loaded_instances`.
-- **Choice:**
-  - With `LMSTUDIO_MODEL` set, it must match a loaded instance id or a loaded model key, otherwise the server exits with the list of loaded models and an `lms load <model>` hint.
-  - Without it, the first loaded instance is used, and when several are loaded the server says which one it picked.
-  - None loaded is an error, with a hint.
-- **Testability:** the decision is a pure function, `pickModel(payload, configured?)`, so it can be tested without a network.
+**3. Provider-neutral configuration; the provider only decides how the model is chosen.**
+- **Why:** everything about the call itself (base URL, key, model, reasoning effort, `runTurn`) is plain OpenAI-compatible, and the brief settles that "model choice is config, not a code path". Only finding the loaded model is LM Studio-specific, so the settings are named `MODEL_*`, and `MODEL_PROVIDER` selects how the model is chosen. This is the brief's model-profile idea (4.4) in its smallest form: one profile, from the environment.
+- **Code layout:**
+  - `config.ts` is neutral.
+  - `model.ts` holds `resolveModel(config, fetch)`, which dispatches on the provider.
+  - `lmstudio.ts` holds only LM Studio's own API: `fetchModels`, `pickModel`, and its key-rejected hint.
+  - Dependencies run one way: `lmstudio.ts` takes only types from `model.ts`.
+- **Alternatives:** keep `LMSTUDIO_*` names (they tie configuration to one backend), or a profiles file now (no second profile to need it yet).
+
+**4. Model resolution: the loaded model with LM Studio, never JIT; the named model otherwise.**
+- **LM Studio:**
+  - **Request:** `GET {origin of MODEL_BASE_URL}/api/v1/models`, LM Studio's native REST, with the bearer key. Loaded models are `type: "llm"` entries with non-empty `loaded_instances`.
+  - **With `MODEL` set,** it must match a loaded instance id or a loaded model key; otherwise the server exits with the list of loaded models and an `lms load <model>` hint.
+  - **Without it,** the first loaded instance is used, and when several are loaded the server says which one it picked. None loaded is an error, with a hint.
+  - **Testability:** the decision is a pure function, `pickModel(payload, configured?)`, so it can be tested without a network.
+- **Other providers:** `MODEL` is required, and LM Studio's API is never called.
 - **Alternatives:**
-  - The OpenAI-compatible `/v1/models`. It lists every downloaded model, not just the loaded ones, so using it could trigger a JIT load with the 8k default context (Brief R5.5).
+  - The OpenAI-compatible `/v1/models`. With LM Studio it lists every downloaded model, not just the loaded ones, so using it could trigger a JIT load with the 8k default context (Brief R5.5).
   - A hard-coded model name. That is personal configuration in public code.
 
-**4. No reasoning by default for the hello.**
-- **Default:** the server sends `reasoning: { effort: "none" }`, overridable with `LMSTUDIO_REASONING_EFFORT` (for example `low`, `medium` or `high`).
-- **Why:** with reasoning on, the loaded model takes minutes to say hi (see Context), and the point of this change is a quick end-to-end check.
-- **Alternatives:** omit the parameter (the model's default: minutes per hello here), or stream reasoning to the terminal (more output code for little value now).
+**5. Reasoning effort: none by default with LM Studio, the model's own default otherwise.**
+- **LM Studio:** the server sends `reasoning: { effort: "none" }`. With reasoning on, the loaded model takes minutes to say hi (see Context), and the point of this change is a quick end-to-end check.
+- **Other providers:** the request carries no `reasoning`, because some OpenAI models reject `none` (Brief R2.2).
+- **Override:** `MODEL_REASONING_EFFORT` (for example `low`, `medium` or `high`) applies to either provider.
+- **Alternatives:** stream reasoning to the terminal (more output code for little value now).
 
-**5. Configuration from the environment, validated at start-up.**
+**6. Configuration from the environment, validated at start-up.**
 
-| Variable | Default | Notes |
-|---|---|---|
-| `LMSTUDIO_BASE_URL` | `http://127.0.0.1:1234` | origin only; a trailing slash is trimmed; must be http(s) |
-| `LMSTUDIO_API_TOKEN` | `lm-studio` | any non-empty value works while LM Studio auth is off (R5.6) |
-| `LMSTUDIO_MODEL` | none | optional |
-| `LMSTUDIO_REASONING_EFFORT` | `none` | |
+| Variable | Default with `lmstudio` | Default with `openai` | Notes |
+|---|---|---|---|
+| `MODEL_PROVIDER` | `lmstudio` | | `lmstudio` or `openai` |
+| `MODEL_BASE_URL` | `http://127.0.0.1:1234/v1` | `https://api.openai.com/v1` | the OpenAI-compatible base URL; a trailing slash is trimmed; must be http(s); with LM Studio it must end in a path such as `/v1` |
+| `MODEL_API_KEY` | `lm-studio` | required | any non-empty value works while LM Studio auth is off (R5.6) |
+| `MODEL` | optional | required | |
+| `MODEL_REASONING_EFFORT` | `none` | unset | |
 
 `loadConfig(env)` is a pure function returning a config or a list of problems. It respects the brief's "config validation at boot" in miniature, with no schema library yet. Bun loads a local `.env` automatically, and `.env` is gitignored, keeping the brief's "public code, private data" rule.
 
-**6. Output contract.**
+**7. Output contract.**
 - **stdout** gets only the reply text, so `bun run hello | pbcopy` works.
 - **stderr** gets progress ("Saying hi to … at …"), a usage line (output and reasoning tokens, elapsed seconds), and errors.
 - **Exit code:** 0 on success, 1 on any failure.
 - **Testability:** the entry point is `run({ env, fetch, stdout, stderr }): Promise<number>`, so it can be tested with a fake `fetch`. `main.ts` just wires it to `process` when run directly (`import.meta.main`).
 
-**7. Tests.**
-- `bun test` covers `core` with a real `OpenAI` client whose `fetch` returns canned SSE streams and HTTP errors. That exercises the SDK's actual parsing.
-- `server`'s `loadConfig`, `pickModel` and `run` are tested with fakes too.
+**8. Tests.**
+- The unit tests cover `core` with a real `OpenAI` client whose `fetch` returns canned SSE streams and HTTP errors. That exercises the SDK's actual parsing.
+- `server`'s `loadConfig`, `pickModel` and `run` are tested with fakes too, for both providers.
 - `tsc --noEmit` type-checks the workspace.
-- The real LM Studio call is checked by running `bun run hello` manually; it isn't part of the automated tests.
+- The real model call is checked by running `bun run hello` manually; it isn't part of the automated tests.
 
 ## Risks / Trade-offs
 
