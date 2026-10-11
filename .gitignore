@@ -1,0 +1,7 @@
+node_modules/
+
+# Secrets and local settings never go into this public repo.
+.env
+.env.*
+*.env
+!*.env.example

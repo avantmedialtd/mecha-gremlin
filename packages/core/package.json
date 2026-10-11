@@ -1,0 +1,15 @@
+{
+  "name": "@mecha-gremlin/core",
+  "version": "0.0.0",
+  "description": "Stateless building blocks for a scheduled agent runner",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "peerDependencies": {
+    "openai": "^7.32.0"
+  },
+  "devDependencies": {
+    "openai": "^7.32.0"
+  }
+}
