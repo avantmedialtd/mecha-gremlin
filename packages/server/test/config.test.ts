@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { loadConfig } from "../src/config.ts";
 
 describe("loadConfig", () => {
@@ -48,16 +48,18 @@ describe("loadConfig", () => {
         "ftp://127.0.0.1:1234",
         "http://127.0.0.1:1234/v1",
         "http://127.0.0.1:1234/?x=1",
-    ])("rejects LMSTUDIO_BASE_URL=%p", (value) => {
-        const result = loadConfig({ LMSTUDIO_BASE_URL: value });
-        expect(result.ok).toBe(false);
-        if (!result.ok) expect(result.problems.join("\n")).toContain("LMSTUDIO_BASE_URL");
+    ])("rejects LMSTUDIO_BASE_URL=%s", (value) => {
+        expect(loadConfig({ LMSTUDIO_BASE_URL: value })).toEqual({
+            ok: false,
+            problems: [expect.stringContaining("LMSTUDIO_BASE_URL")],
+        });
     });
 
     test("rejects an unknown reasoning effort", () => {
-        const result = loadConfig({ LMSTUDIO_REASONING_EFFORT: "extreme" });
-        expect(result.ok).toBe(false);
-        if (!result.ok) expect(result.problems.join("\n")).toContain("LMSTUDIO_REASONING_EFFORT");
+        expect(loadConfig({ LMSTUDIO_REASONING_EFFORT: "extreme" })).toEqual({
+            ok: false,
+            problems: [expect.stringContaining("LMSTUDIO_REASONING_EFFORT")],
+        });
     });
 
     test("reports every invalid variable at once", () => {
@@ -65,7 +67,12 @@ describe("loadConfig", () => {
             LMSTUDIO_BASE_URL: "nope",
             LMSTUDIO_REASONING_EFFORT: "extreme",
         });
-        expect(result.ok).toBe(false);
-        if (!result.ok) expect(result.problems).toHaveLength(2);
+        expect(result).toEqual({
+            ok: false,
+            problems: [
+                expect.stringContaining("LMSTUDIO_BASE_URL"),
+                expect.stringContaining("LMSTUDIO_REASONING_EFFORT"),
+            ],
+        });
     });
 });

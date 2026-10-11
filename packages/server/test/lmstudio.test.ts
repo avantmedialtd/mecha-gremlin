@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import type { Config } from "../src/config.ts";
 import { fetchModels, pickModel } from "../src/lmstudio.ts";
 
@@ -41,11 +41,12 @@ describe("pickModel", () => {
             { key: "b", instances: ["b"] },
         );
         const choice = pickModel(payload);
-        expect(choice).toMatchObject({ ok: true, model: "a" });
-        if (choice.ok) {
-            expect(choice.note).toContain("first of 2");
-            expect(choice.note).toContain("LMSTUDIO_MODEL");
-        }
+        expect(choice).toMatchObject({
+            ok: true,
+            model: "a",
+            note: expect.stringContaining("first of 2"),
+        });
+        expect(choice).toMatchObject({ note: expect.stringContaining("LMSTUDIO_MODEL") });
     });
 
     test("accepts a configured instance id or model key that is loaded", () => {
@@ -57,17 +58,16 @@ describe("pickModel", () => {
     test("rejects a configured model that is not loaded, listing what is", () => {
         const payload = modelsPayload({ key: "a", instances: ["a"] }, { key: "b" });
         const choice = pickModel(payload, "b");
-        expect(choice.ok).toBe(false);
-        if (!choice.ok) {
-            expect(choice.reason).toContain("Loaded: a.");
-            expect(choice.reason).toContain("lms load b");
-        }
+        expect(choice).toMatchObject({ ok: false, reason: expect.stringContaining("Loaded: a.") });
+        expect(choice).toMatchObject({ reason: expect.stringContaining("lms load b") });
     });
 
     test("fails when no model is loaded", () => {
         const choice = pickModel(modelsPayload({ key: "a" }, { key: "b" }));
-        expect(choice.ok).toBe(false);
-        if (!choice.ok) expect(choice.reason).toContain("lms load <model>");
+        expect(choice).toMatchObject({
+            ok: false,
+            reason: expect.stringContaining("lms load <model>"),
+        });
     });
 
     test("ignores loaded embedding models", () => {
@@ -77,8 +77,10 @@ describe("pickModel", () => {
             instances: ["nomic-embed"],
         });
         const choice = pickModel(payload);
-        expect(choice.ok).toBe(false);
-        if (!choice.ok) expect(choice.reason).toContain("No model is loaded");
+        expect(choice).toMatchObject({
+            ok: false,
+            reason: expect.stringContaining("No model is loaded"),
+        });
     });
 
     // Each case is wrapped in its own row: test.each spreads array rows into arguments.
@@ -88,10 +90,11 @@ describe("pickModel", () => {
         [{ data: [] }],
         [{ models: [{ key: 1 }] }],
         [{ models: [{ key: "a", type: "llm", loaded_instances: {} }] }],
-    ])("reports an unexpected payload shape: %p", (payload: unknown) => {
-        const choice = pickModel(payload);
-        expect(choice.ok).toBe(false);
-        if (!choice.ok) expect(choice.reason).toContain("unexpected shape");
+    ])("reports an unexpected payload shape: %j", (payload: unknown) => {
+        expect(pickModel(payload)).toMatchObject({
+            ok: false,
+            reason: expect.stringContaining("unexpected shape"),
+        });
     });
 });
 
@@ -115,17 +118,19 @@ describe("fetchModels", () => {
         const result = await fetchModels(config, async () => {
             throw new TypeError("Unable to connect");
         });
-        expect(result.ok).toBe(false);
-        if (!result.ok) {
-            expect(result.reason).toContain("http://lmstudio.test:1234");
-            expect(result.reason).toContain("lms server start");
-        }
+        expect(result).toMatchObject({
+            ok: false,
+            reason: expect.stringContaining("http://lmstudio.test:1234"),
+        });
+        expect(result).toMatchObject({ reason: expect.stringContaining("lms server start") });
     });
 
-    test.each([401, 403])("explains a rejected token (HTTP %p)", async (status) => {
+    test.each([401, 403])("explains a rejected token (HTTP %d)", async (status) => {
         const result = await fetchModels(config, async () => new Response("denied", { status }));
-        expect(result.ok).toBe(false);
-        if (!result.ok) expect(result.reason).toContain("LMSTUDIO_API_TOKEN");
+        expect(result).toMatchObject({
+            ok: false,
+            reason: expect.stringContaining("LMSTUDIO_API_TOKEN"),
+        });
     });
 
     test("reports other HTTP errors and non-JSON bodies", async () => {
@@ -135,7 +140,9 @@ describe("fetchModels", () => {
         );
         expect(notFound).toMatchObject({ ok: false });
         const html = await fetchModels(config, async () => new Response("<html>", { status: 200 }));
-        expect(html.ok).toBe(false);
-        if (!html.ok) expect(html.reason).toContain("didn't return JSON");
+        expect(html).toMatchObject({
+            ok: false,
+            reason: expect.stringContaining("didn't return JSON"),
+        });
     });
 });

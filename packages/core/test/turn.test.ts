@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { readFile } from "node:fs/promises";
+import { describe, expect, test } from "vitest";
 import OpenAI from "openai";
 import { runTurn } from "../src/index.ts";
 
@@ -85,11 +86,12 @@ describe("runTurn", () => {
 
         const result = await runTurn(client, request);
 
-        expect(result.ok).toBe(true);
-        if (!result.ok) return;
-        expect(result.text).toBe("Hello there!");
-        expect(result.usage?.output_tokens).toBe(12);
-        expect(result.response.id).toBe("resp_1");
+        expect(result).toMatchObject({
+            ok: true,
+            text: "Hello there!",
+            usage: { output_tokens: 12 },
+            response: { id: "resp_1" },
+        });
     });
 
     test("reasoning items are not part of the text", async () => {
@@ -181,8 +183,11 @@ describe("runTurn", () => {
 
         const result = await runTurn(client, request);
 
-        expect(result).toMatchObject({ ok: false, error: "incomplete" });
-        if (!result.ok) expect(result.detail).toContain("max_output_tokens");
+        expect(result).toMatchObject({
+            ok: false,
+            error: "incomplete",
+            detail: expect.stringContaining("max_output_tokens"),
+        });
     });
 
     test("response.failed is failed, with the error message", async () => {
@@ -198,8 +203,11 @@ describe("runTurn", () => {
 
         const result = await runTurn(client, request);
 
-        expect(result).toMatchObject({ ok: false, error: "failed" });
-        if (!result.ok) expect(result.detail).toContain("model crashed");
+        expect(result).toMatchObject({
+            ok: false,
+            error: "failed",
+            detail: expect.stringContaining("model crashed"),
+        });
     });
 
     test("an SSE error event is failed", async () => {
@@ -214,8 +222,11 @@ describe("runTurn", () => {
 
         const result = await runTurn(client, request);
 
-        expect(result).toMatchObject({ ok: false, error: "failed" });
-        if (!result.ok) expect(result.detail).toContain("Failed to parse tool call");
+        expect(result).toMatchObject({
+            ok: false,
+            error: "failed",
+            detail: expect.stringContaining("Failed to parse tool call"),
+        });
     });
 
     test("a stream that ends without a terminal event is failed", async () => {
@@ -265,20 +276,11 @@ describe("runTurn", () => {
     });
 });
 
+// That core never reads the environment, writes to the console or uses Bun APIs is enforced by
+// oxlint (the packages/core/src override in .oxlintrc.json), not by scanning source text here.
 describe("core boundaries", () => {
-    test("core reads no environment and writes no console output", async () => {
-        const sources = new Bun.Glob("**/*.ts").scan({
-            cwd: `${import.meta.dir}/../src`,
-            absolute: true,
-        });
-        for await (const path of sources) {
-            const text = await Bun.file(path).text();
-            expect(text).not.toMatch(/process\.env|Bun\.env|console\./);
-        }
-    });
-
     test("openai is a peer dependency", async () => {
-        const pkg = await Bun.file(`${import.meta.dir}/../package.json`).json();
+        const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
         expect(pkg.peerDependencies).toHaveProperty("openai");
     });
 });

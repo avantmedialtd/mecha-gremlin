@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { GREETING, run } from "../src/hello.ts";
 import type { Fetch } from "../src/lmstudio.ts";
 

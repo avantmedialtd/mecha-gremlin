@@ -1,5 +1,9 @@
 node_modules/
 
+# Stryker mutation testing: sandboxes and reports.
+.stryker-tmp/
+reports/
+
 # Secrets and local settings never go into this public repo.
 .env
 .env.*

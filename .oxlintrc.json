@@ -1,6 +1,6 @@
 {
     "$schema": "./node_modules/oxlint/configuration_schema.json",
-    "plugins": ["typescript", "unicorn", "oxc", "import", "promise"],
+    "plugins": ["typescript", "unicorn", "oxc", "import", "promise", "vitest"],
     "categories": {
         "correctness": "error",
         "suspicious": "warn"
@@ -8,5 +8,24 @@
     "rules": {},
     "env": {
         "builtin": true
-    }
+    },
+    "overrides": [
+        {
+            "files": ["packages/core/src/**"],
+            "rules": {
+                "no-console": "error",
+                "no-restricted-globals": [
+                    "error",
+                    {
+                        "name": "process",
+                        "message": "core stays free of configuration and side effects: no env, stdout or stderr."
+                    },
+                    {
+                        "name": "Bun",
+                        "message": "core stays runtime-neutral: no Bun.env or other Bun APIs."
+                    }
+                ]
+            }
+        }
+    ]
 }
