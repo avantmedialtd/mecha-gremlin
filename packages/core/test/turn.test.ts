@@ -13,7 +13,9 @@ function makeClient(handler: Handler) {
         baseURL: "http://model.test/v1",
         maxRetries: 0,
         fetch: async (input, init) => {
-            if (typeof init?.body === "string") bodies.push(JSON.parse(init.body));
+            if (typeof init?.body === "string") {
+                bodies.push(JSON.parse(init.body));
+            }
             return handler(input instanceof Request ? input.url : String(input), init);
         },
     });

@@ -46,7 +46,7 @@ MODEL_PROVIDER=openai MODEL_API_KEY=sk-… MODEL=gpt-5.5 bun run hello
 ```sh
 bun run test           # unit tests (Vitest); no LM Studio needed. test:watch for watch mode
 bun run typecheck      # tsc --noEmit over the whole workspace
-bun run lint           # oxlint; warnings fail too
+bun run lint           # oxlint; warnings fail too, and every if/loop body needs braces
 bun run format         # oxfmt, 4-space indentation; format:check only checks
 bun run check          # format:check, lint, typecheck and test, as CI would run them
 bun run mutation       # Stryker mutation testing (a few minutes); report in reports/mutation/

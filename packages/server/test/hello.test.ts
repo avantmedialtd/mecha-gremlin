@@ -58,9 +58,12 @@ async function hello(env: Record<string, string> = {}, server: FakeServer = {}) 
             body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
             authorization: new Headers(init?.headers).get("authorization"),
         });
-        if (url.endsWith("/api/v1/models")) return server.models?.() ?? Response.json(loadedBonsai);
-        if (url.endsWith("/v1/responses"))
+        if (url.endsWith("/api/v1/models")) {
+            return server.models?.() ?? Response.json(loadedBonsai);
+        }
+        if (url.endsWith("/v1/responses")) {
             return server.responses?.() ?? completedTurn("Hi there!");
+        }
         return new Response("not found", { status: 404 });
     };
     let stdout = "";

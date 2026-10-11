@@ -104,20 +104,29 @@ export function pickModel(payload: unknown, configured?: string): ModelChoice {
 
 /** The loaded LLMs in a `/api/v1/models` payload, or undefined if its shape is unexpected. */
 function loadedModels(payload: unknown): LoadedModel[] | undefined {
-    if (!isRecord(payload) || !Array.isArray(payload.models)) return undefined;
+    if (!isRecord(payload) || !Array.isArray(payload.models)) {
+        return undefined;
+    }
 
     const loaded: LoadedModel[] = [];
     for (const entry of payload.models) {
-        if (!isRecord(entry) || typeof entry.key !== "string" || typeof entry.type !== "string")
+        if (!isRecord(entry) || typeof entry.key !== "string" || typeof entry.type !== "string") {
             return undefined;
-        if (entry.type !== "llm") continue;
+        }
+        if (entry.type !== "llm") {
+            continue;
+        }
 
         const instances = entry.loaded_instances ?? [];
-        if (!Array.isArray(instances)) return undefined;
+        if (!Array.isArray(instances)) {
+            return undefined;
+        }
         const instanceIds = instances.flatMap((instance) =>
             isRecord(instance) && typeof instance.id === "string" ? [instance.id] : [],
         );
-        if (instanceIds.length > 0) loaded.push({ key: entry.key, instanceIds });
+        if (instanceIds.length > 0) {
+            loaded.push({ key: entry.key, instanceIds });
+        }
     }
     return loaded;
 }

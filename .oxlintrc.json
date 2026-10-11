@@ -5,7 +5,9 @@
         "correctness": "error",
         "suspicious": "warn"
     },
-    "rules": {},
+    "rules": {
+        "curly": ["error", "all"]
+    },
     "env": {
         "builtin": true
     },

@@ -86,13 +86,17 @@ export async function runTurn(
             }
         }
     } catch (error) {
-        if (signal?.aborted) return aborted();
+        if (signal?.aborted) {
+            return aborted();
+        }
         // The stream had started, so the endpoint was reachable: whatever broke it is a failed turn.
         return { ok: false, error: "failed", detail: describe(error) };
     }
 
     // The SDK ends iteration quietly when the request is aborted mid-stream.
-    if (signal?.aborted) return aborted();
+    if (signal?.aborted) {
+        return aborted();
+    }
     return { ok: false, error: "failed", detail: "the stream ended without a terminal event" };
 }
 
@@ -100,9 +104,13 @@ export async function runTurn(
 function outputText(response: Response): string {
     let text = "";
     for (const item of response.output) {
-        if (item.type !== "message") continue;
+        if (item.type !== "message") {
+            continue;
+        }
         for (const part of item.content) {
-            if (part.type === "output_text") text += part.text;
+            if (part.type === "output_text") {
+                text += part.text;
+            }
         }
     }
     return text;
@@ -113,7 +121,9 @@ function outputText(response: Response): string {
  * rather than `instanceof`, so it still works if the caller's `openai` is a different copy.
  */
 function classifyRequestError(error: unknown, signal: AbortSignal | undefined): TurnFailure {
-    if (signal?.aborted || hasClassName(error, "APIUserAbortError")) return aborted();
+    if (signal?.aborted || hasClassName(error, "APIUserAbortError")) {
+        return aborted();
+    }
 
     const status = statusOf(error);
     if (status !== undefined) {
@@ -142,7 +152,9 @@ function aborted(): TurnFailure {
 }
 
 function statusOf(error: unknown): number | undefined {
-    if (typeof error !== "object" || error === null || !("status" in error)) return undefined;
+    if (typeof error !== "object" || error === null || !("status" in error)) {
+        return undefined;
+    }
     return typeof error.status === "number" ? error.status : undefined;
 }
 
@@ -151,14 +163,18 @@ function hasClassName(value: unknown, name: string): boolean {
     let proto: unknown =
         typeof value === "object" && value !== null ? Object.getPrototypeOf(value) : null;
     while (typeof proto === "object" && proto !== null) {
-        if (proto.constructor.name === name) return true;
+        if (proto.constructor.name === name) {
+            return true;
+        }
         proto = Object.getPrototypeOf(proto);
     }
     return false;
 }
 
 function describe(error: unknown): string {
-    if (!(error instanceof Error)) return String(error);
+    if (!(error instanceof Error)) {
+        return String(error);
+    }
     const cause = error.cause instanceof Error ? error.cause.message : undefined;
     return cause && cause !== error.message ? `${error.message} (${cause})` : error.message;
 }

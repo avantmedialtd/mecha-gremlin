@@ -28,14 +28,20 @@ export async function run(io: HelloIO): Promise<number> {
 
     const loaded = loadConfig(io.env);
     if (!loaded.ok) {
-        for (const problem of loaded.problems) io.stderr(`✗ ${problem}\n`);
+        for (const problem of loaded.problems) {
+            io.stderr(`✗ ${problem}\n`);
+        }
         return 1;
     }
     const { config } = loaded;
 
     const choice = await resolveModel(config, io.fetch);
-    if (!choice.ok) return fail(choice.reason);
-    if (choice.note) io.stderr(`${choice.note}\n`);
+    if (!choice.ok) {
+        return fail(choice.reason);
+    }
+    if (choice.note) {
+        io.stderr(`${choice.note}\n`);
+    }
 
     io.stderr(`Saying hi to ${choice.model} at ${config.baseUrl}…\n`);
     const client = new OpenAI({
@@ -55,7 +61,9 @@ export async function run(io: HelloIO): Promise<number> {
     const seconds = (now() - started) / 1000;
 
     if (!result.ok) {
-        if (result.error === "auth") return fail(keyRejected(config, result.status ?? 401));
+        if (result.error === "auth") {
+            return fail(keyRejected(config, result.status ?? 401));
+        }
         if (result.error === "unreachable") {
             return fail(`Can't reach ${config.baseUrl} (${result.detail}). Check MODEL_BASE_URL.`);
         }
@@ -63,7 +71,9 @@ export async function run(io: HelloIO): Promise<number> {
         return fail(`The turn failed (${result.error}${status}): ${result.detail}`);
     }
 
-    if (result.text === "") io.stderr("(The model replied with no text.)\n");
+    if (result.text === "") {
+        io.stderr("(The model replied with no text.)\n");
+    }
     io.stdout(`${result.text}\n`);
     io.stderr(`${usageLine(result.usage, seconds)}\n`);
     return 0;
@@ -71,7 +81,9 @@ export async function run(io: HelloIO): Promise<number> {
 
 function usageLine(usage: ResponseUsage | undefined, seconds: number): string {
     const elapsed = `${seconds.toFixed(1)} s`;
-    if (usage === undefined) return `(${elapsed})`;
+    if (usage === undefined) {
+        return `(${elapsed})`;
+    }
     const reasoning = usage.output_tokens_details?.reasoning_tokens ?? 0;
     return `(${usage.output_tokens} output tokens, ${reasoning} reasoning, ${elapsed})`;
 }

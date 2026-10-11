@@ -118,7 +118,9 @@ function parseBaseUrl(value: string): string | undefined {
         return undefined;
     }
     const isHttp = url.protocol === "http:" || url.protocol === "https:";
-    if (!isHttp || url.search !== "" || url.hash !== "") return undefined;
+    if (!isHttp || url.search !== "" || url.hash !== "") {
+        return undefined;
+    }
     return url.href.replace(/\/+$/, "");
 }
 

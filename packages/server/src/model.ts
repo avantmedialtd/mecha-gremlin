@@ -14,7 +14,9 @@ export type ModelChoice =
 export async function resolveModel(config: Config, fetch: Fetch): Promise<ModelChoice> {
     if (config.provider === "lmstudio") {
         const models = await fetchModels(config, fetch);
-        if (!models.ok) return models;
+        if (!models.ok) {
+            return models;
+        }
         return pickModel(models.payload, config.model);
     }
     // loadConfig requires MODEL for every provider except lmstudio.
@@ -25,6 +27,8 @@ export async function resolveModel(config: Config, fetch: Fetch): Promise<ModelC
 
 /** The message for a rejected API key, with the provider's own fix where there is one. */
 export function keyRejected(config: Config, status: number): string {
-    if (config.provider === "lmstudio") return lmStudioKeyRejected(status);
+    if (config.provider === "lmstudio") {
+        return lmStudioKeyRejected(status);
+    }
     return `${config.baseUrl} rejected the API key (HTTP ${status}). Check MODEL_API_KEY.`;
 }
