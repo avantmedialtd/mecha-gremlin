@@ -49,3 +49,14 @@ bun run mutation       # Stryker mutation testing (a few minutes); report in rep
 - **Tests run on Node.** Vitest runs the tests on Node, not Bun, so Bun-specific behaviour (decorators, `Bun.spawn`) needs checks run with `bun` itself.
 - **`core`'s boundaries are enforced by the linter.** It may not touch `process`, `Bun` or `console`, through an override in `.oxlintrc.json`.
 - **Vitest is pinned to 4.x.** Stryker's Vitest runner silently stops working on Vitest 5 (see `stryker.config.mjs`).
+
+## CI
+
+GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) builds every pushed branch, and pull requests from forks. It runs two jobs:
+
+1. **Check and test:**
+   - a frozen install, then the format check, lint, typecheck and tests (failures are annotated on the PR);
+   - `bun audit`, report only: the step shows as failed when there are advisories, but the job still passes.
+2. **Mutation testing:** once the checks pass, Stryker runs and uploads its HTML report as the `mutation-report` artifact.
+
+Actions are pinned to commit SHAs, and there is deliberately no dependency cache shared between builds.

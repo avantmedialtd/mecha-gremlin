@@ -1,0 +1,89 @@
+name: CI
+
+# Every push to any branch builds. Pull requests build only when they come from a fork:
+# a same-repository PR is already built by its branch's push. `pull_request` (never
+# `pull_request_target`) runs fork code with a read-only token and no secrets.
+on:
+    push:
+    pull_request:
+    workflow_dispatch:
+
+# The workflow only reads the repository.
+permissions:
+    contents: read
+
+# One run per branch or PR at a time. A newer push to a PR cancels its older run; runs on
+# branches finish, so every pushed commit gets a result.
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+    BUN_VERSION: 1.4.3
+    # Vitest and Stryker run on Node; Stryker needs Node 22 or later.
+    NODE_VERSION: 24
+
+# Third-party actions are pinned to full commit SHAs (tag in the trailing comment), so a
+# moved or compromised tag can't change what runs here.
+#
+# No dependency cache, deliberately. Every build runs the repository's own code (install
+# scripts, tests, Stryker), and Bun reuses cached packages without re-checking them against
+# the lockfile, so a cache shared between builds could carry tampered packages from one
+# build into the next. A fresh install takes seconds.
+jobs:
+    check:
+        name: Check and test
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  persist-credentials: false
+            - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+              with:
+                  bun-version: ${{ env.BUN_VERSION }}
+            - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+              with:
+                  node-version: ${{ env.NODE_VERSION }}
+                  package-manager-cache: false
+            - run: bun install --frozen-lockfile
+            - run: bun run format:check
+            - run: bun run lint
+            - run: bun run typecheck
+            # Vitest annotates failures in the PR on its own when GITHUB_ACTIONS is set.
+            - run: bun run test
+            # Report only: the advisories are mostly in transitive dev tooling, and a hard gate
+            # would block every build on a third party's release schedule. The step shows as
+            # failed when there are advisories, but the job passes. Upgrade by hand and review
+            # the lockfile diff; `bun audit fix` is not wired in.
+            - name: Audit dependencies (report only)
+              run: bun audit
+              continue-on-error: true
+
+    mutation:
+        name: Mutation testing
+        needs: check
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  persist-credentials: false
+            - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+              with:
+                  bun-version: ${{ env.BUN_VERSION }}
+            - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+              with:
+                  node-version: ${{ env.NODE_VERSION }}
+                  package-manager-cache: false
+            - run: bun install --frozen-lockfile
+            - run: bun run mutation
+            - name: Upload the mutation report
+              if: always()
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+              with:
+                  name: mutation-report
+                  path: reports/mutation/
+                  if-no-files-found: ignore
+                  retention-days: 14
