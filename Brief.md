@@ -2,12 +2,13 @@
 
 > Input for a spec. Decisions below are settled unless marked **open**. Your job: turn this into a full spec (architecture, package layout, data model, interfaces, milestones). Push back where a decision looks wrong; don't silently change it.
 
-> **Revision 2, 2026-10-11.** Updated with the research done on 2026-10-11 and a first round of analysis. How to read it:
-> - **Part 1** is the original brief, word for word. Lines marked **▸** are pointers added in this revision; no original line was changed.
-> - **Part 2** is the research, with sources and confidence: **[H]** high, **[M]** medium, **[L]** low or unconfirmed, **[K]** background knowledge not re-checked in this pass. Several findings are newer than Claude's training data and rest on the cited sources alone.
-> - **Part 3** challenges settled decisions. Each one is a **proposal awaiting a decision**. None has been applied.
-> - **Part 4** is a draft design that assumes the recommended options. It changes if a decision goes the other way.
+> **Revision 2, 2026-10-11.** This revision adds the research done on 2026-10-11, a fact-check of that research, and a first round of analysis. How to read it:
+> - The title and the quoted instruction above open the original brief. **Part 1** holds the rest of it, word for word. The only additions in Part 1 are lines starting with **▸**. They point elsewhere, and no original line was changed.
+> - **Part 2** is the research, with sources and a confidence label on each finding: **[H]** high, **[M]** medium, **[L]** low or unconfirmed, **[K]** background knowledge not re-checked. Several findings are newer than Claude's training data and rest on the cited sources alone.
+> - **Part 3** opens with where each settled decision and known risk stands, then challenges them. Each challenge is a **proposal awaiting your decision**. None has been applied.
+> - **Part 4** is a draft design that assumes the recommended options. Sections that depend on an open decision name it.
 > - **Part 5** is the log of decisions, open questions and spikes, to work through one step at a time.
+> - **Verification.** After the first draft, 15 independent agents re-checked 333 claims against primary sources and reviewed the design. Some ran local tests on Bun 1.4.3, Postgres 16 and Docker Desktop. Their 56 factual corrections and 31 design issues are folded in, and the Verification log at the end summarises them. Anything still unverified is marked [M] or [L], or listed as a spike.
 
 ---
 
@@ -39,17 +40,7 @@ Primary goal: solve my own problem. Secondary: the core may become an open-sourc
 | Deployment and isolation | Docker / docker compose | Same artefact for my machine and any future client box. |
 | Repo | Single public monorepo with workspaces | See layering. No two-repo split, no symlinks. |
 
-▸ **Research status of the settled decisions.** No decision has been changed. Challenges are in Part 3.
-
-| Area | Status after research |
-|---|---|
-| Language/runtime | Holds. Bun 1.4.3 is current (2026-10-10). It now has built-in cron, both in-process and OS-level (R8), which matters for the scheduler choice (D6). |
-| Database | Holds. Everything the scheduler needs is reachable from TypeORM: `FOR UPDATE SKIP LOCKED`, partial unique indexes, `jsonb` and native `vector` columns (R6.3). |
-| ORM | Holds, with conditions. TypeORM 1.1.2 is healthy, but its CI doesn't run on Bun, and there are five sharp edges under Bun (R6.2). See C7 and spike S1. |
-| LLM client | Holds. The `openai` SDK covers the Responses API natively. The separate Known-risks line "stick to mainstream chat-completions" does not hold (C1). |
-| Models | Holds. New: a Plus or Pro ChatGPT subscription can now pay for your own calls through "Sign in with ChatGPT", with conditions (R1.2, C2). |
-| Deployment and isolation | Holds. On macOS, LM Studio has to run on the host, outside compose (R9). Where the boundary sits: C3. |
-| Repo | Holds. Proposal: one `core` package with subpath exports rather than one package per library (D10). |
+▸ How each settled decision stands after research: 3.0. None has been changed.
 
 ## Layering
 
@@ -59,7 +50,7 @@ Primary goal: solve my own problem. Secondary: the core may become an open-sourc
 - No "engine" object that owns a loop and calls back into injected adapters. **No DI, no persistence interfaces.** The caller orchestrates.
 - Candidate libraries (spec should refine): build tool schemas from skills, run one model turn, extract tool calls from a response, format tool results back into messages, compaction (history to compacted history), message ordering for cache-friendly prefixes.
 
-▸ Refined list with signatures: 4.3. "Run one model turn" is the only candidate that does I/O, through a client the caller passes in. The loop's *policy* can still be a pure function (`nextStep`), with the caller's `while` loop doing the I/O.
+▸ The refined list, with signatures, is in 4.3. One candidate changes under C4: with SKILL.md skills there are no per-skill tool schemas to build. Skills become a catalog in the preamble plus one `activate_skill` tool. "Run one model turn" is the only candidate that does I/O, through a client the caller passes in. The loop's *policy* can still be a pure function (`nextStep`).
 
 **2. App (also in the public repo, deliberately opinionated)**
 - Postgres + TypeORM, scheduler, orchestration loop, skill loading, logging.
@@ -69,7 +60,7 @@ Primary goal: solve my own problem. Secondary: the core may become an open-sourc
 Everything private (secrets, client specifics, my own skills and task definitions) lives in persistence and config, never in source. So the whole repo is publishable.
 - Enforce this mechanically, not by vigilance: secret scanning on commit, config schema validation at boot.
 
-▸ Proposed shape: a private git repo mounted into the containers (tasks, skills, env), alongside the public repo (4.2 and 4.9). Secret scanning with gitleaks in pre-commit and CI, plus GitHub push protection (M6).
+▸ Proposed shape: a private git repo (tasks, skills, env) mounted into the containers, alongside the public repo (4.2, 4.9). Secret scanning (gitleaks in pre-commit and CI, plus GitHub push protection) and config validation at boot start in M1, before any secret exists (4.10).
 
 ## Components the app needs
 
@@ -87,15 +78,21 @@ Everything private (secrets, client specifics, my own skills and task definition
 7. **Compaction.** Never compact the system prompt or original task. Only compress the conversational middle. Build the seam now, but don't build a sophisticated summariser until real runs show context growth is a problem.
 8. **Prompt caching.** Keep the stable prefix (system prompt, tool schemas) pinned and byte-identical at the front. Compaction only touches the middle, so the two don't fight. Caching behaviour differs between OpenAI and LM Studio, so don't assume one uniform feature.
 
-▸ Pointers per component:
-- **1. Scheduler.** Proposal: an in-process tick driven by the DB (4.8, D6). Task definitions: C6 and D5.
-- **2. Agent loop.** Draft in 4.5. Budgets beyond the iteration cap: C8. Narration handling: C9, plus LM Studio's own markers (R5.2).
-- **3. Skills.** The SKILL.md spec has no typed tools (R7), so C4 proposes a different split. Storage: on disk (4.7).
-- **4. Base tools.** Where they execute: C3. Process-group kill and output caps under `Bun.spawn`: R8.
-- **5. Persistence.** One row per history item instead of one `jsonb` array per run (C11). Entity draft: 4.4.
-- **6. Run log.** Keep it out of the agent's reach with C3 plus an INSERT-only DB grant (4.4).
-- **7. Compaction.** Compaction and caching do fight unless compaction is rare and chunky (C5).
-- **8. Prompt caching.** Caching now differs by OpenAI model generation as well as by backend (R3, R5.3). Request layout: 4.6.
+▸ **1. Scheduler.** Proposal: an in-process tick driven by the database (4.8, D6). Where task definitions live: C6, D5.
+
+▸ **2. Agent loop.** Draft in 4.5. Budgets and a context-fill check beyond the iteration cap: C8. Narration handling: C9, using LM Studio's own markers (R5.2).
+
+▸ **3. Skills.** The SKILL.md spec has no typed tools (R7), so C4 proposes a different split. Storage: on disk (4.7).
+
+▸ **4. Base tools.** Where they execute: C3. Process-group kill, pipe and stdin handling, and output caps: C3, 4.5, R8, R10.
+
+▸ **5. Persistence.** One row per history item rather than one `jsonb` array per run (C11). Entity draft: 4.4.
+
+▸ **6. Run log.** Keep it out of the agent's reach with C3 plus a database role that can only INSERT into it (4.4).
+
+▸ **7. Compaction.** The seam ships in M2. The summariser waits for evidence (4.10). Compaction and caching do fight, unless compaction is rare and chunky (C5).
+
+▸ **8. Prompt caching.** Caching now differs by OpenAI model generation as well as by backend (R3, R5.3). Request layout: 4.6.
 
 ## Known risks to address in the spec
 
@@ -105,15 +102,7 @@ Everything private (secrets, client specifics, my own skills and task definition
 - **OpenAI subscription for API calls:** confirm the auth mechanism and its limits before relying on it.
 - **Scope creep:** the harness stays small. The failure mode is slowly reimplementing LangChain badly.
 
-▸ **Risk status after research:**
-
-| Risk | What the research found | Where it goes |
-|---|---|---|
-| TypeORM runtime type gap | 1.0 now throws on `null`/`undefined` in a find `where` (R6.1). In 0.3.x those were silently dropped and could match every row (R9). What remains: Bun's metadata ignores `strictNullChecks`; raw SQL strings in partial-index predicates aren't diffed; `jsonb` payloads are unchecked. | C7 conventions, integration tests against real Postgres |
-| TypeORM on Bun | Works with legacy decorators. Not in TypeORM's CI. Five sharp edges, all verified on Bun 1.4.3 (R6.2). | C7, S1, fallback ladder D13 |
-| OpenAI compatibility | The premise has shifted. On OpenAI, Chat Completions can't call tools on GPT-5.4+ unless reasoning effort is `none` (R2.2). LM Studio serves `/v1/responses` (R5.1). | C1, D1, S2, S3 |
-| OpenAI subscription | No ChatGPT plan includes Platform API credits (R1.1). "Sign in with ChatGPT" (2026-09-29) is the official route for Plus and Pro, over Responses only, with constraints. Eligibility for a personal unattended runner is unclear (R1.2). | C2, D2, S4, Q4, Q9 |
-| Scope creep | No research needed. | C10: a "won't build" list and a size budget |
+▸ How each known risk stands after research: 3.0.
 
 ## What I want back
 
@@ -127,99 +116,132 @@ Everything private (secrets, client specifics, my own skills and task definition
 8. Milestones, smallest useful end-to-end slice first (one scheduled task, one model, shell + file tools, persisted run log).
 9. Your list of open questions and any decisions you'd challenge.
 
-▸ Drafts: 1 → 4.2, 2 → 4.3, 3 → 4.4, 4 → 4.5, 5 → 4.7, 6 → 4.8, 7 → 4.9, 8 → 4.10. Item 9 is Part 3 plus Part 5. Every draft depends on the open decisions in Part 5.
+▸ Where each draft lives: 1 → 4.2, 2 → 4.3, 3 → 4.4, 4 → 4.5, 5 → 4.7, 6 → 4.8, 7 → 4.9, 8 → 4.10, and 9 is Part 3 plus Part 5. Every draft depends on the open decisions in Part 5.
 
 ---
 
 # Part 2: Research (2026-10-11)
 
-**Method.** Three research passes on 2026-10-11, covering OpenAI, LM Studio, and TypeORM/Bun/Agent Skills.
-- **Sources:** official docs, changelogs, GitHub releases and issues, npm metadata.
-- **Local checks** on Bun 1.4.3 (macOS): transpiler output and spawn behaviour.
-- **OpenAI docs:** the pages carry no dates and were fetched on 2026-10-11. help.openai.com and openai.com block fetchers, so those were read through search snippets only.
+**Method.**
+- **Passes:** three research passes on 2026-10-11 (OpenAI; LM Studio; TypeORM, Bun and Agent Skills), followed by an independent fact-check of every load-bearing claim (Verification log).
+- **Sources:** official docs, changelogs, npm metadata, and GitHub releases, issues and source code (read with `gh`).
+- **Local checks:**
+  - Bun 1.4.3 on macOS: transpiler output and spawn behaviour. These ran in memory or in a scratch directory outside the repo.
+  - During the fact-check: database behaviour reproduced on Postgres 16, and Docker networking on Docker Desktop (Docker 29.8.2). See R10.
+- **OpenAI pages:** they carry no dates and were fetched on 2026-10-11. help.openai.com and openai.com returned HTTP 403 to fetchers, so the first pass read them through search snippets and the fact-check read archived copies (web.archive.org).
 - **Shorthand:**
-  - **OAI** = developers.openai.com
-  - **LMS docs** = lmstudio.ai/docs (source: github.com/lmstudio-ai/docs, last commit 2026-10-08)
-  - **LMS CL x** = lmstudio.ai/changelog/lmstudio/lmstudio-vx
-  - **LMS BT#n** = github.com/lmstudio-ai/lmstudio-bug-tracker/issues/n
+  - **OAI** = developers.openai.com.
+  - **LMS docs** = lmstudio.ai/docs (source: github.com/lmstudio-ai/docs, last commit 2026-10-08).
+  - **LMS CL x** = lmstudio.ai/changelog/lmstudio/lmstudio-vx.
+  - **LMS BT#n** = github.com/lmstudio-ai/lmstudio-bug-tracker/issues/n.
 
 ## R1. OpenAI: what a subscription can pay for
 
 **R1.1 No ChatGPT plan includes Platform API credits.** API usage is billed separately, pay-per-token. **[H]** (help.openai.com/en/articles/8156019)
 
-**R1.2 Sign in with ChatGPT (SIWC), "ChatGPT plan usage" from your own code.**
-- **Launch:** announced at OpenAI DevDay on 2026-09-29, reported by WorkOS (2026-10-01) and The Star (2026-10-04). It is the official, non-Codex way to spend a Plus or Pro plan from your own code.
-- **Confidence:** **[H]** on the mechanics, **[M]** on who qualifies.
-- **Sources:** OAI /siwc/token-sharing-open-source and its sub-pages /sign-in, /models-and-inference, /preview-limitations, /token-reference, /errors-and-recovery; help.openai.com/en/articles/20001542.
+**R1.2 "ChatGPT plan usage" through Sign in with ChatGPT (SIWC).**
+- **Launch.** Identity-only Sign in with ChatGPT entered beta on 2026-07-29 with partner sites (Airtable, GitLab, HubSpot, Notion, Supabase, Vercel). *Plan usage*, meaning spending a user's ChatGPT allowance on AI requests in your own app, was announced at OpenAI DevDay on 2026-09-29 as a limited preview ("Use your ChatGPT allowance in participating apps"). WorkOS (2026-10-01) and The Star (2026-10-04) reported it. It is the official, non-Codex way to spend a plan from your own code. **[H]** on mechanics, **[M]** on eligibility.
+- **Sources:**
+  - OAI /siwc/quickstart.
+  - OAI /siwc/token-sharing-open-source and its sub-pages /sign-in, /profiles-and-sessions, /models-and-inference, /preview-limitations, /token-reference, /errors-and-recovery, /self-hosted-vms and /codex-app-server.
+  - help.openai.com/en/articles/20001542 and learn.chatgpt.com/docs/sign-in-with-chatgpt.
 
 **Eligibility**
-- Plus and Pro only, so Business is out.
-- Plan usage is "available to all open-source partners and selected private clients". The docs are written for "open-source and locally hosted apps".
-- Paid or remotely hosted apps go through an interest form.
+- **Plans: OpenAI's sources conflict.**
+  - The developer docs, the cookbook, learn.chatgpt.com and the 2026-09-29 release note say "eligible ChatGPT Plus and Pro users".
+  - The help article (20001542, revised around 2026-10-05) says plan usage in commercial apps "is only available with Go, Plus, and Pro", and that "Supported open-source tools remain available to all ChatGPT users".
+  - So whether Business or Go can use plan usage in an open-source, locally hosted client is not established.
+  - An ineligible account gets HTTP 403 `subscription_sharing_user_not_eligible`.
+- **Who it's for.** Plan usage is "available to all open-source partners and selected private clients" (/siwc/quickstart). The open-source flow is written for "open-source and locally hosted apps", and includes a guide for running an open-source app on a remote VM. "If you're interested in offering it in a paid or remotely hosted app, complete the interest form."
+- **Partners.** The partner directory (learn.chatgpt.com/docs/sign-in-with-chatgpt#partners; the help article only links to it) lists OpenClaw, OpenCode, Pi and T3 as open-source integrations.
 
 **Auth**
-- OAuth with PKCE (S256), with a loopback callback at `http://127.0.0.1:<port>/auth/callback`.
-- Apps register themselves with `client_id=dynamic_agent_client` plus an `ext_agent_host_id`; there is no client secret.
-- Scopes: `offline_access resource.invoke chatgpt.tokens.use.direct`.
-- Access tokens last 1 hour. Refresh tokens last 30 days and **rotate on every refresh**, so refreshes must be serialised.
-- To refresh, `POST auth.openai.com/api/accounts/oauth/token` with `resource=https://api.openai.com/v1`.
-- There is a documented procedure for moving the credentials to a self-hosted VM.
+- **Flow.** OAuth with PKCE (S256) and a loopback redirect at `http://127.0.0.1:<port>/auth/callback`. Only the port may vary, and `localhost` is not accepted.
+- **Registration.**
+  - `client_id=dynamic_agent_client` plus `ext_agent_host_id` is the **first-time registration entry point, not the client ID to keep**. The callback returns an issued `client_id` (`oaiapp_…`), which must be stored and used for the code exchange, every refresh and later sign-ins.
+  - `ext_agent_host_id` must be stable and distinct per host.
+  - The authorise request also sends `agent_name_hint`.
+- **Scopes.** Identity: `openid profile email`; validate the ID token. Plan usage: `offline_access resource.invoke chatgpt.tokens.use.direct`.
+- **Token lifetimes.** Access tokens last 1 hour (`expires_in` 3600). Refresh tokens last 30 days and are replaced on every refresh. The docs say to "serialize refreshes for the same session". A racing refresh fails with `refresh_token_reused`, which forces a new OAuth sign-in.
+- **Refresh.** `POST auth.openai.com/api/accounts/oauth/token` with `resource=https://api.openai.com/v1`, the issued client ID, and `scope` omitted so the grant is kept.
+- **Containers and remote machines.** The loopback login can't complete inside a container or on a remote VM directly. The docs' self-hosted VM procedure completes OAuth locally and then transfers the credentials.
 
 **Endpoint**
-- `POST https://api.openai.com/v1/responses` only.
-- The official SDK works with the OAuth access token passed as the API key, and `maxRetries: 0`.
-- The docs say verbatim: "do not point it at ChatGPT's `backend-api` endpoints."
+- **Inference** is `POST https://api.openai.com/v1/responses` only. The official SDK works with the OAuth access token passed as the API key and retries turned off: the docs' Python example uses `max_retries=0`, which is `maxRetries: 0` in JS.
+- **The docs say verbatim:** "do not point it at ChatGPT's `backend-api` endpoints."
+- **Model catalogue.** `GET https://api.openai.com/v1/models` with the same token returns the account's catalogue. It comes back as a `models` array with `slug`, `display_name` and `visibility` (filter on `visibility == "list"`), not the usual `data[]`/`id` list.
+- **WebSocket.** A WebSocket transport also exists. There, `previous_response_id` works only within one authenticated connection.
 
 **Request constraints**
-- `store:false` and `stream:true` are required.
+- `store:false` and `stream:true` are required over HTTP.
 - `role:"system"` items are rejected; use `instructions` or developer messages instead.
-- Omit `temperature`, `top_p`, `max_output_tokens`, `metadata`, `truncation`, `prompt_cache_retention`, `user` and `background`.
-- `previous_response_id` isn't available over HTTP, so the full input is replayed every turn.
-- Hosted tools are unavailable: file search, Code Interpreter, image generation, hosted MCP, `tool_search`.
-- Function tools must be grouped "in namespaces or supply them through `additional_tools` input items".
+- **Omit these 15 fields:** `background`, `conversation`, `max_output_tokens`, `max_tool_calls`, `metadata`, `moderation`, `multi_agent`, `prompt`, `prompt_cache_retention`, `safety_identifier`, `temperature`, `top_logprobs`, `top_p`, `truncation` and `user`. An unsupported input, tool, model or service-tier override returns HTTP 400 `subscription_sharing_unsupported_capability`; check `error.param`.
+- **No `previous_response_id`** over HTTP, so the full input is replayed every turn.
+- **Unsupported tools:** image generation, file search, Code Interpreter, native computer use, hosted MCP and connectors, and `tool_search`. `programmatic_tool_calling` isn't accepted in top-level tools. Web search "remains subject to model and account/workspace policy".
+- **Function tools:** "Group function/custom tools in namespaces or supply them through `additional_tools` input items". openai-node 7.32.0 has types for both: `NamespaceTool` (type `namespace`), and `additional_tools` input items, which take the developer role only.
 
 **Limits**
-- Requests draw on the plan's ChatGPT/Codex allowance.
-- Plus has a 5-hour window shared across all connected apps. Pro has no 5-hour limit.
-- Users can set a weekly cap per app.
-- At the limit the API returns HTTP 429 `subscription_sharing_usage_limit_exceeded`. Billing never silently switches to the API.
+- **Pool.** Requests draw on the plan's "ChatGPT Work and Codex usage", the same pool as your own Codex work.
+- **Plus vs Pro.** On Plus, the five-hour limit is shared across all apps using the plan. On Pro the five-hour limit doesn't apply, but app usage still draws on the same weekly allowance. Users can cap each app's weekly usage in Settings → Usage, as a percentage of the weekly allowance.
+- **At a limit, plan usage stops.** OpenAI "does not silently switch the request to another billing path".
+  - Before the stream opens, the error is HTTP 429 `subscription_sharing_usage_limit_exceeded`. After streaming has begun, the same code arrives in a `response.failed` event.
+  - The limit may be the app's own weekly cap rather than the whole plan. The docs say not to "infer a reset time from this code alone"; the reset time appears only in ChatGPT settings → Usage.
+- **Other errors.**
+  - `subscription_sharing_usage_unavailable` (503, also possible mid-stream) means usage couldn't be checked: retry with bounded backoff.
+  - Admission failures before the stream (401, 403, 503) can return a bare `{"detail":"…"}` body instead of the standard error object.
+- **Credits.** A user can turn on "Allow other apps to use credits after reaching your usage limit". It is off by default, and the app's limit must be set to 100%. Requests then continue on ChatGPT credits instead of stopping, and with automatic credit purchases this can cause charges with no separate notice.
 
-**Not addressed in the docs:** whether a closed-source personal runner counts as "open-source", and whether unattended scheduled runs are allowed.
+**Unattended and personal use.** The docs don't address either explicitly. Both sides are in Q9.
 
-**R1.3 Codex "Sign in with ChatGPT".** **[H]** (learn.chatgpt.com/docs/auth, learn.chatgpt.com/docs/auth/ci-cd-auth)
-- Codex CLI, SDK and app-server officially run on plan usage, but the docs say "API keys are still the recommended default for automation".
-- The ChatGPT `auth.json` may be used on "trusted private" CI runners: one file per runner, never shared between concurrent jobs. Codex refreshes it when it is more than about 8 days old.
-- Enterprise admins can issue Codex access tokens "for trusted scripts, schedulers, and private CI runners".
-- Codex app-server can run on a SIWC token through a custom provider with `wire_api="responses"`.
+**R1.3 Codex "Sign in with ChatGPT".** **[H]**
+- **Sources:** learn.chatgpt.com/docs/auth, learn.chatgpt.com/docs/auth/ci-cd-auth, OAI /siwc/token-sharing-open-source/codex-app-server.
+- Codex CLI, SDK and app-server officially run on plan usage, but the docs say "API keys are still the recommended default for automation" and "The right way to authenticate automation is with an API key."
+- The ChatGPT `auth.json` may be used only on trusted private runners: "one auth.json per runner", and "Do not share the same file across concurrent jobs". Codex refreshes it when its `last_refresh` is more than about 8 days old.
+- Enterprise Codex access tokens are "intended for trusted scripts, schedulers, and private CI runners".
+- Codex app-server can run on a SIWC token through a custom provider with `wire_api="responses"`. This is documented on the codex-app-server page above.
 
-**R1.4 The unofficial route: the Codex backend.** **[M]**
-- **Status:** some apps call `chatgpt.com/backend-api/codex/responses` directly with Codex OAuth tokens. OpenAI never published a contract for that endpoint, and its new docs steer apps away from it. No explicit terms-of-service ban and no enforcement reports were found. The research reads it as tolerated but unsupported, and now superseded by SIWC.
-- **Constraints (community reverse-engineering):** `store:false`, streaming, replaying encrypted reasoning, Codex's own prompt in `instructions`, and Codex's 5-hour and weekly windows.
+**R1.4 The unofficial route: the Codex backend.** **[H]** facts, **[M]** reading.
+- **Who uses it.** Some apps call `chatgpt.com/backend-api/codex/responses` directly with Codex OAuth tokens. OpenCode does, and so do subscription-to-API relays such as sub2api.
+- **Status.**
+  - OpenAI never published a contract for that endpoint, and the SIWC docs say "do not point it at ChatGPT's `backend-api` endpoints".
+  - No terms-of-service clause names it. But the Terms of Use (effective 2026-01-01) forbid you to "Automatically or programmatically extract data or Output".
+  - On 2026-08-21, Tibo Sottiaux (OpenAI, Codex) said that converting a subscription into API traffic "to then re-serve or share across many users is not something we support and this type of usage gets flagged by our fraud-prevention systems". In the same post he said that using your subscription through official clients or OSS sign-in clients (Pi, OpenCode) is "completely fine".
+- **Reading.** Unsupported: accepted for one person's own use through a sign-in client, flagged when a subscription becomes shared API traffic, and now superseded by SIWC. A bespoke unattended runner calling it directly falls between those two cases.
+- **Constraints, from community reverse-engineering:** `store:false`, streaming, replaying encrypted reasoning, Codex's own prompt in `instructions`, and Codex's 5-hour and weekly windows.
 
-**R1.5 Third-party harness timeline.**
-- **2026-01-09 (approximately):** Anthropic blocked third-party harnesses from using Claude subscriptions, server-side (secondary sources). **[M]**
-- **2026-01-10:**
-  - OpenCode v1.1.11 added "Codex authentication support" (GitHub release notes). **[H]**
-  - Tibo Sottiaux of OpenAI posted that OpenAI was "working with OpenCode" so Codex subscriptions would work there. This was seen through a second-hand mirror; the original post wasn't opened. **[M]**
-- **2026-09-30:** Tibo Sottiaux posted "You can now use your ChatGPT subscription directly in over 60 partners products… Devin, OpenCode, Lovable" (seen through an X mirror only). **[M]**
-- The help centre lists OpenCode, OpenClaw, Pi and T3 as open-source examples.
+**R1.5 Third-party harness timeline.** **[H]** The recollection that OpenAI publicly welcomed OpenCode using ChatGPT subscriptions, right after Anthropic's block, is correct.
+- **2026-01-09.** Anthropic blocked third-party harnesses from using Claude subscriptions, server-side (VentureBeat, 2026-01-09; OpenCode issue #7410, opened 02:20 UTC).
+- **2026-01-09, 21:40 UTC.** Tibo Sottiaux posted: "We are working with OpenCode to allow Codex users to use their Codex subscriptions and usage limits in OpenCode directly." (x.com/thsottiaux/status/2009742187484065881)
+- **2026-01-10.** OpenCode v1.1.11 added "Codex authentication support" (01:54 UTC). A follow-up post, "Codex ❤️ OSS", named OpenHands, RooCode and Pi (19:01 UTC).
+- **2026-08-21.** The fraud-flagging and "completely fine" post quoted in R1.4 (x.com/thsottiaux/status/2090675027670978569).
+- **2026-09-29, 17:47 UTC, during the DevDay keynote.** "You can now use your ChatGPT subscription directly in over 60 partners products… Devin, OpenCode, Lovable" (x.com/thsottiaux/status/2104991529416999243). Official sources count 16 launch partners.
+- **Context.** OpenCode now ships a SIWC provider (`dynamic_agent_client`, resource `https://api.openai.com/v1`).
 
 ## R2. OpenAI: Chat Completions vs Responses
 
 **R2.1 Status.** "While Chat Completions remains supported, Responses is recommended for all new projects." Chat Completions is not deprecated and has no entry on the deprecations page. **[H]** (OAI /api/docs/guides/migrate-to-responses, /api/docs/deprecations)
 
-**R2.2 Tool calling is restricted on Chat Completions (2026).** **[H]** that the restrictions exist; the docs disagree on details.
-- Migration guide: "Starting with GPT-5.4, Chat Completions does not support tool calling with `reasoning_effort` values other than `none`."
-- Reasoning guide: "Chat Completions does not support function calling with GPT-6 Astra or GPT-6.1 Sol."
-- gpt-6.1-sol model page: "Chat Completions is supported without tool calling."
-- Inconsistency: the gpt-6-astra model page still lists function calling as supported.
+**R2.2 Tool calling is restricted on Chat Completions.** **[H]**
+- **Migration guide:** "Starting with GPT-5.4, Chat Completions does not support tool calling with `reasoning_effort` values other than `none`."
+- **Reasoning guide:** "Chat Completions does not support function calling with GPT-6 Astra or GPT-6.1 Sol."
+- **Function-calling guide:** "GPT-6 Astra and GPT-6.1 Sol require the Responses API for tool calling."
+- **Changelog (2026-09-03, GPT-6 Astra):** "Tool calling requires the Responses API."
+- **gpt-6.1-sol model page:** "Chat Completions is supported without tool calling."
+- **Exceptions and edge cases:**
+  - The gpt-6-astra model page omits the caveat; all the guides and the changelog state it.
+  - GPT-6 Astra returns HTTP 400 on `reasoning_effort: none`, so the GPT-5.4+ rule alone already rules out Chat Completions tool calls on it.
+  - gpt-6-sol, as distinct from gpt-6.1-sol, follows the general rule: tools only with effort `none`.
 
 **R2.3 Reasoning across turns.** "In Chat Completions, reasoning is dropped between calls" (OAI /blog/responses-api).
 
-**R2.4 Stateless pattern.** Set `store:false` and replay every reasoning item. New in 2026: `encrypted_content` is returned by default. The old `include:["reasoning.encrypted_content"]` is still accepted but no longer needed (OAI /api/docs/guides/reasoning).
+**R2.4 Stateless pattern and reasoning items.** (OAI /api/docs/guides/reasoning; openai-node 7.32.0 types)
+- **Basic pattern:** set `store:false` and replay every reasoning item. New in 2026: `encrypted_content` is returned by default. The old `include:["reasoning.encrypted_content"]` is still accepted but no longer needed.
+- **Reuse across models:** persisted reasoning can be reused only within one model family (gpt-5.6-sol, -terra and -luna share it). Across families the API *silently omits* the incompatible reasoning items rather than failing the request.
+- **Across user turns:** carrying reasoning across user turns depends on `reasoning.context`. `all_turns` is documented as the default only for the GPT-5.6 family (GPT-6.1 Sol supports it). Earlier models default to `current_turn`.
+- **When streaming:** store the reasoning item from `response.output_item.done`. Its `encrypted_content` in `response.output_item.added` may be incomplete.
 
 **R2.5 Published claims for Responses over Chat Completions.**
-- Cache utilisation: "40% to 80% improvement when compared to Chat Completions in internal tests". The archived cookbook words it as going "from 40% to 80%".
+- Cache utilisation: "40% to 80% improvement when compared to Chat Completions in internal tests" (the archived cookbook words it as "from 40% to 80%").
 - "3% improvement in SWE-bench".
 - The blog adds "5% better on TAUBench".
 
@@ -227,28 +249,42 @@ Everything private (secrets, client specifics, my own skills and task definition
 
 ## R3. OpenAI: prompt caching
 
-Sources: OAI /api/docs/guides/prompt-caching, and the types in openai-node 7.32.0.
+Sources: OAI /api/docs/guides/prompt-caching, /api/docs/guides/prompt-caching/diagnostics, /api/docs/guides/function-calling, and openai-node 7.32.0 types.
 
 **R3.1 GPT-5.6 and later.**
-- Minimum 1,024 visible input tokens.
-- One implicit breakpoint at the end of the latest message, plus explicit `prompt_cache_breakpoint` markers on content blocks (up to 4 cache writes per request).
-- Configured with `prompt_cache_options {mode: implicit|explicit, ttl: "30m"}`. 30m is the only value and the default, and each reuse refreshes it.
-- **Cache writes cost 1.25× the input price.** Reads cost 0.1× (0.05× on GPT-6.1 Sol).
-- `prompt_cache_retention` is deprecated. `prompt_cache_key` is optional and only separates cache accounting, because routing is automatic.
+- **Minimum length:** 1,024 visible input tokens.
+- **Breakpoints:**
+  - An implicit breakpoint sits at the end of the latest *eligible* message. Eligible means a user message, the last tool response in a consecutive group of tool responses, or the last developer message in the initial group of developer messages.
+  - Assistant messages, reasoning items, `function_call` items and developer messages added later in the conversation are not eligible.
+  - Explicit `prompt_cache_breakpoint` markers can be placed on content blocks, with up to 4 cache writes per request.
+- **Configuration:** `prompt_cache_options {mode: implicit|explicit, ttl: "30m"}`. 30m is the only value and the default, and each reuse refreshes it.
+- **Pricing:** **cache writes cost 1.25× the input price.** Reads cost 0.1× (0.05× on GPT-6.1 Sol).
+- **Parameters:**
+  - `prompt_cache_retention` is deprecated.
+  - `prompt_cache_key` is optional, and routing is automatic, but the key partitions billed cache reuse: a request under a different key is reported and billed as a miss even when the prefix is physically cached. Omit it, or use one stable key per task; never one per run or per turn.
+  - On supported GPT-6-family models, a `configuration_update` input item changes reasoning effort without breaking the cached prefix. **[M]**
 
 **R3.2 Earlier models.**
-- The minimum "varies by request settings".
-- Breakpoints fall at model-dependent intervals (every 2,048 tokens on GPT-5.5), and `cached_tokens` is rounded down to a multiple of 128.
-- `prompt_cache_retention` is `in_memory` (5–10 minutes idle, up to 1 hour) or `24h`. **The default is now `24h` for organisations without zero data retention (ZDR).**
-- `24h` is supported on gpt-5.5 and 5.5-pro (which accept only `24h`), 5.4, 5.2, the 5.1 family, 5, 5-codex and 4.1.
-- No charge for cache writes. `prompt_cache_key` is a routing hint; keep each key to about 15 requests per minute.
+- **Minimum length:** "varies by request settings".
+- **Breakpoints:** at model-dependent intervals (every 2,048 tokens on GPT-5.5), and `cached_tokens` is rounded down to a multiple of 128.
+- **Retention:**
+  - `prompt_cache_retention` is either `in_memory` (typically 5–10 minutes idle, up to 1 hour) or `24h`.
+  - **`24h` is a maximum, not a lifetime.** Entries "typically" stay around 30 minutes and can last up to 24 hours. The SDK calls it "a maximum retention policy".
+  - It has been the **default for organisations without zero data retention (ZDR)**, on models that support both values, since the changelog entry of 2026-05-29.
+  - Models with `24h`: gpt-5.5 and 5.5-pro (which accept only `24h`; `in_memory` errors), 5.4, 5.2, the 5.1 family, 5, 5-codex and 4.1. Other earlier models have only `in_memory`.
+- **Cost and routing:** no charge for cache writes. `prompt_cache_key` is a routing hint; keep each key to about 15 requests per minute.
 
 **R3.3 Usage reporting.**
 - Responses: `usage.input_tokens_details.cached_tokens` and `cache_write_tokens`.
 - Chat Completions: `usage.prompt_tokens_details.cached_tokens` and `cache_write_tokens`.
 - The discount on cached input is "up to 95%". Cached tokens still count toward tokens-per-minute limits.
 
-**R3.4 What breaks the cache.** Changing the model, the tools (any edit or reordering), `parallel_tool_calls`, `text.format`, `reasoning.effort`, verbosity, or compaction. The guide recommends `tool_choice:"none"` or `allowed_tools` over removing tools. That suggests changing `tool_choice` keeps the cache, but the guide doesn't say so outright.
+**R3.4 What breaks the cache.**
+- **Breakers:** changing the model, the tools (any edit or reordering), `parallel_tool_calls`, `text.format`, `reasoning.effort`, verbosity, or compaction. The diagnostics page adds three more:
+  - a service-tier change (`service_tier_changed`; the returned tier can differ from the one requested);
+  - a `prompt_cache_key` change;
+  - any edit to earlier input (`input_changed`).
+- **`tool_choice` is safe.** The guide says to "change which tools are callable while keeping their definitions stable to preserve reusable prefixes": set `tool_choice:"none"` or use `allowed_tools` instead of removing tools. The diagnostics page gives the same fix for `tools_changed`. `tool_choice` appears neither among the settings that affect the cache nor among the nine miss reasons.
 
 **R3.5 Under SIWC,** `prompt_cache_retention` must be omitted (R1.2).
 
@@ -259,24 +295,27 @@ OpenAI has adopted SKILL.md.
   - A skill is a `SKILL.md` with `name` and `description`, and the docs say it will "build on the open agent skills standard".
   - Codex finds skills in `.agents/skills`, `~/.agents/skills` and `/etc/codex/skills`, and loads the full instructions only when a skill is used.
   - It arrived in Codex and ChatGPT around December 2025 (Simon Willison, 2025-12-12 and 2025-12-20).
-- **API** (OAI /api/docs/guides/tools-skills):
-  - Described as "compatible with the open Agent Skills standard".
-  - Upload skills with `POST /v1/skills` or send them inline. Attach them through the shell tool's `environment.skills`: `skill_reference` for hosted containers, or name, description and path for a local shell.
-  - Responses API only. It was live by 2026-02-11 (Willison).
-  - This is OpenAI-hosted machinery. LM Studio offers only function tools, so using it would split the code path (C4).
+- **API** (OAI /api/docs/guides/tools-skills, /api/docs/changelog):
+  - Described as "compatible with the open Agent Skills standard". Launched in the Responses API on 2026-02-10. Not available in Chat Completions.
+  - **Two modes:**
+    - *Hosted:* `environment.type` is `"container_auto"` or `"container_reference"`. It runs in an OpenAI container, with skills uploaded through `POST /v1/skills` (referenced as `skill_reference`) or sent inline.
+    - *Local:* `environment.type: "local"`. It runs the shell in your own runtime and reads skills from local paths given as name, description and path.
+  - Both modes use OpenAI's own `shell` tool type rather than a function tool, and the platform injects the skill catalogue itself.
+  - Since 2026-09-10 the Agents API public beta also loads skills, from `environment.capability_directories` in its sandbox. It needs the `OpenAI-Beta: agents=v1` header, has no ZDR, and is US-only.
+  - LM Studio offers function tools, plus remote MCP if you opt in (R5.1), but no `shell` tool. So both forms would split the code path (C4).
 
 ## R5. LM Studio (latest release 0.4.26, 2026-10-08)
 
 **R5.1 Endpoints.** **[H]**
 - **OpenAI-compatible** (LMS docs /developer/openai-compat, LMS CL 0.4.26):
   - `GET /v1/models`.
-  - `POST /v1/chat/completions`, `/v1/responses`, `/v1/embeddings` and `/v1/completions` (legacy).
-  - `POST /v1/decisions` (0.4.26; needs a "decision model").
+  - `POST` on `/v1/chat/completions`, `/v1/responses`, `/v1/embeddings` and `/v1/completions` (legacy).
+  - `/v1/decisions` (0.4.26), which needs a "decision model".
 - **Anthropic-compatible:** `POST /v1/messages` since 0.4.1 (2026-01-30).
-- **`/v1/responses`** arrived in **0.3.29 (2025-10-06)**.
-  - It supports function tools, SSE streaming, `reasoning.effort`, `previous_response_id`, and remote MCP if you opt in.
-  - 0.3.39 (2026-01-15) made it Open Responses compliant (lmstudio.ai/blog/lmstudio-v0.3.29, /blog/openresponses).
-  - **Stateless use works.** The docs' comparison table allows assistant messages in the request. Codex `--oss` is an officially supported client and uses this endpoint, so full client-held history works.
+- **`/v1/responses`:**
+  - It arrived in **0.3.29 (2025-10-06)**, with function tools, SSE streaming, `reasoning.effort`, `previous_response_id`, and remote MCP if you opt in (lmstudio.ai/blog/lmstudio-v0.3.29).
+  - 0.3.39 (2026-01-15) made it Open Responses compliant (lmstudio.ai/blog/openresponses).
+  - **Stateless use works.** The docs' comparison table allows assistant messages in the request. Codex `--oss` is an officially supported client that uses this endpoint, so full client-held history works.
 - **Native REST:** `/api/v1/{chat, models, models/load, models/unload, models/download[/status]}` has been official since **0.4.0 (2026-01-28)**. The old `/api/v0/*` is still documented. Only `/api/v1/chat` lets you set `context_length` per request (LMS docs /developer/rest).
 
 **R5.2 Tool calling on `/v1/chat/completions`.** **[H]**
@@ -284,203 +323,283 @@ OpenAI has adopted SKILL.md.
   - `"auto"`, `"none"` and `"required"` work since 0.3.15. The changelog says `"required"` works on the llama.cpp engine only.
   - A named-function object is rejected with HTTP 400: `Invalid tool_choice type: 'object'. Supported string values: none, auto, required` (LMS BT#670, still open; last report April 2026).
 - **Streaming:**
-  - Tool calls arrive as OpenAI-style `delta.tool_calls` chunks: id and name first, then argument fragments.
-  - Arguments stream as they are generated (0.3.17). Parallel-call streaming was fixed in 0.3.18 and 0.3.19.
+  - Tool calls arrive as OpenAI-style `delta.tool_calls` chunks: id and name first, then argument fragments. Arguments stream as they are generated (0.3.17).
+  - Parallel-call streaming was fixed in 0.3.18 and 0.3.19.
   - `finish_reason` is `"tool_calls"` in both streaming and non-streaming responses.
-- **Native parsing.** A model counts as native when its chat template supports tools and LM Studio knows its output format; LM Studio then parses the calls into `tool_calls`. Formats added over time:
-  - Qwen/Hermes `<tool_call>`, Llama 3.1/3.2, Mistral;
+- **Native parsing.** A model counts as native when its chat template supports tools and LM Studio knows its output format. LM Studio then parses its calls into `tool_calls`. Formats added over time:
+  - Qwen/Hermes `<tool_call>`, Llama 3.1/3.2 and Mistral;
   - gpt-oss Harmony, which also gets a constrained tool-call grammar on llama.cpp since 0.4.7;
-  - Qwen3-Coder/3.5 XML-style, GLM, MiniMax M2, Seed-OSS, Nemotron, LFM2, Gemma 4.
-- **Default (prompt-based) parsing** for every other model:
-  - LM Studio injects a system prompt using `[TOOL_REQUEST]{json}[END_TOOL_REQUEST]`.
-  - `tool`-role messages are rewritten as `user`.
-  - Tool names are converted to snake_case before the model sees them (0.3.23).
-- **Malformed calls.** The docs say: "If LM Studio cannot parse any correctly formatted tool calls, it will simply return the response to the standard `message.content` field." No `finish_reason` is documented for that case. The docs' list of native models is out of date (LMS docs /developer/openai-compat/tools).
-- **Flags:** `parallel_tool_calls` is not documented. The server log says `strict` is "not yet supported and will be ignored" (LMS BT#2257, August 2026).
+  - Qwen3-Coder/3.5 XML-style, GLM, MiniMax M2, Seed-OSS, Nemotron, LFM2 and Gemma 4.
+- **Default (prompt-based) parsing**, for every other model: LM Studio injects a system prompt using `[TOOL_REQUEST]{json}[END_TOOL_REQUEST]`, and rewrites `tool`-role messages as `user`.
+- **Tool-name normalisation**, for all models: names are converted to snake_case before the model sees them (0.3.23, introduced as a gpt-oss reliability fix). Keep tool names in snake_case so the name the model sees matches the registered one.
+- **Malformed calls.**
+  - The docs' wording: "If LM Studio cannot parse any correctly formatted tool calls, it will simply return the response to the standard `response.choices[0].message.content` field" (LMS docs /developer/openai-compat/tools; its list of native models is out of date).
+  - In the BT#2224 case, Chat Completions returned HTTP 200 with `tool_calls: []` and `finish_reason: "stop"`, while `/v1/responses` returned HTTP 500 (R5.7).
+- **Flags.**
+  - `parallel_tool_calls` is not documented.
+  - The warning that `strict` is "not yet supported and will be ignored" was logged for `POST /v1/responses` on 0.4.20 (LMS BT#2257, August 2026). How Chat Completions handles `strict` is unconfirmed.
 
 **R5.3 Prompt/KV caching.**
 - **Reporting [H].** Reuse of a shared prefix is on by default.
-  - `/v1/responses` reports `usage.input_tokens_details.cached_tokens` (blog/openresponses).
-  - `/v1/chat/completions` does **not** return `prompt_tokens_details.cached_tokens` (LMS BT#2390 and BT#2419, both open, September 2026). Cache hits there show up only in debug logs (`lms log stream`).
-- **MLX [H].** mlx-engine 1.8.5 (lmstudio.ai/blog/mlx-engine-agentic-workloads, 2026-06-05) added a disk-backed cache:
-  - It saves the KV cache in 256-token chunks keyed by their content and evicts the least recently used.
-  - It restores the longest cached prefix across requests, including other conversations that share the same system prompt.
+  - `/v1/responses` reports `usage.input_tokens_details.cached_tokens` (lmstudio.ai/blog/openresponses).
+  - `/v1/chat/completions` does **not** return `prompt_tokens_details.cached_tokens` (LMS BT#2390 and BT#2419, both open in September 2026). Cache hits there show up only in debug logs (`lms log stream`).
+- **MLX [H].** mlx-engine 1.8.5 (lmstudio.ai/blog/mlx-engine-agentic-workloads, 2026-06-05) added a disk-backed cache.
+  - It saves the KV cache in 256-token chunks keyed by their content, and evicts the least recently used.
+  - It restores the longest cached prefix across requests, including from other conversations that share the same system prompt.
   - It deletes its temp file when the model unloads.
-  - Text-only models got this in mlx-engine PR #352 (2026-07-24). Models with a quantised KV cache or speculative decoding are excluded.
+  - Text-only models got it in mlx-engine PR #352 (2026-07-24). Models with a quantised KV cache or speculative decoding are excluded.
   - An `enable_disk_cache` load option was added in PR #369 (2026-08-21).
-- **llama.cpp [M].**
-  - 0.4.15 fixed the cache being dropped on every message.
-  - A new engine layer, "LM Studio Engine Protocol", has been on by default since 0.4.19. Users' logs show upstream llama-server behaviour (LMS BT#2086, BT#2257):
-    - each request goes to the slot whose cached prompt shares the longest prefix with it;
-    - there is an 8 GiB prompt cache in host RAM (`--cache-ram`), changeable only through the advanced llama.cpp argument overrides added in 0.4.24.
+- **llama.cpp [M].** A new engine layer, "LM Studio Engine Protocol", has been on by default since 0.4.19. Users' logs show upstream llama-server behaviour (LMS BT#2086, BT#2257):
+  - each request goes to the slot whose cached prompt shares the longest prefix with it;
+  - there is an 8 GiB prompt cache in host RAM (`--cache-ram`), which can be changed only through the advanced llama.cpp argument overrides added in 0.4.24.
+- **0.4.15.** It fixed the prompt cache being dropped on every message *when using Claude Code*, which means the Anthropic-compatible `/v1/messages` path (LMS CL 0.4.15). It isn't tied to the other endpoints.
 - **`previous_response_id` [M].** 0.4.17 (2026-06-26) fixed chained responses re-processing an ever-growing prompt. LMS BT#2074 is still open, labelled fixed-in-next-update.
 
-**R5.4 Concurrency.** **[H]**
+**R5.4 Concurrency.** **[H]** except where marked.
 - **llama.cpp:** continuous batching since 0.4.0 (lmstudio.ai/blog/0.4.0), controlled by two load options:
-  - **Max Concurrent Predictions** (default 4; requests beyond that are queued);
-  - **Unified KV Cache** (default on; all requests share one KV budget instead of fixed slices).
-- **Setting it:** `lms load --parallel N` (0.4.1), or the `parallel` field on `/api/v1/models/load` (0.4.7).
+  - **Max Concurrent Predictions**, default 4; requests beyond that are queued.
+  - **Unified KV Cache**, on by default; all requests share one KV budget instead of fixed slices.
+- **Setting it:** `lms load --parallel N` (0.4.1). A `parallel` field on the REST load endpoint appears only in the 0.4.7 changelog ("Add parallel parameter to /api/v1/load endpoint"); the REST load reference doesn't list it. **[L]** `GET /api/v1/models` does document a per-instance `parallel` value, so the runner can check it.
 - **MLX:** batching for text models since 0.4.2 (2026-02-06), and for vision models since 0.4.13 (2026-05-13). The docs page still says "MLX coming soon", which is out of date.
 
 **R5.5 Headless operation and JIT loading.** **[H]**
-- **llmster, the headless daemon (0.4.0):**
-  - Install with `curl -fsSL https://lmstudio.ai/install.sh | bash` (Linux and Mac), then run `lms daemon up` and `lms server start [--port --bind --cors]`.
-  - The docs give a systemd startup guide for Linux only; there is nothing for macOS launchd.
-- **Desktop-app alternative:** the "run LLM server on login" setting keeps the server running from the tray after the window closes. The last server state is restored on launch, and any `lms` command wakes the service.
+- **llmster, the headless daemon (0.4.0).** Install with `curl -fsSL https://lmstudio.ai/install.sh | bash` (Linux and Mac), then run `lms daemon up` and `lms server start [--port --bind --cors]`. The docs give a systemd startup guide for Linux only; there is nothing for macOS launchd.
+- **Desktop-app alternative.** The "run LLM server on login" setting keeps the server running from the tray after the window closes. The last server state is restored on launch, and any `lms` command wakes the service.
 - **JIT loading** (on by default):
   - A request naming a downloaded model that isn't loaded makes LM Studio load it, and the request waits.
   - OpenAI-compatible endpoints send no load-progress events, and `/v1/models` lists every downloaded model.
   - JIT-loaded models unload after 60 minutes idle by default. A `ttl` field in the request body changes that per request.
-  - Auto-Evict (on by default) keeps at most one JIT-loaded model. Models you loaded manually are not touched.
+  - Auto-Evict (on by default) keeps at most one JIT-loaded model, and leaves manually loaded models alone.
   - Models loaded with `lms load` never expire unless you pass `--ttl`. With JIT off, you must load the model first.
   - Sources: LMS docs /developer/core/headless, /developer/core/ttl-and-auto-evict.
 - **Default context length: 8k since 0.4.16.** Preload with an explicit `--context-length`.
 
 **R5.6 Auth.** **[H]**
-- API tokens arrived in 0.4.0 and are **off by default**. Turn on "Require Authentication" in Server Settings and create tokens (with permissions) in the GUI.
-- Clients send `Authorization: Bearer <token>`; the Anthropic endpoint also accepts `x-api-key`. In the `openai` SDK, set `apiKey` to the token; with auth off, any non-empty string works (LMS docs /developer/core/authentication).
+- API tokens arrived in 0.4.0 and are **off by default**. Turn on "Require Authentication" in Server Settings and create tokens, with permissions, in the GUI.
+- Clients send `Authorization: Bearer <token>`; the Anthropic endpoint also accepts `x-api-key`. In the `openai` SDK, set `apiKey` to the token. With auth off, any non-empty string works (LMS docs /developer/core/authentication).
 - There is no command-line way to enable auth or create tokens (lmstudio-ai/lms#489, open), so it needs one GUI step.
 - The server binds to 127.0.0.1 by default.
 
 **R5.7 Unconfirmed: user reports without staff confirmation.** **[L]**
-- **`tool_choice:"required"`:** can return empty content with `finish_reason:"stop"` (LMS BT#1904), or tool-call text inside `content` (LMS BT#2115, 0.4.18).
-- **`/v1/responses` problems:**
+- **`tool_choice:"required"`** can return empty content with `finish_reason:"stop"` (LMS BT#1904), or tool-call text inside `content` (LMS BT#2115, 0.4.18).
+- **`/v1/responses`:**
   - It can return HTTP 500 "Failed to parse tool call" instead of falling back to text (LMS BT#2224, July 2026).
   - The `instructions` field is reportedly ignored (LMS BT#1154).
-- **`parallel_tool_calls:false`:** not enforced (LMS BT#1756).
+  - Multi-turn tool calls intermittently fail with HTTP 500 "Engine protocol predict request failed: fetch failed" (LMS BT#2257, open, 2026-08-09).
+- **`parallel_tool_calls:false`.** On 0.4.9, Gemma 4 returned nine identical tool calls in one message despite the flag (LMS BT#1756). The reporter closed the issue on 2026-04-09, pointing to 0.4.10 ("Improve Gemma 4 tool call reliability"), with no staff reply. No release note through 0.4.26 mentions the flag, so whether it is enforced now is unknown.
 - **Cache under concurrency:**
   - Concurrent MLX requests may invalidate each other's cache (LMS BT#2320, August 2026).
   - Processing a new prompt pauses MLX generations already running (LMS BT#1709).
   - For llama.cpp, it is *inferred* from upstream llama-server, not from LM Studio docs, that up to N concurrent conversations keep their cache (one slot each, plus the RAM cache).
 - **Load and reload:**
   - When the shared KV cache is full, concurrent requests fail instead of queueing (LMS BT#1628).
-  - JIT and TTL reloads reset Max Concurrent Predictions to 4 (LMS BT#1714, BT#2061).
-- **Docker:** `host.docker.internal` from Docker Desktop on macOS should reach a host service bound only to 127.0.0.1. Test it with curl. If it doesn't work, bind to 0.0.0.0 and turn on auth.
+  - JIT/API-initiated loads and TTL reloads come back with Max Concurrent Predictions set to 4 (LMS BT#1714, BT#2061; no staff reply).
+- **Docker:** *now verified on Docker Desktop, see R10.* The research pass expected `host.docker.internal` to reach a host service bound only to 127.0.0.1, with this fallback: if it doesn't, bind to 0.0.0.0 and turn on auth.
 
 **R5.8 What the LM Studio research pass recommended, taken on its own:**
-- Use `/v1/chat/completions` and keep the history in the runner, because it is the most mature path and prefix caching works there.
+- Use `/v1/chat/completions` and keep the history in the runner: it is the most mature path, and prefix caching works there.
 - Preload with `lms load … --context-length --parallel` rather than relying on JIT defaults.
 - When `content` contains tool-call markers but `tool_calls` is empty, treat it as a failed call and retry.
 
-That recommendation was made without the OpenAI findings. C1 weighs both.
+That recommendation was made without the OpenAI findings; C1 weighs both.
 
 ## R6. TypeORM
 
 **R6.1 Status.** **[H]**
-- **Latest is 1.1.2 (2026-10-08).** 1.0.0 shipped on 2026-05-19, 1.1.0 on 2026-07-13 and 1.1.1 on 2026-09-01. The 0.3.x line is still maintained under the npm `legacy` tag (0.3.31, 2026-07-13).
+- **Versions.** The latest is **1.1.2 (2026-10-08)**. 1.0.0 shipped on 2026-05-19, 1.1.0 on 2026-07-13 and 1.1.1 on 2026-09-01. The 0.3.x line is still maintained under the npm `legacy` tag (0.3.31, 2026-07-13).
 - **Breaking changes in 1.0:**
   - Only `DataSource` remains; `Connection` and the global helpers are gone.
   - `relations` and `select` must use object syntax.
   - Removed: `findByIds`, `findOneById`, `exist()`, `@EntityRepository`, `getCustomRepository`, `TYPEORM_*` env loading, and the lock modes `pessimistic_partial_write` and `pessimistic_write_or_fail`.
-  - **`null`/`undefined` in a find `where` now throws.**
-  - Non-nullable `ManyToOne` relations now load with INNER JOIN.
-  - Requires Node 20+ and targets ES2023. Drivers are narrowed to mysql2 and better-sqlite3 (as reported by the research pass; Postgres via `pg` is unaffected, see R6.2).
+  - **`null`/`undefined` in a high-level `where` now throw** (`invalidWhereValuesBehavior`). The guard covers different APIs from different versions:
+    - **find, count and exists:** `find*`, `findBy`, `exists`, `count` and `qb.setFindOptions()` throw since 1.0.0.
+    - **Writes:** Repository/EntityManager `update`, `delete`, `softDelete`, `restore`, `increment` and `decrement` throw by default only since **1.1.0** (#12690, #12692).
+    - **QueryBuilder:** `.where()`, `.andWhere()` and `.orWhere()` are exempt by design (#11878). There an object-style `null`/`undefined` compiles to `col = NULL`, which is always false, so the query silently matches zero rows.
+    - **Entity instances:** criteria passed as entity instances are not validated.
+  - Non-nullable `ManyToOne` (and owning `OneToOne`) relations now load with INNER JOIN.
+  - **Runtime requirements:** Node `^20.19.0 || ^22.13.0 || >=24.11.0`, which the release notes simplify to "Node.js 20+". Targets ES2023.
+  - **Drivers:** two families each keep only one client package. MySQL/MariaDB accept only `mysql2`; the `mysql` package and `connectorPackage` option are gone (#11766). SQLite accepts only `better-sqlite3`; `sqlite3` and the `flags` and `busyTimeout` options are gone (#11836). MongoDB needs driver v7+, and Expo needs SDK v52+. Every other database stays, and **Postgres still uses `pg`**, an optional peer at `^8.5.1`, unchanged from 0.3.x.
   - A codemod exists: `npx @typeorm/codemod v1 src/`.
-- **ESM:** still CommonJS internally, with a thin `index.mjs` wrapper and no `"type":"module"`. `reflect-metadata` is now a dependency, imported by the entry point.
-- **Decorators:**
-  - Only legacy `experimentalDecorators` plus `emitDecoratorMetadata` work. Standard TC39 decorators are not supported.
-  - Issue #9862 is still open. On 2026-07-08 a maintainer said it needs a package split, and that "driver and platform support" comes first.
-  - The alternative is EntitySchema.
-- **Maintenance health:**
-  - Vendure's parent company Elevantiq took over ("The Future of TypeORM", 2024-10-01).
-  - Releases resumed with 0.3.21 on 2025-03-03.
-  - In 2025: 8 releases, 575 PRs merged (versus 63 the year before), over 2,300 issues closed.
-- **Sources:** typeorm.io/blog/typeorm-1-0, typeorm.io/docs/releases/1.0/release-notes/, github.com/typeorm/typeorm/releases, github.com/typeorm/typeorm/issues/9862, typeorm.io/blog/future-of-typeorm.
+- **ESM.** Still CommonJS internally, with a thin `index.mjs` wrapper and no `"type":"module"`. `reflect-metadata` is now a dependency, imported by the entry point.
+- **Decorators.**
+  - TypeORM needs legacy `experimentalDecorators`. Standard TC39 decorators are not supported; issue #9862 is open, and on 2026-07-08 a maintainer said it needs a package split, after "driver and platform support". The alternative is EntitySchema.
+  - **`emitDecoratorMetadata` is documented as required but is functionally optional.** TypeORM 1.1.2 reads `design:type` in nine decorator files, for three things:
+    - guessing a column type when none is given (`@Column`, `@PrimaryColumn`, `@VirtualColumn`);
+    - auto-detecting Promise-typed lazy relations, including `@TreeParent` and `@TreeChildren`, which have no `lazy` option;
+    - detecting hstore columns and embedded arrays.
+  - With an explicit `type` on every column, `lazy: true` where needed, and `hstoreType`/`array: true` set explicitly, entities work with metadata off. An untyped `@Column()` then throws `ColumnTypeUndefinedError` at import, which fails fast.
+- **Maintenance health.**
+  - Vendure's parent company Elevantiq took over ("The Future of TypeORM", 2024-10-01). Releases resumed with 0.3.21 on 2025-03-03, and 2025 had 8 releases (0.3.21–0.3.28).
+  - The team's 1.0 blog post claims "575 PRs (vs 63 the previous year) and closed over 2,300 issues". GitHub data shows about 292 PRs merged in 2025 against 64 in 2024 (still about 4.5×), and 2,252 issues closed in 2025.
+- **Sources:** typeorm.io/blog/typeorm-1-0, typeorm.io/docs/releases/1.0/release-notes/, typeorm.io/docs/data-source/null-and-undefined-handling, github.com/typeorm/typeorm releases (1.1.0, 1.1.2), PR #11878, issue #9862, npm registry metadata, typeorm.io/blog/future-of-typeorm.
 
-**R6.2 TypeORM on Bun** (latest Bun is 1.4.3, 2026-10-10).
-- **No official support [H].** TypeORM's CI tests Node 20 and 24 only. Its docs mention Bun once, about binary data being `Uint8Array`.
-- **Decorators [H]:**
-  - `emitDecoratorMetadata` has worked since Bun 1.0.3 (2023-09-22).
-  - Bun issue #4136 re-tested a TypeORM repro and was closed as working (2026-07-29).
-  - **Since Bun 1.3.10 (2026-02-26), if Bun doesn't see `experimentalDecorators` it compiles standard decorators instead, which breaks TypeORM.**
-- **Gotchas, verified on 1.4.3 [H]:**
-  1. **tsconfig `extends`.** Extending a package (for example `"extends": "@tsconfig/bun"`) silently drops both decorator flags. This is open Bun issue #6326; its fix PR was closed unmerged. Put both flags directly in the app's own `tsconfig.json`.
-  2. **"Cannot access before initialization".** For `author: User`, Bun emits `typeof User === "undefined" ? Object : User`, which throws `ReferenceError: Cannot access uninitialized variable` with circular imports (Bun #7591, open). The fix is to type relation properties as `Relation<User>`, as TypeORM's ESM FAQ describes.
-  3. **Import `Relation` as a type.** Use `import type { Relation }` or `import { type Relation }`. A plain value import is kept by Bun and fails with `SyntaxError: Export named 'Relation' not found` (Bun #20994). The same applies to any interface used as a decorated property's type (Bun #6172; fix PR #35471 is still open).
+**R6.2 TypeORM on Bun** (latest Bun is 1.4.3, released 2026-10-10).
+- **No official support [H].** TypeORM's CI runs Linux tests on Node 20 and 24 and Windows tests on Node 22, with no Bun or Deno job. Its docs mention Bun once, about binary data being `Uint8Array`.
+- **Decorators [H].**
+  - `emitDecoratorMetadata` has worked since Bun 1.0.3 (2023-09-22). Bun issue #4136 re-tested a TypeORM repro and was closed as working (2026-07-29).
+  - Bun 1.3.10 (2026-02-26) compiled TC39 decorators whenever it didn't see `experimentalDecorators`.
+  - Since 1.3.11, and stated in the 1.4.0 notes, `emitDecoratorMetadata: true` on its own also selects legacy decorators. On 1.4.x Bun compiles TC39 decorators, which TypeORM can't use, only when it sees **neither** flag.
+- **Gotchas.** 1–4 were verified on Bun 1.4.3 **[H]**:
+  1. **Which tsconfig applies.**
+     - **Bun's runtime transpiles every file with the settings of the `tsconfig.json` in the working directory**, not the one nearest the file, and it does not walk up from there. This applies to `bun <file>`, `bun run`, `bun test` and `bunx --bun`. The CLI help says "Default $cwd/tsconfig.json"; PR #38719, which would change this, is open.
+     - With the flags only in the root tsconfig, starting from `packages/app` compiles TC39 decorators, and TypeORM 1.1.2 then fails with `TypeError: undefined is not an object (evaluating 'object.constructor')`. Starting with `bun run --filter app …` or `bunx --bun typeorm … -d src/data-source.ts` from there does the same.
+     - A *relative* `extends` (`./base.json`, `../../tsconfig.json`) passes the flags on.
+     - A *package-specifier* `extends` (such as `"@tsconfig/bun"`) is not resolved at all, so any setting that lives only in the package base is lost (issue #6326). Fix PRs #27248 and #34496 were closed unmerged; #40823 is open. `@tsconfig/bun` sets no decorator flags itself, so `extends: "@tsconfig/bun"` plus inline flags works.
+     - `--tsconfig-override=<path>` works only when Bun runs the file itself (`bun --tsconfig-override=… <file>`, `bun test`). `bunx`, `bun x`, `bun run <bin>` and package scripts ignore it.
+  2. **"Cannot access before initialization."** With metadata on, for `author: User` Bun emits `typeof User === "undefined" ? Object : User`. With circular imports this throws `ReferenceError: Cannot access 'User' before initialization.` on 1.4.3 (Bun #7591, open; the issue title has the 2023 wording). The fix is to type relation properties as `Relation<User>`, as TypeORM's ESM FAQ describes.
+  3. **Import `Relation` as a type.** Use `import type { Relation }` or `import { type Relation }`. A plain value import is kept by Bun and fails with `SyntaxError: Export named 'Relation' not found` (Bun #20994). The same applies to any interface used as a decorated property's type (Bun #6172; fix PR #35471 is open).
   4. **Nullable columns.** Bun's metadata ignores `strictNullChecks` (Bun #44120), so always give columns an explicit `type`.
+  - **With `emitDecoratorMetadata` off,** Bun emits no `design:type` code, so gotchas 2 and 4 cannot arise (R6.1).
 - **CLI and migrations [M].**
-  - `cli.js` starts with a `node` shebang, so plain `bunx typeorm` runs under Node.
-  - Use `bunx --bun typeorm migration:run -d src/data-source.ts`, or `bun ./node_modules/typeorm/cli.js …`. The CLI loads `.ts` files with `import()` or `require()`, which Bun handles natively.
-  - TypeORM's docs only describe ts-node. The Bun route comes from a community comment on #9738 (2025-07-02).
-- **`pg` driver [M].** Pure-JS `pg` 8.23.1 is commonly used on Bun, and the old Bun crash issues are closed. `pg-native` does not work on Bun.
-- **Bundling [M].** Building with `--minify` breaks the app (open issue #14888), likely because table and migration names come from class names. Give entities and migrations explicit names, or don't minify identifiers.
-- **Sources:** bun.com/blog/bun-v1.0.3, bun.com/blog/bun-v1.3.10, github.com/oven-sh/bun/issues/6326, /7591, /20994, typeorm.io/docs/help/faq/#how-to-use-typeorm-in-esm-projects, github.com/typeorm/typeorm/issues/9738.
+  - `cli.js` starts with a `node` shebang, so plain `bunx typeorm` runs under Node: Bun's docs say a `#!/usr/bin/env node` executable is run with `node`. `--bun` forces Bun, which was checked locally with a node-shebang bin.
+  - Use `bunx --bun typeorm migration:run -d src/data-source.ts` or `bun ./node_modules/typeorm/cli.js …`. In 1.1.2, `migration:generate` needs a positional path: `bunx --bun typeorm migration:generate src/migrations/Name -d src/data-source.ts`.
+  - Run it from a directory whose tsconfig carries the flags (gotcha 1).
+  - The CLI loads `.ts` files through `import()`/`require()`, which Bun handles natively. TypeORM's docs describe only ts-node. The 2025-07-02 comment on TypeORM #9738 says only that running `cli.js` directly works, and doesn't mention Bun.
+- **`pg` driver [M].**
+  - Pure-JS `pg` 8.23.1 is commonly used on Bun, and the old Bun crash issues are closed.
+  - `pg-native` historically failed to load on Bun (undefined symbol `node::EmitAsyncInit`; node-postgres #3201, Bun #28131). Bun closed #28131 as fixed for 1.4.0 (PR #36747), but it is untested on 1.4.x, and libpq is still a NAN addon while Bun's NAN support is incomplete (#4290, open). Use pure-JS `pg`.
+- **Bundling [M].** Bun #14888 (open, filed against Bun 1.1.33) concerns `bun build --compile --minify`: every entity table was created as `"_"` from minified class names. On 1.4.3, `--keep-names` did not preserve class names; omitting `--minify-identifiers` did. Don't minify identifiers, and name entities and migrations explicitly.
+- **Sources:**
+  - bun.com/blog/bun-v1.0.3, /bun-v1.3.10, /bun-v1.3.11, /bun-v1.4.0; bun.com/docs/pm/bunx.
+  - github.com/oven-sh/bun issues 4136, 6172, 6326, 7591, 14888, 20994, 28131, 28605, 44120; PRs 27248, 34496, 35471, 36747, 38719, 40823.
+  - typeorm.io/docs/help/faq/#how-to-use-typeorm-in-esm-projects, github.com/typeorm/typeorm/issues/9738, typeorm `.github/workflows/tests.yml`.
 
 **R6.3 Postgres features for a job scheduler.** **[H]**
 - **SKIP LOCKED.**
-  - `.setLock("pessimistic_write").setOnLocked("skip_locked")` produces `FOR UPDATE SKIP LOCKED`.
-  - `setLock(mode, undefined, ["alias"])` produces `FOR UPDATE OF …`; use it when the query has outer joins.
-  - Find options also accept `lock: { mode, onLocked }`.
+  - `.setLock("pessimistic_write").setOnLocked("skip_locked")` produces `FOR UPDATE SKIP LOCKED`. Find options also accept `lock: { mode, onLocked, tables }`.
   - `getMany`/`getOne` throw `PessimisticLockTransactionRequiredError` outside a transaction.
+- **Locking queries that join.**
+  - Name the locked table (`FOR UPDATE OF <alias>`, which is `setLock(mode, undefined, ["alias"])` or `lock.tables`) **whenever the locking query joins another table**, not only on outer joins.
+  - Without a table list, Postgres locks the matching rows of every joined table, and SKIP LOCKED also skips rows whose joined rows are locked. Outer joins are simply the case where Postgres errors instead of over-locking.
+  - Since 1.x uses INNER JOIN for non-nullable `ManyToOne`, a `find({ relations, lock })` no longer errors. It silently locks the related row instead.
+  - The QueryBuilder path inserts lock-table aliases unescaped, so use lowercase aliases. The find-options path escapes them.
 - **Partial unique indexes.**
   - `@Index([...], { unique: true, where: '"status" = \'queued\'' })` takes a raw SQL string; quote camelCase column names.
-  - Schema diffing never compares the predicate itself. Auto-generated index names hash the `where`, so a change shows up as drop and create. With an explicit index name, edits to the predicate are **not** detected.
+  - Schema diffing never compares the predicate itself. With an **auto-generated** index name, which hashes the `where`, a predicate change shows up as drop and create. With an **explicit** name, edits to the predicate are not detected.
   - For upserts against a partial index, use `orUpdate(cols, conflictCols, { indexPredicate })`.
   - The 1.0 release notes call PR #11318 "partial index support", but it actually adds `@Index({ type: "gin" | "brin" | "hash" | … })`.
 - **`jsonb`:** long supported.
 - **pgvector:** native `vector` and `halfvec` column types since 0.3.27 (2025-09-19, PR #11437).
-  - Declare as `@Column("vector", { length: 1536 }) embedding: number[]`; values come back as `number[]`.
-  - TypeORM runs `CREATE EXTENSION IF NOT EXISTS "vector"` when the DataSource starts, and only warns if it lacks rights.
-  - There is no HNSW or IVFFlat index type. Create those in a migration and mark them `@Index("name", { synchronize: false })`.
-  - Write similarity queries in raw SQL with the operators `<->`, `<=>` and `<#>`.
-- **Sources:** github.com/typeorm/typeorm docs (query-builder/1-select-query-builder.md, entity/1-entities.md), PR #11437, issue #10118.
+  - Declare one as `@Column("vector", { length: 1536 }) embedding: number[]`; values come back as `number[]`.
+  - TypeORM runs `CREATE EXTENSION IF NOT EXISTS "vector"` when the DataSource starts, and only warns if it lacks the rights.
+  - There is no HNSW or IVFFlat index type: create those in a migration and mark them `@Index("name", { synchronize: false })`.
+  - Write similarity queries in raw SQL with `<->`, `<=>` and `<#>`.
+- **Sources:**
+  - github.com/typeorm/typeorm docs (query-builder/1-select-query-builder.md, entity/1-entities.md), `SelectQueryBuilder.createLockExpression`, PR #11437, issue #10118.
+  - postgresql.org/docs/current/sql-select.html (the locking clause).
 
 **R6.4 Unconfirmed.** **[L]**
-- TypeORM has made no official statement about Bun, and its CI doesn't test the CLI under Bun.
+- TypeORM has made no official statement about Bun.
 - Whether `pg` is stable on Bun under heavy load: there is no TypeORM or node-postgres test coverage on Bun.
-- Whether TypeScript 7 (7.0.2, 2026-07-08) type-checks `emitDecoratorMetadata` code the same way 6.x did. This affects type-checking only, since Bun does its own transpiling.
+- Whether TypeScript 7 (7.0.2, 2026-07-08) type-checks `emitDecoratorMetadata` code the same way 6.x does. This affects type-checking only, since Bun does its own transpiling.
 
 ## R7. Agent Skills (SKILL.md)
 
 - **Origin [H].** Anthropic released it as an open standard on 2025-12-18. The spec lives in the `agentskills/agentskills` repo, was last edited on 2026-08-04, and has no version number.
 - **Frontmatter [H].**
-  - `name` is required: 1–64 characters of `a-z`, `0-9` and `-`, with no leading, trailing or double hyphens. It must match the directory name.
-  - `description` is required: 1–1024 characters.
-  - Optional fields: `license`, `compatibility` (up to 500 characters), `metadata` (a string-to-string map), and `allowed-tools` (space-separated, marked experimental).
+  - **`name` (required):**
+    - 1–64 characters, no leading, trailing or double hyphens, and must match the directory name.
+    - The spec says "unicode lowercase alphanumeric characters (a-z, 0-9) and hyphens". The reference validator (skills-ref) applies NFKC normalisation and accepts any Unicode lowercase letter or digit; its tests accept `技能` and `мой-навык`.
+    - An ASCII-only check is therefore stricter than upstream. That's fine for your own skills, but it could reject third-party ones.
+  - **`description` (required):** 1–1024 characters.
+  - **Optional fields:** `license`; `compatibility` (up to 500 characters); `metadata`; `allowed-tools` (space-separated, marked experimental).
+  - **`metadata`** is a string-to-string map, and the reference parser coerces each value with `str()`. Anything structured stored there must be a JSON-encoded string.
 - **Directory layout [H].** `SKILL.md`, plus optional `scripts/`, `references/` and `assets/`. References should be relative and one level deep.
 - **Progressive disclosure [H].**
   - Only name and description (about 50–100 tokens) load at startup. The body loads on activation, and resources load on demand.
   - The client guide recommends scanning `<project>/.agents/skills` and `~/.agents/skills`, often also `.claude/skills`, with project-level skills overriding user-level ones.
   - Activation is either by reading the file, or through an `activate_skill` tool whose name parameter is an enum of skill names.
 - **Adopters [H].** Claude and Claude Code, OpenAI Codex and ChatGPT, GitHub Copilot, VS Code, Cursor, Gemini CLI, JetBrains Junie, Amp, OpenCode, OpenHands, Goose, Roo Code, Kiro, Factory, Mistral Vibe, Databricks, Snowflake, Spring AI, and others.
-- **Typed tools: the spec has none [H].** Skills are instructions plus scripts, and a script's interface is documented through `--help`, with JSON on stdout.
+- **Typed tools: the spec has none [H].** Skills are instructions plus scripts. A script's interface is documented through `--help`, with JSON on stdout.
   - Claude Code adds its own fields (`arguments`, `context: fork`, `hooks` and others), but claude.ai and the Skills API reject unknown keys.
-  - Codex keeps its extras in a separate `agents/openai.yaml` file (UI, invocation policy, MCP tool dependencies).
-  - For portability, put typed schemas in a file alongside SKILL.md, as Codex does, or in `metadata`.
-- **Sources:** agentskills.io/specification, agentskills.io/client-implementation/adding-skills-support, agentskills.io/skill-creation/using-scripts, code.claude.com/docs/en/skills, learn.chatgpt.com/docs/build-skills.
+  - Codex keeps client-specific extras in a separate `agents/openai.yaml`: UI fields, `policy.allow_implicit_invocation`, and `dependencies.tools` (required MCP servers). **It holds no typed tool schemas.** It is a precedent for a client-specific sidecar file, not for typed skill tools; a typed-schema sidecar would be a Gremlin convention.
+- **Sources:** agentskills.io/specification, /client-implementation/adding-skills-support, /skill-creation/using-scripts; github.com/agentskills/agentskills (skills-ref parser and validator); code.claude.com/docs/en/skills; learn.chatgpt.com/docs/build-skills.
 
 ## R8. Bun: scheduling and process control
 
 - **`Bun.cron` [H].**
   - **OS-level** (Bun 1.3.11, 2026-03-18): `await Bun.cron(path, expr, title)` registers with crontab, launchd or Task Scheduler, and the script exports `default.scheduled()`. `Bun.cron.parse` and `Bun.cron.remove` came in the same release.
-  - **In-process** (Bun 1.3.12, 2026-04-09): `Bun.cron(expr, handler, { tz })` returns a `CronJob` with `stop`, `ref` and `unref`.
-  - **Bun 1.4.0** changed the default timezone for in-process jobs and for `parse` from UTC to local time.
-  - Only 5-field expressions are accepted; a seconds field is rejected (verified).
-  - Runs never overlap: the next fire is scheduled after the handler settles.
-  - An error thrown in the handler becomes an `uncaughtException`, and the process exits if nothing listens for it.
-  - It schedules within one process only; it doesn't coordinate across instances.
-- **croner 10.0.1 (2026-02-01) [H].** States it works on "Bun >=1.0.0" and runs a Bun CI job. Supports seconds and year fields, `timezone`, `protect` (prevents overlapping runs), `nextRuns` and `catch`.
+  - **In-process** (Bun 1.3.12, 2026-04-09): `Bun.cron(expr, handler)` returns a `CronJob` with `stop`, `ref` and `unref`. It was UTC-only, with no options argument.
+  - **Bun 1.4.0** (2026-08-20; PR #35122, merged 2026-07-22) changed the default for in-process jobs and `parse` from UTC to the system's local zone. It added a `{ tz }` option taking an IANA zone to both: `Bun.cron(expr, handler, { tz })` and `Bun.cron.parse(expr, from, { tz })`. An unknown zone throws `TypeError`.
+  - **Syntax:** only 5-field expressions are accepted, with `* , - /`, names and `@` nicknames. A seconds field is rejected (verified).
+  - **Overlap:** runs never overlap; the next fire is scheduled after the handler settles.
+  - **Errors:** a synchronous throw in the handler emits `uncaughtException`, and a rejected promise emits `unhandledRejection`. Without a listener, either one exits the process with code 1; with a listener, the job keeps running.
+  - **Scope:** it schedules within one process only and doesn't coordinate across instances.
+- **croner 10.0.1 (2026-02-01) [H].**
+  - It states it works on "Bun >=1.0.0" and runs a Bun CI job. It supports seconds and year fields, `L`/`W`/`#`, `timezone`, `protect` (prevents overlapping runs), `nextRuns` and `catch`, and it also runs on Node.
+  - Without a `timezone`, it uses the process time zone, which is UTC in a container. DST behaviour: R10.
 - **`Bun.spawn` [H].** Options include `timeout`, `killSignal` (default SIGTERM), `signal`, `maxBuffer` and `detached` (which calls `setsid`). Tested on Bun 1.4.3 on macOS:
-  - `timeout` kills only the direct child. Grandchildren started by `sh -c` survive.
-  - `detached: true` followed by `process.kill(-proc.pid, "SIGKILL")` kills the whole process group.
-  - `maxBuffer` works with the async API, but it kills the child rather than truncating, and the captured output overshot the limit by up to about 64 KB. For a hard cap, read the stream yourself and truncate.
-  - `stderr` defaults to `"inherit"`; pass `"pipe"` to capture it.
-- **Unconfirmed [L].** Whether `maxBuffer` counts stdout and stderr separately or together.
-- **Sources:** bun.com/docs/runtime/cron, bun.com/blog/bun-v1.3.12, github.com/oven-sh/bun/pull/36461, github.com/Hexagon/croner, bun.com/docs/runtime/child-process, bun-types 1.4.3 `bun.d.ts`.
+  - **`timeout`** kills only the direct child; grandchildren started by `sh -c` survive.
+  - **`detached: true`** followed by `process.kill(-proc.pid, "SIGKILL")` kills the whole process group.
+  - **`maxBuffer`** works with the async API, but it kills the child rather than truncating, and captured output overshot the limit by up to about 64 KB. It applies **to each stream separately**: 90 KB on stdout plus 90 KB on stderr with a 100 KB limit ran to completion. For a hard cap, read the streams yourself and truncate.
+  - **`stderr`** defaults to `"inherit"`; pass `"pipe"` to capture it.
+  - **Pipes held open:** a backgrounded grandchild keeps the stdout pipe open (R10).
+- **Sources:** bun.com/docs/runtime/cron, bun.com/blog/bun-v1.3.12, bun.com/blog/bun-v1.4.0, github.com/oven-sh/bun/pull/35122 (and PR #36461, an open docs PR), github.com/Hexagon/croner, bun.com/docs/runtime/child-process, bun-types 1.4.3 `bun.d.ts`.
 
 ## R9. Background facts used in the analysis
 
-These come from general knowledge and were **[K]** not re-checked in this research pass.
+These come from general knowledge **[K]**, apart from the TypeORM bullet, which the fact-check confirmed.
 
-- **No Mac GPU in containers.** Docker Desktop on macOS gives containers no access to the Mac's Metal GPU. LM Studio therefore runs on the host, and containers reach it at `host.docker.internal`.
+- **No Mac GPU in containers.** Docker Desktop on macOS gives containers no access to the Mac's Metal GPU, so LM Studio runs on the host.
 - **`jsonb` is never updated in place.** A Postgres UPDATE writes a new row version holding the whole value, re-TOASTed if it's large. Appending to an ever-growing `jsonb` array rewrites the whole history on every turn: O(n²) bytes written over a run.
-- **TypeORM 0.3.x dropped `undefined` filters.** It silently removed `undefined` properties from a find `where`, so `findOneBy({ id: undefined })` matched an arbitrary row. 1.0's throw (R6.1) closes that hole.
+- **TypeORM 0.3.x dropped `null` and `undefined` filters [H].** It silently removed both from a find `where`, so `findOneBy({ id: undefined })` returned an arbitrary row (#9316, "findOneBy( { id: null or undefined } ) method return the first record"). 1.x's throw (R6.1) closes this for the high-level APIs.
+  - A related hole is **still open on 1.1.2**: a bare primitive under a relation key, such as `findOneBy({ run: runId })`, drops the criterion and returns an arbitrary row (#12712; fix PRs #12730, #12771 and #12860 are unmerged).
+  - It sits outside the typed `FindOptionsWhere` API, so only a `tsc` type-check catches it; Bun doesn't type-check.
 - **Classic cron is awkward inside containers.** Jobs don't inherit the container's environment, output doesn't reach `docker logs` without redirection, and it needs PID-1 and supervisor handling.
-- **No systemd on macOS.** systemd timers don't exist there; the equivalent is launchd.
+- **No systemd on macOS.** The equivalent is launchd.
+
+## R10. Behaviour reproduced during the fact-check
+
+All **[H]**, reproduced locally on 2026-10-11.
+
+- **Postgres 16:**
+  - A unique violation (23505) inside a transaction puts the whole transaction into the aborted state. Every later statement fails with 25P02 until rollback.
+  - `INSERT … ON CONFLICT DO NOTHING RETURNING id` works against a partial unique index, both without a conflict target and with `ON CONFLICT (task_id) WHERE status IN (…)`. A row whose status is outside the predicate never conflicts, even in the same transaction.
+  - **Deadlock.** A tick that locks a task row and then inserts a run, running concurrently with a finalisation that updates a run row and then the task row, deadlocks. This was reproduced in both directions.
+  - **NUL bytes.** `jsonb` rejects `\u0000` ("unsupported Unicode escape sequence … \u0000 cannot be converted to text"), and `text` columns can't hold NUL at all.
+  - **Grants.** A table owner can REVOKE UPDATE/DELETE from itself and then GRANT them straight back, and a superuser ignores grants entirely. An INSERT-only guarantee therefore needs a runtime role that is neither owner nor superuser.
+- **Docker Desktop on macOS (Docker 29.8.2):**
+  - A container on a normal user-defined network reaches a host server bound only to 127.0.0.1 via `host.docker.internal`. So does a container on internal plus normal networks, which is the workspace's setup in 4.9.
+  - A container on an internal-only network can't even resolve the name.
+- **Docker docs (not re-tested):**
+  - On Linux Docker Engine, `host-gateway` resolves to the default bridge's IP (docker0, usually 172.17.0.1), so a host service bound only to 127.0.0.1 is unreachable from containers.
+  - Networks with `internal: true` drop traffic to and from other networks, but can still reach the network's gateway IP, and so any host service listening on it or on 0.0.0.0.
+- **Bun 1.4.3:**
+  - `Bun.spawn(["sh","-c","echo started; sleep 4 &"])`: the direct child exited in 4 ms, but stdout reached EOF only at 4,012 ms, because the backgrounded grandchild held the pipe.
+- **croner 10.0.1 on Bun 1.4.3** (Europe/London, Europe/Budapest):
+  - **Fall-back overlap:** fixed-time jobs run once, so computing from `now` doesn't double-fire.
+  - **Fall-back, interval jobs:** these skip the whole repeated hour. Hourly goes from 00:00Z to 02:00Z on 2026-10-25, and `*/15` pauses for 75 minutes.
+  - **Spring-forward gap:** a job in the gap runs an hour late (02:30 became 03:30 local on 2026-03-29), although croner's README says gap jobs are skipped.
 
 ---
 
-# Part 3: Challenges to the brief
+# Part 3: Where the brief stands, and challenges
+
+## 3.0 Status of the original brief
+
+**Settled decisions.** No decision has been changed.
+
+| Area | Status after research |
+|---|---|
+| Language/runtime | Holds. Bun 1.4.3 is current (2026-10-10). Watch out: Bun reads the `tsconfig.json` of the directory it's started from (R6.2, C7). It has built-in cron (R8), which bears on D6. |
+| Database | Holds. Everything the scheduler needs is reachable from TypeORM: `FOR UPDATE SKIP LOCKED`, partial unique indexes, `ON CONFLICT DO NOTHING`, `jsonb` and native `vector` columns (R6.3, R10). |
+| ORM | Holds, with conditions. TypeORM 1.1.2 is healthy, but its CI doesn't run on Bun. Four transpiler gotchas are verified on Bun 1.4.3, and the migration and minify items are [M] (R6.2). See C7 and S1. |
+| LLM client | Holds: the `openai` SDK covers the Responses API natively. Two qualifications. LM Studio should always run with token auth (C3, 4.9), so "a dummy key locally" becomes a real token. SIWC's namespace rule for function tools may need its own code path (C2, S4). The separate Known-risks premise, "stick to mainstream chat-completions", has shifted (C1); D1 is open. |
+| Models | Holds. New: a ChatGPT subscription can now pay for your own calls through SIWC plan usage. That covers Plus and Pro; for other plans the sources conflict (R1.2, C2). |
+| Deployment and isolation | Holds. On macOS, LM Studio has to run on the host, outside compose (R9). Where the boundary sits: C3. |
+| Repo | Holds. Proposal: one `core` package with subpath exports (D10). |
+
+**Known risks.**
+
+| Risk | What the research found | Where it goes |
+|---|---|---|
+| TypeORM runtime type gap | **Closed:** 1.x throws on `null`/`undefined` in high-level `where` criteria, for find/count/exists since 1.0.0 and for writes since 1.1.0 (R6.1). **Remains open:** QueryBuilder `.where()` silently matches zero rows on `null`; a bare id under a relation key returns an arbitrary row (#12712, R9); entity-instance criteria are unvalidated; `jsonb` payloads are unchecked; partial-index predicates under explicit names aren't diffed (R6.3). | C7: pin `typeorm >= 1.1.0`, find-options locks, `{ run: { id } }` filters, `tsc` in CI, integration tests |
+| TypeORM on Bun | Works with legacy decorators, but isn't in TypeORM's CI. Four transpiler gotchas verified on 1.4.3, including the cwd-tsconfig rule. Migrations and minify are [M] (R6.2). | C7, S1, D13, D15 |
+| OpenAI compatibility | The premise has shifted. OpenAI's Chat Completions can't call tools on GPT-5.4+ unless reasoning effort is `none` (R2.2). LM Studio serves `/v1/responses` (R5.1), though the LM Studio pass alone would still pick Chat Completions (R5.8). | C1, D1, S2, S3 |
+| OpenAI subscription | No ChatGPT plan includes API credits (R1.1). SIWC plan usage (2026-09-29) is official for Plus and Pro; the sources conflict for other plans. It is Responses-only, with constraints, and the docs don't address unattended personal use (R1.2). | C2, D2, S4, Q4, Q9 |
+| Scope creep | No research needed. | C10 |
+
+## Challenges
 
 These are **proposals, not decisions**. Each links to a decision in Part 5. "Brief says" quotes or paraphrases Part 1.
 
@@ -488,91 +607,116 @@ These are **proposals, not decisions**. Each links to a decision in Part 5. "Bri
 - **Brief says:** "stick to mainstream chat-completions plus tool-calling" (Known risks).
 - **Proposal:** make the Responses API the only wire format for every backend. Use it statelessly (`store:false`, replaying the full input including reasoning items) and always streamed.
 - **Why:**
-  - On OpenAI, Chat Completions can't call tools on GPT-5.4+ unless reasoning effort is `none`, and on some newer models it can't call tools at all (R2.2). It also drops reasoning between calls, which is exactly what a tool loop needs to keep (R2.3).
+  - On OpenAI, Chat Completions can't call tools on GPT-5.4+ unless reasoning effort is `none`, and it can't call tools at all on GPT-6 Astra or GPT-6.1 Sol (R2.2).
+  - It also drops reasoning between calls (R2.3), which is exactly what a tool loop needs to keep.
   - SIWC is Responses-only (R1.2).
   - LM Studio serves `/v1/responses` with function tools and client-held history (R5.1), and only that endpoint reports `cached_tokens` (R5.3).
-  - Taken together, one Responses code path covers every backend, and Chat Completions doesn't.
+  - So one Responses code path *could* cover every backend, and Chat Completions can't. LM Studio's side is pending S2.
 - **Consequences:**
-  - History becomes a list of Responses *items*: `message`, `function_call`, `function_call_output`, and `reasoning` with `encrypted_content`. They are stored verbatim.
-  - `call_id` is the brief's "tagged with its tool-call ID".
-  - Always stream. SIWC requires it, it keeps long local generations from hitting HTTP timeouts, and token flow doubles as a liveness heartbeat.
-  - Reasoning items are tied to the model that produced them, so a run never switches model mid-history. Switching happens only between runs.
-  - Put the preamble in a `developer`-role first item rather than in `instructions` or a `system` item. SIWC rejects `system` items, and LM Studio reportedly ignores `instructions` (R5.7). Confirm this in S2.
+  - **History** becomes a list of Responses *items* stored verbatim: `message`, `function_call`, `function_call_output`, and `reasoning` with `encrypted_content`. `call_id` is the brief's "tagged with its tool-call ID".
+  - **Always stream.** SIWC requires it, it keeps long local generations from hitting HTTP timeouts, and token flow helps as a liveness signal; C8 covers the silent stretches.
+  - **Reasoning items** are stored from `response.output_item.done`, because the `.added` event's `encrypted_content` may be incomplete (R2.4).
+  - **Pin one model per run.** Reasoning is reusable only within one model family, and across families the API silently drops it (R2.4). Switching models happens only between runs.
+  - **Preamble placement.** Put the preamble in a `developer`-role first item, not in `instructions` or a `system` item. SIWC rejects `system` items, LM Studio reportedly ignores `instructions` (R5.7), and the initial developer block is an eligible cache breakpoint (R3.1).
 - **Consistent with the brief:** it is still the official `openai` SDK and still no provider abstraction, because the SDK covers Responses natively.
-- **Risk:** LM Studio's Responses endpoint is less battle-tested. It reportedly returns HTTP 500 on unparseable tool calls instead of text (R5.7). Spike S2 covers it.
+- **Risks:** LM Studio's Responses endpoint is less battle-tested. Reported problems: HTTP 500 on unparseable tool calls, and intermittent HTTP 500s on multi-turn tool calls (R5.7). S2 covers both.
 - **Decision:** D1.
 
 ### C2. OpenAI auth: API key first, SIWC behind a spike
 - **Brief says:** "OpenAI subscription for API calls: confirm the auth mechanism and its limits before relying on it." Also: "Claude is out: a Claude subscription can't be used for API calls."
 - **Finding:**
   - No ChatGPT plan includes API credits (R1.1).
-  - Since 2026-09-29, SIWC officially lets Plus and Pro usage pay for calls from your own code (R1.2). That makes the Claude/OpenAI asymmetry in the Models row real.
-- **Proposal:** model profiles get `auth: api_key | chatgpt`. Build the API-key path first. Treat SIWC as spike S4 and milestone M4.
-- **Why it isn't the default yet:**
-  - **Eligibility is unclear.** The docs target "open-source and locally hosted apps". This repo is public and runs locally, which plausibly fits. Whether unattended scheduled runs are allowed isn't addressed (R1.2, Q9).
-  - **On Plus, usage is shared.** Runs compete with your own ChatGPT and Codex use in the 5-hour window. HTTP 429 `subscription_sharing_usage_limit_exceeded` must therefore be a first-class outcome: the run is **`deferred`**, not `failed` (Q4).
-  - **Refresh tokens rotate on every refresh.** Two concurrent runs refreshing at once would log each other out, so refreshes are serialised with a row lock on the credential row (4.4).
-  - **Client boxes will use API keys anyway.** They count as remotely hosted or paid deployments, which go through an interest form (R1.2).
-  - **The login flow needs work in Docker.** OAuth uses a loopback callback on `127.0.0.1:<port>`, so the first login needs a `gremlin login` step run on the host or through a forwarded port. The refresh token then lives in the DB.
-  - **Request shape differs.** SIWC needs `stream:true`, omits `temperature`, `max_output_tokens` and `prompt_cache_retention`, and wants function tools in namespaces or `additional_tools` (R1.2). The request builder takes these constraints from the model profile, so they stay config rather than a code path, except possibly the namespace rule, which S4 must check.
+  - Since 2026-09-29, SIWC plan usage officially lets a ChatGPT plan pay for calls from your own code (R1.2). That makes the Claude/OpenAI asymmetry in the Models row real.
+- **Proposal:** model profiles get `auth: api_key | chatgpt`. Build the API-key path first; SIWC is spike S4 and milestone M5.
+- **Why SIWC isn't the default yet:**
+  - **Eligibility is unclear.** The sources conflict on plans (R1.2). The docs neither cover nor exclude an unattended personal runner (Q9).
+  - **Usage is shared.** Runs draw on the same "ChatGPT Work and Codex" pool as your own Codex work. On Plus that includes a shared 5-hour window, and on both Plus and Pro a weekly allowance (Q4).
+  - **Hitting a limit must be a first-class outcome.** Before the stream opens it's HTTP 429; mid-stream it's a `response.failed` event; either way it gives no reset time. It sets the run to **`deferred`**, not `failed`, and puts the profile into backoff (4.8). Also document the "use credits after the limit" setting, which can cause charges (R1.2).
+  - **Credentials need more than tokens.** Store the *issued* `client_id`, a stable per-host `ext_agent_host_id`, the ID token and the granted scopes as well as the tokens. Refresh tokens rotate on every refresh, and a racing refresh fails with `refresh_token_reused`, which forces a new sign-in. Refreshes are therefore serialised under a row lock, and the rotated token is committed before it is used (4.4).
+  - **Client deployments stay on API keys.** A paid client deliverable counts as a "paid" app under the interest-form rule; that reason is commercial, not that the box is remote. Self-hosting an open-source app on a remote VM is explicitly covered by the open-source flow.
+  - **The login flow needs care in Docker.** The OAuth callback must reach `127.0.0.1:<port>` on the machine running the browser. Two workable routes:
+    - `docker compose run --rm -p 127.0.0.1:<P>:<P> app gremlin login --port <P>`, with the listener bound to 0.0.0.0 inside the container;
+    - sign in on the host to a file, then `gremlin credentials import`, following the docs' self-hosted VM procedure.
+
+    Postgres has no published port (4.9), so a host-side login can't write to the DB directly.
+  - **Request shape differs.** SIWC needs `stream:true`, omits 15 request fields (including `temperature`, `max_output_tokens`, `max_tool_calls` and `prompt_cache_retention`), and wants function tools in namespaces or `additional_tools` (R1.2). The request builder takes these constraints from the model profile, so they stay config rather than a code path. The namespace rule might be the exception, which S4 checks.
 - **Decision:** D2.
 
 ### C3. Run the agent's shell in a separate workspace container
 - **Brief says:** "Isolation is Docker: the container is the boundary, mounted volumes define what it can touch."
 - **Problem:** if the shell runs inside the app container, the boundary encloses the agent *together with* what it shouldn't touch:
-  - API keys and SIWC tokens, readable from the environment with `cat /proc/self/environ`;
-  - Postgres, including its own run log, which turns "append-only" into an honour system;
+  - API keys and OAuth tokens, readable from the environment with `cat /proc/self/environ`;
+  - Postgres, including the agent's own run log, which turns "append-only" into an honour system;
   - the scheduler process.
 - **Proposal:** a `workspace` container is the agent's world.
-  - It has the toolbox image and the mounted volumes, but no secrets and no route to the database network.
-  - The app talks to it over an internal network through a small exec server (around 100 lines: run a command, read a file, write a file).
+  - It has the toolbox image and the mounted volumes, and **no app secrets** (API keys, OAuth tokens, DB credentials). It has no route to the database network.
+  - The app talks to it over an internal network through a small exec server: run a command, read a file, write a file.
   - There is still zero permission code. Docker just draws the line in the right place.
+- **What the exec server must handle** (R8, R10):
+  - kill the process group on timeout;
+  - when the direct child exits, wait about 1 s for the pipe to reach EOF, then kill the group and return what was read, since background grandchildren hold the pipe;
+  - spawn with stdin closed and prompts disabled: `GIT_TERMINAL_PROMPT=0`, `PAGER=cat`, `GIT_PAGER=cat`, `CI=1`, `DEBIAN_FRONTEND=noninteractive`;
+  - cap output by reading the streams itself;
+  - normalise output so it can be stored: decode UTF-8 with replacement, replace U+0000 with a visible marker, and flag `binary: true` when output is mostly non-text;
+  - kill a command's group when the RPC client disconnects, and kill everything when the app starts.
+
+  Compose's `init: true` reaps orphaned grandchildren. A process that calls `setsid` escapes `kill(-pid)`; that's an accepted risk, cleaned up at the next app start.
+- **What it doesn't isolate** (be explicit):
+  - **Skill secrets.** Per-skill env (4.7) is injected into exec calls, so it lives in the workspace. Every task shares one workspace container and one uid, so while two runs overlap, either agent can read the other run's environment from `/proc`. Files on shared mounts are readable across tasks too (Q5). Per-task uids would separate them, but that edges toward the non-goal (D17).
+  - **Host services.** With internet egress, the workspace can reach `host.docker.internal`, and on Docker Desktop that includes every service bound to 127.0.0.1 on the Mac (R10). That includes LM Studio's model load, unload and download API, which is unauthenticated by default (R5.6). So **always enable LM Studio token auth**, keep the token only in the app's env, and treat other host services as exposed (Q8).
 - **Bonuses:**
   - The workspace image is the agent's toolbox: install git, jq, Python and so on without bloating the app image.
-  - The run log can also be protected with an INSERT-only DB grant (4.4).
+  - The run log gets a database role that can only INSERT into it (4.4).
   - Privileged "app tools", written by you and needing secrets, run in the app. Commands written by the model run in the workspace.
-- **Cost:** one more image and a tiny RPC. The exec server has to handle process-group kill and output caps itself (R8).
-- **Decision:** D3.
+- **Cost:** one more image, and a small RPC with the responsibilities listed above.
+- **Decision:** D3, and D17 for skill secrets.
 
 ### C4. Skills are SKILL.md folders, not typed tools
 - **Brief says:** "Self-describing units (JSON Schema plus handler), loaded from a registry … Ideally compatible in spirit with the SKILL.md convention."
-- **Finding:** the SKILL.md spec has no typed tools. A skill is instructions plus scripts, and only the name and description are preloaded (R7). OpenAI has adopted the same standard (R4).
+- **Finding:** the SKILL.md spec has no typed tools. A skill is instructions plus scripts, and only its name and description are preloaded (R7). OpenAI has adopted the same standard (R4).
 - **Proposal:** with shell and `read_file` as base tools, a SKILL.md skill needs **no new tools**.
-  - `tools[]` stays at about four entries for good. Skills grow as a catalog in the preamble.
-  - That removes the "too many tools degrade the model's choices" problem, and a `tools[]` that never changes is ideal for caching (R3.4).
+  - `tools[]` stays small: the base tools, `activate_skill`, and a few app tools. It is **fixed for the life of a task**, while skills grow as a catalog in the preamble.
+  - That removes the "too many tools degrade the model's choices" problem, and a frozen `tools[]` is what caching wants (R3.4).
 
 | | Runs in | Defined as | Model sees |
 |---|---|---|---|
 | **Base tools** | workspace | app code: `shell`, `read_file`, `write_file` | always, in `tools[]` |
-| **App tools** | app | TypeScript schema plus handler | per task, only things that need secrets or the DB (state, notify) |
+| **App tools** | app | TypeScript schema plus handler | per task: only tools that need app secrets or the DB, such as state or notify |
 | **Skills** | workspace | SKILL.md folder plus `scripts/` | catalog (name and description) in the preamble; body loaded via `activate_skill` |
 
 - **Activation:**
-  - Use `activate_skill(name)` with an enum of the task's skills, which the spec allows (R7).
-  - Weak local models follow it more reliably than "read the file at this path", and every activation lands in the run log.
+  - Use `activate_skill(name)`, whose `name` is an enum of the task's skills; the spec allows this (R7). Weak local models follow it more reliably than "read the file at this path", and every activation lands in the run log.
   - The skill body comes back as the tool's output, so it lands in the append-only history rather than the cached preamble.
-- **Storage:** on disk. The scripts have to be files in the workspace anyway. The DB holds which skills each task uses, plus per-skill env and secrets.
-- **Left open, not built:** typed skill tools declared in a sidecar file next to SKILL.md, as Codex does with `agents/openai.yaml` (R7), with handlers as workspace scripts.
-- **Not used:** OpenAI's hosted shell-tool skills (R4). LM Studio only offers function tools, so they would split the code path.
+- **Storage:** on disk. The scripts have to be files in the workspace anyway. The app mounts the same skill trees read-only, at the same paths, to build the catalog (4.9). The DB holds which skills each task uses, plus per-skill env.
+- **Left open, not built:** typed skill tools declared in a sidecar file next to SKILL.md, with handlers as workspace scripts. It would be Gremlin's own convention, by analogy with Codex's `agents/openai.yaml`, which holds UI and invocation settings rather than typed tools (R7).
+- **Not used:** OpenAI's shell-tool skills, hosted or local (R4). Both need OpenAI's `shell` tool type, which LM Studio lacks, so they would split the code path.
 - **Decision:** D4.
 
-### C5. Compaction must be rare and chunky to coexist with caching
+### C5. Compaction must be rare, chunky, and cut at turn boundaries
 - **Brief says:** "Compaction only touches the middle, so the two don't fight."
 - **Finding:**
   - Within a run, the whole append-only history is a cacheable prefix.
   - Compacting the middle invalidates everything after the first compacted item, which is everything except the preamble and the task.
-  - OpenAI lists compaction as a cache-breaker (R3.4). On GPT-5.6+ every rebuild is a write billed at 1.25× (R3.1).
+  - OpenAI lists compaction as a cache-breaker (R3.4), and on GPT-5.6+ every rebuild is a write billed at 1.25× (R3.1).
 - **Proposal:**
-  - One large compaction when the context passes a threshold (say 70%) costs one cache rebuild. A sliding window that trims a little every turn misses the cache every turn, which is the worst case.
-  - `planCompaction` returns null until the threshold is reached, then compacts one large block.
-  - For the same reason, a forced final answer uses `tool_choice:"none"` rather than removing tools (R3.4).
+  - **Compact rarely, in large blocks.** One large compaction when the context passes a threshold (say 70%) costs one cache rebuild. A sliding window that trims a little every turn misses the cache every turn, which is the worst case. `planCompaction` returns null until the threshold, then compacts one large block.
+  - **Cut only at turn boundaries.** That means after all outputs of one model turn, before the next reasoning, message or call group.
+    - The API rejects a `function_call_output` whose `function_call` is missing.
+    - Developers also report HTTP 400s for a `function_call` sent without its reasoning item, and for a reasoning item without the item that follows it.
+    - So reasoning, call and output are kept or dropped as one unit. S3 tests a replay across a compaction boundary.
+  - **Use `tool_choice` to stop tool calls.** A forced final answer uses `tool_choice:"none"` rather than removing tools. OpenAI documents that this keeps the cached prefix (R3.4); S3 measures it.
 - **Decision:** D11.
 
 ### C6. Task definitions: DB canonical, authored as TASK.md files
 - **Brief says:** "where task definitions live, presumably the DB."
 - **Proposal:** the DB is the source of truth, but you author tasks as `TASK.md` files in a private git repo, and `gremlin apply ./tasks` upserts them.
-  - The frontmatter holds schedule, timezone, model profile, skills, budgets, overlap and catch-up policy. The body is the prompt.
-  - Every run stores a snapshot of the resolved definition.
+  - **Frontmatter:** schedule, timezone, model profile, skills, budgets, overlap policy and catch-up policy. **Body:** the prompt.
+  - **Every run** stores a snapshot of the resolved definition.
+  - **`apply` semantics:**
+    - It sets `next_run_at` on insert.
+    - It recomputes `next_run_at` from now whenever the schedule, time zone or `enabled` changes.
+    - It rejects unknown skill names.
+    - It *disables* a task whose file was removed, so run history survives.
 - **Why:**
   - Prompts behave like code: you want diffs, history and your editor.
   - "What did the prompt say at 3am" gets a definite answer.
@@ -580,33 +724,56 @@ These are **proposals, not decisions**. Each links to a decision in Part 5. "Bri
   - It mirrors SKILL.md in spirit.
 - **Decision:** D5.
 
-### C7. TypeORM on Bun: proceed with five conventions and a fallback ladder
+### C7. TypeORM on Bun: proceed with conventions and a fallback ladder
 - **Brief says:** verify decorators, `reflect-metadata` and migrations under Bun; have a fallback plan.
-- **Proposal: proceed, with five conventions** (all verified on Bun 1.4.3, R6.2):
-  1. **Decorator flags inline, plus a boot check.** Put `experimentalDecorators` and `emitDecoratorMetadata` **inline** in the app's own `tsconfig.json`, never inherited through `extends`. Add a boot self-check that fails fast if decorator metadata is missing, because Bun 1.3.10+ silently compiles TC39 decorators otherwise.
-  2. **`Relation<T>` with `import type`.** Type every relation property as `Relation<T>`, and import `Relation` and any interface types used on decorated properties with `import type`.
-  3. **Explicit column types.** Every `@Column` gets an explicit `type`, enforced by a lint rule, because Bun's metadata ignores `strictNullChecks`.
-  4. **Migrations under Bun:** `bunx --bun typeorm migration:generate|run -d src/data-source.ts`.
-  5. **Never minify**, and name entities and migrations explicitly.
-- **Runtime type gap:**
-  - 1.0's throw on `null`/`undefined` in a find `where` closes the worst hole (R6.1, R9).
-  - The rest is covered by integration tests against a real Postgres for every repository method, especially the claim and lock queries.
-  - Use explicit index names on partial indexes, with predicate changes written as hand-made migrations, because diffing won't catch them (R6.3).
-- **Fallback ladder, if S1 fails:**
-  1. **EntitySchema:** same ORM, no decorators, which removes the Bun-specific metadata risks.
-  2. **Run the app on Node** and keep Bun for tooling.
-- **Decision:** D13, triggered only if S1 fails.
+- **Proposal: proceed with these conventions.** 1–3 rest on gotchas verified on Bun 1.4.3 **[H]**. 4 and 5 rest on **[M]** sources, so S1 confirms all five.
+  1. **Decorator flags where Bun reads them, plus a boot check.**
+     - Bun reads only the `tsconfig.json` of the directory it is started from (R6.2). Set the flags in the root `tsconfig.json`, and give `packages/app` its own `tsconfig.json` with `"extends": "../../tsconfig.json"`, or the flags inline.
+     - Never take the flags from a package-specifier `extends`. Copy both files into the image.
+     - Run the app, its tests and the TypeORM CLI from `packages/app`.
+     - Add a boot self-check that fails fast unless TypeORM registered columns for a known entity, which catches TC39 decorators sneaking in.
+  2. **Turn `emitDecoratorMetadata` off (D15)**, keeping `experimentalDecorators` on.
+     - TypeORM only needs `design:type` for things the conventions make explicit (R6.1). Turning it off removes Bun gotchas 2 and 4 outright.
+     - If it stays on, type relations as `Relation<T>` and import `Relation` and other decorated-property types with `import type`.
+  3. **Explicit column types.** Every `@Column` gets an explicit `type`, plus `lazy`, `array` or `hstoreType` where relevant, enforced by a lint rule. With metadata off, an untyped column fails at import.
+  4. **Migrations under Bun [M]:**
+     - `bunx --bun typeorm migration:run -d src/data-source.ts`;
+     - `bunx --bun typeorm migration:generate src/migrations/<Name> -d src/data-source.ts` (positional path).
 
-### C8. Budgets, not only an iteration cap
+     Both run from `packages/app`.
+  5. **Never minify identifiers [M]** (Bun #14888), and name entities and migrations explicitly.
+- **Runtime type gap:**
+  - **Pin `typeorm >= 1.1.0`**, so writes get the `null`/`undefined` guard too (R6.1).
+  - **Write claim queries with find options**, `lock: { mode: "pessimistic_write", onLocked: "skip_locked", tables }`, or `qb.setFindOptions()`, so they keep the guard. QueryBuilder `.where()` silently matches zero rows on `null`. Name the locked table whenever the query joins (R6.3).
+  - **Filter relations as `{ run: { id } }`**, never a bare id (#12712, R9). Run `tsc --noEmit` in CI, because Bun doesn't type-check.
+  - **Integration tests** against a real Postgres cover every repository method, especially claims, locks and the `ON CONFLICT` tick.
+  - **Index names:** let TypeORM *auto-generate* the partial-index name, so `migration:generate` sees predicate changes as drop and create (R6.3). The tick uses `ON CONFLICT DO NOTHING` and doesn't need the name.
+- **Fallback ladder, if S1 fails:**
+  1. **EntitySchema:** the same ORM with no decorators at all.
+  2. **Run the app on Node** (`^22.13.0` or `>=24.11.0`, R6.1) and keep Bun for tooling. croner runs there too (D12).
+- **Decision:** D13, triggered only if S1 fails; D15.
+
+### C8. Budgets and a context check, not only an iteration cap
 - **Brief says:** "Hard cap on iterations."
-- **Finding:** each iteration resends the whole history, so time and cost grow roughly quadratically with run length.
-- **Proposal: keep the iteration cap and add budgets.**
+- **Finding:**
+  - Each iteration resends the whole history, so time and cost grow roughly quadratically.
+  - Nothing in a cumulative budget checks whether the *next* request still fits the model's context. LM Studio's default context is 8k (R5.5), and SIWC can't set `truncation` (R1.2).
+- **Proposal: keep the iteration cap, and add budgets plus a context check.**
   - **Budgets:**
     - cumulative input tokens, which is dollars on an API key or allowance on SIWC;
     - wall-clock time per run;
-    - a timeout per tool call;
-    - a stream-idle timeout per model call, which tells "slow local model" apart from "hung".
-  - **When a budget trips,** make one last turn with `tool_choice:"none"` asking for "what I did and what remains". That becomes the run's output and seeds the next run's state, and the run's status is **`capped`**, not `failed`.
+    - a timeout per tool call.
+  - **Context-fill check after every turn:** last `usage.input_tokens` plus the size of the pending outputs, against the profile's `contextTokens`. Above about 85%, finalize. An API context-overflow error takes the same path.
+  - **Two stream timeouts per profile.** Healthy streams can be silent for minutes: during local prefill, a JIT load (R5.5), or OpenAI reasoning. So use:
+    - a *time-to-first-output* limit, which is minutes for local and high-effort profiles;
+    - a shorter *idle* limit between deltas.
+
+    On OpenAI, request reasoning summaries so reasoning emits events; S4 checks that SIWC allows them.
+  - **When a budget or the context check trips:**
+    - Make one last turn with `tool_choice:"none"`, sent as a user message so it ends an eligible cache breakpoint (R3.1), and sized to fit. It asks "what did you do and what remains".
+    - That becomes the run's output and seeds the next run's state. Status: **`capped`**, not `failed`.
+    - If even the finalize turn can't fit, returns calls anyway, or fails, end as `capped` with a synthesised "budget exceeded; no summary" output.
+  - **Per-profile output cap:** the model-visible output cap is set per profile, smaller for local models.
 - **Check:** LM Studio supports `tool_choice:"none"` on Chat Completions (R5.2). Support on `/v1/responses` is unverified, so S2 checks it.
 - **Decision:** D9.
 
@@ -615,33 +782,34 @@ These are **proposals, not decisions**. Each links to a decision in Part 5. "Bri
 - **Problem:** with unrestricted shell access, executing a command extracted from prose risks running something the model wrote as an *example*.
 - **Proposal:**
   1. **Detect the narration.** Markers include LM Studio's own `[TOOL_REQUEST]…[END_TOOL_REQUEST]` (R5.2), `<tool_call>…</tool_call>`, or a lone JSON object with `name` and `arguments`.
-  2. **Nudge.** Append "you described a tool call in text; emit it as a function call". Do this at most twice, then treat the text as the final answer.
-  3. **Optional strict execute mode,** per model profile. It fires only when the entire content is exactly one valid call that passes schema validation.
-  4. **Treat LM Studio's HTTP 500 the same way.** The reported 500 "Failed to parse tool call" on `/v1/responses` (R5.7) takes the nudge path.
+  2. **Nudge** with a user message: "you described a tool call in text; emit it as a function call". At most twice, then treat the text as the final answer.
+  3. **Treat LM Studio's HTTP 500 "Failed to parse tool call"** on `/v1/responses` (R5.7) the same way. The history then has no assistant text, so the nudge says: "your last reply could not be parsed; emit exactly one function call".
+  4. **Optional strict execute mode** per model profile. It fires only when the entire content is exactly one valid call that passes schema validation.
 - **Decision:** D8.
 
 ### C10. Fence the scope explicitly
 - **Brief says:** "The failure mode is slowly reimplementing LangChain badly."
-- **Proposal:** a written **"won't build"** list (4.11) and a soft size budget of about 1.5k lines for `core`. Crossing either needs an explicit decision.
-- **Decision:** D10 covers packaging; the fence itself needs no decision unless you object.
+- **Proposal:** a written **"won't build"** list (4.11), and a soft size budget of about 1.5k lines for `core`. Crossing either needs an explicit decision.
+- **Decision:** D10 covers packaging. The fence itself needs no decision unless you object.
 
 ### C11. Store history one row per item
 - **Brief says:** "messages (history as `jsonb`)".
 - **Proposal:** keep `jsonb`, but store one row per item, holding the verbatim Responses item as a `jsonb` payload, instead of one growing `jsonb` array per run.
 - **Why:**
-  - Appending to a `jsonb` array rewrites the whole value on every turn: O(n²) bytes over a run (R9).
+  - Appending to a `jsonb` array rewrites the whole value every turn, O(n²) bytes over a run (R9).
   - Rows are append-only, like the run log.
-  - Compaction can *mark* rows instead of deleting them, so the audit trail stays intact.
+  - Compaction can *mark* rows instead of deleting them, so the audit trail survives.
   - Full-text search over history becomes possible later.
+- **Payloads must be NUL-free** (R10). The exec server's output normalisation (C3) takes care of that.
 - **Decision:** D7.
 
 ---
 
 # Part 4: Draft design
 
-This draft assumes the recommended option for every decision in Part 5. Anything marked with a decision ID changes if that decision goes the other way.
+This draft assumes the recommended option for every decision in Part 5. Sections that depend on an open decision name it.
 
-## 4.1 Architecture
+## 4.1 Architecture (D1, D2, D3)
 
 ```
                     docker compose (same artefact: your Mac, a client box)
@@ -650,32 +818,37 @@ This draft assumes the recommended option for every decision in Part 5. Anything
  │  │ app (Bun)            │◀───────────────────────▶│ postgres+pgvector │   │
  │  │ • scheduler tick     │                         └───────────────────┘   │
  │  │ • agent loop         │   net: exec (internal)  ┌───────────────────┐   │
- │  │ • app tools          │────────────────────────▶│ workspace    (D3) │   │
- │  │ • secrets, tokens    │   exec RPC: run/read/   │ • exec server     │   │
- │  └──────────┬───────────┘   write                 │ • git, jq, py…    │   │
- │             │                                     │ • NO secrets      │   │
+ │  │ • app tools          │────────────────────────▶│ workspace         │   │
+ │  │ • app secrets,       │   exec RPC: run/read/   │ • exec server     │   │
+ │  │   OAuth tokens       │   write                 │ • git, jq, py…    │   │
+ │  └──────────┬───────────┘                         │ • NO app secrets  │   │
  │             │                                     │ • NO route to db  │   │
  │             │                                     └─────────┬─────────┘   │
  └─────────────┼───────────────────────────────────────────────┼─────────────┘
-               │ Responses API (stream, store:false)    (D1)   │ bind mounts
+               │ Responses API (stream, store:false)           │ bind mounts
        ┌───────┴──────────┐                                    ▼
        ▼                  ▼                           ~/notes, ~/projects, skills/
  api.openai.com     LM Studio on the host (Metal GPU; can't run in a container on macOS)
- key | SIWC (D2)    host.docker.internal:1234
+ key | SIWC         host.docker.internal:1234, token auth on
 ```
 
-## 4.2 Monorepo layout
+## 4.2 Monorepo layout (D10)
 
 ```
 mecha-gremlin/                          public repo
 ├── package.json                        bun workspaces: ["packages/*"]
-├── tsconfig.json                       decorator flags inline, no package `extends` (C7)
+├── tsconfig.json                       experimentalDecorators: true (emitDecoratorMetadata per D15);
+│                                       no package-specifier `extends` (C7)
 ├── compose.yaml
+├── .gitleaks.toml                      + pre-commit hook and CI job (M1)
 ├── packages/
 │   ├── core/                           @mecha-gremlin/core: stateless functions, publishable;
-│   │                                   deps: openai (types), one JSON Schema validator
+│   │                                   `openai` as a peerDependency, plus one JSON Schema validator
 │   ├── app/                            entities, migrations, scheduler, loop, app tools, CLI `gremlin`
-│   └── workspace/                      exec server (~100 lines) + Dockerfile = the agent's toolbox
+│   │   ├── tsconfig.json               "extends": "../../tsconfig.json"; Bun reads the tsconfig of
+│   │   │                               the directory it starts in, not the file's nearest (R6.2)
+│   │   └── db/init/                    creates the gremlin_owner and gremlin_app roles (4.4)
+│   └── workspace/                      exec server + Dockerfile = the agent's toolbox
 ├── skills/                             public example skills (SKILL.md)
 ├── examples/tasks/                     example TASK.md files
 └── openspec/
@@ -683,34 +856,41 @@ mecha-gremlin/                          public repo
 ~/gremlin-private/                      private git repo, mounted, never in source
 ├── tasks/*.md                          TASK.md definitions (D5)
 ├── skills/<name>/SKILL.md              your own skills (D4)
-└── gremlin.env                         secrets; validated at boot
+├── gremlin.env                         app secrets; validated at boot
+└── postgres.env                        database credentials (the postgres image requires a password)
 ```
 
-`core` is one package with subpath exports (`@mecha-gremlin/core/turn`, `…/compaction`, and so on) rather than six micro-packages (D10). The app imports `core` only through its public exports, so the boundary stays real.
+`core` is one package with subpath exports (`@mecha-gremlin/core/turn`, `…/compaction`, and so on) rather than six micro-packages. The app imports `core` only through those public exports, so the boundary stays real.
 
 ## 4.3 Core library (signatures)
 
 ```ts
 // @mecha-gremlin/core: stateless; data in, data out.
-// Types come from `openai` (Responses API). runTurn is the only function doing I/O,
-// and only through the client the caller passes in.
+// Types come from `openai` (Responses API), a peerDependency. runTurn is the only function
+// doing I/O, and only through the client the caller passes in (created with maxRetries: 0,
+// so retry policy lives in nextStep).
 
 // ── request assembly (cache-friendly) ──────────────────────────────────────
 canonicalTools(tools: FunctionTool[]): FunctionTool[]            // sorted by name, stable key order
 buildRequest(p: {
   model: string
-  preamble: string                    // rules + task prompt + skill catalog → developer item
-  tools: FunctionTool[]               // frozen at run start
+  preamble: string                    // rules + task prompt + skill catalog → first developer item
+  tools: FunctionTool[]               // frozen for the run
   items: ResponseInputItem[]          // run input + history
-  profile: RequestProfile             // per-backend constraints (SIWC omissions, cache mode…)
+  profile: RequestProfile             // per-backend constraints (SIWC omissions, namespaces, cache mode…)
 }): ResponseCreateParamsStreaming
 
 // ── one model turn ──────────────────────────────────────────────────────────
-runTurn(client: OpenAI, req: ResponseCreateParamsStreaming,
-        opts: { idleTimeoutMs: number; signal?: AbortSignal }): Promise<TurnResult>
-  // streams, assembles the final Response, classifies errors:
-  // TurnResult = { ok: true; response } | { ok: false; error: 'plan_limit' | 'rate_limit'
-  //              | 'auth' | 'idle_timeout' | 'tool_parse_500' | 'transient' | 'fatal'; detail }
+runTurn(client: OpenAI, req: ResponseCreateParamsStreaming, opts: {
+  firstOutputTimeoutMs: number; idleTimeoutMs: number; signal?: AbortSignal
+}): Promise<TurnResult>
+  // Streams and assembles the final Response; stores reasoning items from output_item.done.
+  // Classifies errors by HTTP status and error.code, including terminal response.failed /
+  // response.incomplete events, never by instanceof:
+  // TurnResult = { ok: true; response }
+  //   | { ok: false; error: 'plan_limit' | 'usage_unavailable' | 'rate_limit' | 'quota' | 'auth'
+  //       | 'context_overflow' | 'incomplete' | 'first_output_timeout' | 'idle_timeout'
+  //       | 'tool_parse_500' | 'unreachable' | 'transient' | 'fatal'; detail }
 classify(response: Response): Turn
   // Turn = { kind: 'calls'; calls: FunctionCall[] } | { kind: 'final'; text: string }
   //      | { kind: 'narrated'; hint: string } | { kind: 'empty' }
@@ -721,11 +901,14 @@ validateArgs(tool: FunctionTool, raw: string):
   { ok: true; args: unknown } | { ok: false; error: string }
 toOutputItem(callId: string, outcome: ToolOutcome, limits: OutputLimits): FunctionCallOutputItem
 truncateMiddle(text: string, maxBytes: number): { text: string; droppedBytes: number }
+normalizeOutput(bytes: Uint8Array): { text: string; binary: boolean }   // UTF-8 w/ replacement, no U+0000
 
 // ── loop policy (pure state machine; the caller's while-loop does the I/O) ──
-nextStep(state: LoopState, turn: Turn, budget: Budget): Step
-  // Step = execute | nudge | finish | finalize (tool_choice:none) | abort
-repairHistory(items: ResponseInputItem[]): ResponseInputItem[]   // every call gets an output
+contextFill(lastUsage: Usage, pending: ResponseInputItem[], contextTokens: number): number  // 0..1
+nextStep(state: LoopState, result: TurnResult, budget: Budget): Step
+  // Step = execute(calls) | nudge(text) | retry(afterMs) | defer(reason) | finalize
+  //      | finish(text) | abort(status)
+repairHistory(items: ResponseInputItem[]): ResponseInputItem[]   // every call gets exactly one output
 
 // ── skills (SKILL.md) ───────────────────────────────────────────────────────
 parseSkill(dir: string, skillMd: string): Skill | SkillError     // frontmatter per spec (R7)
@@ -735,39 +918,64 @@ activateSkillTool(skills: Skill[]): FunctionTool                 // enum of the 
 // ── compaction seam ─────────────────────────────────────────────────────────
 estimateTokens(items: ResponseInputItem[]): number
 planCompaction(items: ResponseInputItem[],
-               o: { limitTokens: number; keepLast: number }): CompactionPlan | null
+               o: { limitTokens: number; keepLastTurns: number }): CompactionPlan | null
+  // cuts only at turn boundaries; reasoning + call + output stay together (C5)
 applyCompaction(items: ResponseInputItem[], plan: CompactionPlan,
                 summary: string): ResponseInputItem[]
 ```
 
 "The caller orchestrates" means the app's loop is about 60 lines over these functions. The README ships the same loop as a reference implementation.
 
-## 4.4 Data model (TypeORM entities)
+## 4.4 Data model: TypeORM entities (D5, D7)
 
 ```
- Task ─────────────< Run ──────────────< Item          conversation; append-only
-  name (unique)       status                seq, kind (message | function_call |
-  schedule, tz        trigger (cron|manual)    function_call_output | reasoning),
-  prompt              task_snapshot jsonb      payload jsonb (verbatim Responses item),
-  model_profile       started_at, ended_at     compacted_into (nullable)
-  skills text[]       heartbeat_at
-  limits jsonb        usage jsonb   ────────< Event         run log; INSERT-only DB grant
-  overlap_policy      output text               seq, type (model_call | tool_exec | nudge |
-  catch_up            state_after jsonb           finalize | compaction | error | skill_activated),
-  state jsonb  ◀──────┘                           data jsonb (latency, tokens, cached_tokens,
-  next_run_at                                     cache_write_tokens, exit code, timed_out,
-  enabled                                         full stdout/stderr up to a hard cap)
-  definition_hash
+ Task ──────────────< Run ───────────────< Item         conversation; append-only
+  name (unique)        status                 seq, kind (message | function_call |
+  schedule, tz         trigger (cron|manual)    function_call_output | reasoning),
+  prompt               task_snapshot jsonb      payload jsonb (verbatim item, NUL-free),
+  model_profile        created_at, started_at,  compacted_into (nullable)
+  skills text[]        ended_at, heartbeat_at
+  limits jsonb         usage jsonb    ────────< Event        run log; app role may only INSERT
+  overlap_policy       output text                seq, type (model_call | tool_exec | nudge |
+  catch_up,            state_after jsonb            finalize | compaction | error |
+  catch_up_grace                                    skill_activated), data jsonb (latency,
+  state jsonb ◀────────┘                            tokens, cached/written tokens, exit code,
+  next_run_at timestamptz                           timed_out, binary, output up to a hard cap)
+  enabled, definition_hash
 
- SkillSetting  (skill_name, task_id nullable = global, env jsonb)  secrets injected into exec calls
- Credential    (provider, kind: api_key | chatgpt_oauth, tokens jsonb, refreshed_at)
-               refresh under SELECT … FOR UPDATE; SIWC refresh tokens rotate (R1.2)
+ ProfileState  (profile, blocked_until, backoff_seconds, reason)   plan limits, unreachable backends
+ SkillSetting  (skill_name, task_id nullable = global, env jsonb)  injected into exec calls (4.7)
+ Credential    (provider, kind: api_key | chatgpt_oauth, issued_client_id, ext_agent_host_id,
+                access_token, refresh_token, id_token, scopes, expires_at, refreshed_at)
 ```
 
-- **Run status:** `queued → running → succeeded | failed | capped | deferred | skipped | abandoned`.
-- **One active run per task:** `UNIQUE (task_id) WHERE status IN ('queued','running')`, with an explicit index name. Predicate changes go in hand-written migrations (R6.3).
-- **Model profiles** live in validated config, not the DB: base URL, model, auth reference, concurrency, request constraints, cache mode. Credentials live in the DB because SIWC tokens rotate.
-- **Run-log immutability:** the app's DB role has `INSERT` but not `UPDATE` or `DELETE` on `event`. Together with C3, the agent can't touch its own log.
+**States and transitions**
+- **Run status:** `queued → running → succeeded | failed | capped | deferred | abandoned`. `skipped` rows are inserted directly.
+- **One active run per task:** `UNIQUE (task_id) WHERE status IN ('queued','running')`, with an auto-generated name so `migration:generate` sees predicate changes (R6.3). Inserts use `ON CONFLICT DO NOTHING` (4.8).
+- **Conditional terminal transitions:** `UPDATE run … WHERE id = $1 AND status = 'running'`. A run marked `abandoned` can't later be overwritten with `succeeded`.
+
+**Locking and liveness**
+- **One lock order everywhere:** the task row first (`SELECT … FOR UPDATE`), then run rows. This applies to the tick, finalisation, `gremlin run` and recovery, and avoids the deadlock reproduced in R10. Finalisation retries SQLSTATE 40P01.
+- **Liveness:** `heartbeat_at` is written by a timer, every 10 s, while a run is live, not once per turn.
+
+**Queries**
+- **Claim queries** use find options with `lock: { mode: "pessimistic_write", onLocked: "skip_locked" }`, plus `tables` when joining. This keeps TypeORM's `null` guard (C7).
+- **Relation filters** are written `{ run: { id } }`, never as bare ids (R9).
+
+**Roles and credentials**
+- **Two database roles:**
+  - `gremlin_owner` runs migrations and owns the tables.
+  - `gremlin_app` is the runtime role, neither owner nor superuser. On `event` it gets INSERT and SELECT (TypeORM's `INSERT … RETURNING` needs SELECT), plus USAGE on the sequence, and no UPDATE or DELETE.
+
+  An owner or superuser connection would make the grant meaningless (R10). The roles are created by an init script that runs on an empty data directory.
+- **Credential refresh:**
+  - `BEGIN; SELECT … FOR UPDATE`, then re-check expiry, `POST` the refresh, `UPDATE` and `COMMIT`. Only then use the new access token.
+  - Refresh when the token expires within about 5 minutes, or once after a 401.
+  - `invalid_grant` or `refresh_token_reused` → run `failed`, plus an alert to sign in again.
+
+**Config, not database**
+- **Model profiles** live in validated config: base URL, model, auth reference, concurrency, `contextTokens`, output cap, first-output and idle timeouts, request constraints, cache mode.
+- **Credentials** live in the database, because SIWC tokens rotate.
 
 ## 4.5 Agent loop
 
@@ -775,86 +983,134 @@ applyCompaction(items: ResponseInputItem[], plan: CompactionPlan,
  prepare: load task snapshot, freeze tools + preamble, build run input (now(), carried state)
     │
     ▼
- ┌─▶ turn (stream) ──▶ classify ──┬─ calls    → validate args → execute in order → output items
- │                                ├─ narrated → nudge (≤2), else treat as final
- │                                ├─ final    → succeeded (output, state_after)
- │                                └─ empty    → nudge once, else failed
- │         append items + events, heartbeat, check budgets
- └──────────────── within budget ◀──┘   │ tripped
-                                        ▼
-                      finalize turn (tool_choice:"none") → capped
+ ┌─▶ turn (stream) ──▶ classify / nextStep ──┬─ calls    → validate args → execute in order → outputs
+ │                                           ├─ narrated → nudge (≤2), else treat as final
+ │                                           ├─ final    → succeeded (output, state_after)
+ │                                           ├─ empty    → nudge once, else failed
+ │                                           ├─ retry    → backoff, same turn
+ │                                           └─ defer    → deferred + profile backoff
+ │      append items + events, check budgets and context fill
+ └────────────── within budget ◀──┘   │ tripped
+                                      ▼
+                    finalize turn (tool_choice:"none", sized to fit) → capped
 ```
+
+**Tool execution**
 
 | Situation | Handling |
 |---|---|
-| Tool exits non-zero or throws | Output item with exit code and stderr tail; loop continues |
-| Tool timeout | Kill the process group (`detached` + `kill(-pid)`, R8); output has `timed_out: true` and partial output |
+| Tool exits non-zero or throws | Output item with exit code and stderr tail; the loop continues |
+| Tool timeout | Kill the process group (R8); output has `timed_out: true` and partial output |
+| Direct child exits but a background grandchild holds the pipe | Wait about 1 s for EOF, then kill the group and return what was read (R10) |
+| Command waits for input | Can't happen: stdin is closed and prompts are disabled (C3) |
+| Binary or NUL-containing output | Normalised: UTF-8 with replacement, U+0000 replaced by a marker, `binary: true` (R10) |
+| Huge output | The model sees head and tail, with a per-profile cap that is smaller for local models. The event keeps the full output up to a hard cap. The cap is enforced by reading the stream, not with `maxBuffer` (R8). |
 | Invalid JSON or schema mismatch in arguments | Output item with the validation error and the expected schema, so the model can self-correct |
 | Unknown tool name | Output item: "unknown tool X; available: …" |
-| Huge output | The model sees head and tail (cap around 16 KB); the event keeps the full output up to a hard cap (around 1 MB); stream reading enforces the cap, not `maxBuffer` (R8) |
-| Several calls in one response | Run them sequentially, in order. Every `call_id` gets exactly one output, even if the run stops early |
-| Narrated call, or LM Studio 500 "Failed to parse tool call" | Nudge, at most twice (C9) |
-| HTTP 429 plan limit (SIWC) | Run becomes `deferred` and is retried after the reset; never fall back to another model mid-run (C1) |
-| HTTP 429 rate limit or 5xx | Bounded exponential backoff, then `failed` |
-| Auth failure | `failed`, and alert (Q1) |
-| Stream idle longer than N seconds | Abort the turn, retry once, then `failed` |
+| Several calls in one response | Run sequentially, in order. Every `call_id` gets exactly one output, even if the run stops early |
+
+**Model output and context**
+
+| Situation | Handling |
+|---|---|
+| Narrated call | Nudge, at most twice, as a user message (C9) |
+| LM Studio HTTP 500 "Failed to parse tool call" | Nudge: "your last reply could not be parsed; emit exactly one function call" (C9) |
+| Context nearly full, or an API context-overflow error | Finalize turn, sized to fit; if even that can't fit, `capped` with a synthesised summary (C8) |
 | Iteration, token or wall-clock budget exceeded | Finalize turn, then `capped` (C8) |
-| Process crash mid-run | Stale heartbeat makes the run `abandoned`; the next run starts fresh with the carried state |
+| Finalize turn returns calls anyway, or fails | `capped`, with a synthesised "budget exceeded; no summary" output |
+| Stream ends with `response.incomplete` or `response.failed` after HTTP 200 | Classified into a `TurnResult`: a truncated call is retried once; a usage-limit code is handled as a plan limit |
+| No first output within the profile's first-output limit | Abort the turn, retry once, then `failed` |
+| Silence between deltas beyond the idle limit | Abort the turn, retry once, then `failed` |
+
+**Limits, auth and availability**
+
+| Situation | Handling |
+|---|---|
+| SIWC plan limit: 429 before the stream, or `response.failed` mid-stream, with `subscription_sharing_usage_limit_exceeded` | Run becomes `deferred`, and the profile goes into backoff (4.8). The error gives no reset time. Never fall back to another model mid-run (C1) |
+| `subscription_sharing_usage_unavailable` (503) | Bounded backoff within the run |
+| HTTP 429 rate limit or 5xx | Bounded exponential backoff owned by `nextStep` (the SDK uses `maxRetries: 0` everywhere), then `failed` |
+| `insufficient_quota` | `failed`, with no retry, and an alert |
+| Access token near expiry, or HTTP 401 | Refresh before the turn if it expires within about 5 minutes. On a 401, refresh once and retry the turn (4.4) |
+| Refresh fails with `invalid_grant` or `refresh_token_reused` | `failed`, plus an alert to sign in again |
+| Local backend unreachable (connection refused) | Run becomes `deferred`, with a short profile backoff |
+| Process crash mid-run | At the next boot: `running` becomes `abandoned`, and the exec server kills leftover processes. The next run starts fresh with the carried state |
 
 ## 4.6 Request layout for caching
 
 ```
  order sent to the model                       changes when…          cache
  ───────────────────────────────────────────   ─────────────────────  ──────────────────────────
- tools[]  (sorted, frozen at run start)        deployment / task edit ┐ shared by every run of a
- developer: base rules + task prompt           task edit              │ task (explicit breakpoint
-            + skill catalog                                           ┘ on GPT-5.6+, R3.1)
+ tools[]  (sorted, frozen for the run)         deployment / task edit ┐ shared by every run of a
+ developer: base rules + task prompt           task edit              │ task (end of the initial
+            + skill catalog                                           ┘ developer block, R3.1)
  user: now(), carried state, trigger           every run              ┐ shared by every turn of a
- items… (calls, outputs, reasoning, skill      append-only            │ run (implicit breakpoint
-         bodies from activate_skill)                                  ┘ at the end)
+ items… (calls, outputs, reasoning, skill      append-only            │ run (implicit breakpoint at
+         bodies from activate_skill)                                  ┘ the latest eligible item)
 ```
 
-Rules:
-- Never put the time, state or anything else that varies per run into the developer item.
-- Never reorder tools, or change reasoning effort or tool choice, mid-run (R3.4).
-- Compaction is rare and chunky (C5).
-- Every `model_call` event records cached and written tokens, so cache effectiveness is measured from day one.
+**Rules**
+- **Keep per-run data out of the developer item.** Never put the time, state or anything else that varies per run there.
+- **Freeze the request settings.** Never edit or reorder tools, or change `reasoning.effort`, `parallel_tool_calls`, `text.format`, verbosity, service tier or `prompt_cache_key` mid-run (R3.4).
+- **Use `tool_choice` to stop tools.** The finalize turn's `tool_choice:"none"` is the sanctioned way to disable tools: OpenAI documents it as keeping the prefix, and S3 measures it. On OpenAI, `allowed_tools` can also narrow them, but LM Studio rejects object `tool_choice` (R5.2).
+- **Send nudges and the finalize prompt as user messages,** so they end an eligible breakpoint (R3.1).
+- **Compaction is rare, chunky, and cut at turn boundaries** (C5).
+- **Log cache use.** Every `model_call` event records cached and written tokens, so cache effectiveness is measured from day one.
 
-What carries across runs:
-- OpenAI ≤5.5 keeps cached prefixes for 24h by default (R3.2), so a daily task may still hit the cache. GPT-5.6+ keeps them for 30 minutes (R3.1).
-- LM Studio's MLX disk cache restores shared prefixes across conversations (R5.3).
-- Under SIWC, retention can't be set (R3.5).
+**What carries across runs**
+- **OpenAI before GPT-5.6:**
+  - On the models listed in R3.2, organisations without ZDR get `24h` retention by default. That is a maximum: entries typically last about 30 minutes.
+  - Other earlier models use `in_memory`, typically 5–10 minutes idle and at most 1 hour.
+- **GPT-5.6+:** a prefix is kept for at least 30 minutes after its last write or reuse (R3.1).
+- **So expect cross-run hits only when a task reruns within about 30 minutes,** and assume a daily task misses. On pre-5.6 models, a stable per-task `prompt_cache_key` helps route a task's runs to the same cache. On GPT-5.6+, a key only partitions billing.
+- **LM Studio MLX disk cache:** it restores shared prefixes across conversations, but only for text-only MLX models without a quantised KV cache or speculative decoding. It's lost when the model unloads, so carrying it across runs depends on the no-TTL preload (4.9, R5.3).
+- **Under SIWC,** retention can't be set (R3.5).
+- **S3 also checks** whether an explicit breakpoint after the developer item and the implicit end-of-input breakpoint both apply.
 
-## 4.7 Skills: format and loading
+## 4.7 Skills: format and loading (D4)
 
-- **Format:** the Agent Skills spec as written (R7), with no custom frontmatter keys. Gremlin-specific settings go in `metadata` or a future sidecar file.
-- **Discovery:** scan the mounted private `skills/` first, then the public `skills/`; private overrides public. The workspace mounts both read-only at `/skills`.
-- **Selection:** `skills:` in TASK.md frontmatter names the subset for that task.
+- **Format:** the Agent Skills spec as written (R7), with no custom frontmatter keys. Gremlin-specific settings go in `metadata` as JSON-encoded strings, or in a future sidecar file.
+- **Discovery:** skills are read in the app, from the private and public skill trees mounted read-only at `/skills/private` and `/skills/public`. The workspace mounts them at the same paths (4.9). Private overrides public. Names are validated like the reference validator, Unicode lowercase included.
+- **Selection:** the `skills:` list in TASK.md frontmatter names the subset for that task. `gremlin apply` rejects unknown names.
 - **Exposure:**
   - The catalog (name, description, path) goes in the developer item.
-  - The `activate_skill` tool has an enum of the task's skill names. Its output is the SKILL.md body, plus the list of files in `scripts/` and `references/`.
+  - The `activate_skill` tool takes an enum of the task's skill names. Its output is the SKILL.md body plus the list of files in `scripts/` and `references/`.
   - The model runs scripts with `shell`.
-- **Env and secrets:** each task's skills get their env from `SkillSetting`, injected into that run's exec calls. These are task-scoped secrets the agent can read, never the app's own keys.
+- **Env and secrets:** each task's skills get their env from `SkillSetting`, injected into that run's exec calls. These are workspace-visible secrets, never the app's own (C3, D17).
 - **Weak-model option:** `inline: true` per task puts the SKILL.md bodies straight into the developer item. That is stable per task, so still cacheable.
 
-## 4.8 Scheduler and concurrency
+## 4.8 Scheduler and concurrency (D6, D12, D16)
 
 ```
- every 15s, one app process
+ tick: every 15 s, one app process
  BEGIN
-   SELECT … FROM task WHERE enabled AND next_run_at <= now() FOR UPDATE SKIP LOCKED
-   per due task:  INSERT run(status='queued')            ← may hit the partial unique index
-                  next_run_at = croner.nextRun(schedule, tz, from=now)
+   SELECT … FROM task
+     WHERE enabled AND next_run_at <= now()
+       AND the task's profile is not in backoff (profile_state.blocked_until)
+     FOR UPDATE SKIP LOCKED
+   per due task:
+     late by more than catch_up_grace and catch_up = skip
+        → INSERT run(status='skipped'); next_run_at = next fire after now
+     else
+        INSERT INTO run (…, status='queued') ON CONFLICT DO NOTHING RETURNING id
+        inserted                   → next_run_at = croner.nextRun(schedule, tz, from = now)
+        no row, overlap = skip     → INSERT run(status='skipped'); next_run_at = next fire after now
+        no row, overlap = queue    → leave next_run_at: the task fires on the first tick after the
+                                     active run ends, and missed fires coalesce into one (D16)
  COMMIT
 
- UNIQUE INDEX one_active_run ON run(task_id) WHERE status IN ('queued','running')
-   conflict = the previous run is still going → record 'skipped' (overlap_policy: skip | queue)
- worker:   claim queued → running (heartbeat every turn) → terminal status
- recovery: at boot and every tick, 'running' with a stale heartbeat → 'abandoned'
- missed fires (laptop asleep, Docker stopped): catch_up: once | skip, per task
- manual:   `gremlin run <task>` inserts a run through the same index
+ worker (same process)
+   take the profile's semaphore, then claim one queued run for that profile:
+     find(… where status='queued', lock pessimistic_write + skip_locked) → status='running'
+   profile no longer in config → failed; queued longer than max_queue_age → skipped
+   heartbeat_at on a 10 s timer while running; terminal updates are conditional (4.4)
+
+ boot (single instance, Q6):
+   running → abandoned (nothing else can own them); the exec server kills leftover processes;
+   queued rows older than catch_up_grace get catch_up re-applied
 ```
 
+**Why this design over the alternatives**
+- **The `ON CONFLICT` insert is the critical detail.** A plain INSERT that hits the partial unique index aborts the whole transaction (R10), so one overlapping task would roll back every other due task and never advance `next_run_at`, stalling the scheduler.
 - **Why not cron or systemd invoking a CLI:**
   - Schedules live in the DB, so an external cron would need a synced copy.
   - Cron inside containers is awkward (R9).
@@ -863,38 +1119,65 @@ What carries across runs:
 - **Why not `Bun.cron` timers (R8):**
   - Per-task timers have to be re-registered on every edit.
   - They forget runs missed while the process was down.
-  - An error thrown in the handler can kill the process.
-  - A `next_run_at` column handles all three.
-- **Why croner over `Bun.cron.parse`:** croner takes an explicit timezone and has seconds support. Bun 1.4 changed `parse`'s default to local time, and containers usually run in UTC (R8).
-- **Concurrency:** an in-process semaphore per model profile, with a configured limit.
-  - LM Studio allows 4 concurrent predictions by default (R5.4).
-  - Concurrent MLX requests reportedly evict each other's cache (R5.7), so a limit of 1 is a sensible default for local models.
-  - SIWC limits come from the plan.
-  - With one app process, in-process semaphores are enough. The DB-level locks above keep a second instance safe later.
+  - An error in a handler can kill the process.
+  - A `next_run_at` column has none of these problems.
+- **Why croner over `Bun.cron.parse` (D12):** since Bun 1.4.0 both take an explicit IANA time zone. croner adds a seconds field, a year field, and `L`/`W`/`#`, which Bun's parser rejects. It also runs on Node, which the D13 fallback would need (R8).
+
+**Time zones and DST**
+- `tz` is required per task, or taken from a deployment default (Q11). Never fall back to the process zone, which is UTC in a container. All times are stored as `timestamptz`.
+- croner's DST behaviour (R10) is accepted and pinned with unit tests at both 2026 transitions:
+  - fixed-time jobs run once in the fall-back hour;
+  - interval jobs skip the repeated hour;
+  - a job in the spring-forward gap runs an hour late.
+- `catch_up_grace`, around 2× the tick, separates "late tick" from "missed". With a 15 s tick every fire is seen up to 15 s late, so without a grace `catch_up: skip` would skip everything.
+
+**Deferral and backoff**
+- A plan limit (SIWC) or an unreachable local backend ends the run as `deferred`, which is terminal and keeps the partial output.
+- It also sets `profile_state.blocked_until = now + backoff`. The backoff doubles: from 15 minutes up to 4 hours for SIWC, and from 1 minute up to 30 minutes for a local backend. It resets on success.
+- The tick doesn't enqueue that profile's tasks and doesn't advance their `next_run_at`, so when the block lifts each task fires once, with missed fires coalesced. The first run after the block acts as the probe.
+
+**Concurrency**
+- Each model profile has an in-process semaphore with a configured limit.
+- LM Studio allows 4 concurrent predictions by default (R5.4). Concurrent MLX requests reportedly evict each other's cache (R5.7), so 1 is a sensible default for local profiles.
+- SIWC limits come from the plan.
+- With one app process, in-process semaphores are enough. The DB-level locks above keep a second instance safe later (Q6).
 
 ## 4.9 Docker / compose
 
 ```yaml
 services:
   postgres:
-    image: pgvector/pgvector:pg17          # pin in S1
-    volumes: [pgdata:/var/lib/postgresql/data]
+    image: pgvector/pgvector:pg17                        # pin in S1
+    env_file: ${GREMLIN_PRIVATE}/postgres.env            # POSTGRES_PASSWORD etc.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./packages/app/db/init:/docker-entrypoint-initdb.d:ro   # roles (4.4); runs on an empty data dir only
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U postgres"], interval: 5s, retries: 12 }
+    restart: unless-stopped
     networks: [data]
   app:
-    build: { context: ., dockerfile: packages/app/Dockerfile }
+    build: { context: ., dockerfile: packages/app/Dockerfile }   # copies both tsconfig files (C7)
     env_file: ${GREMLIN_PRIVATE}/gremlin.env
     volumes:
       - ${GREMLIN_PRIVATE}/tasks:/config/tasks:ro
+      - ${GREMLIN_PRIVATE}/skills:/skills/private:ro     # same paths as in the workspace (4.7)
+      - ./skills:/skills/public:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+      workspace: { condition: service_started }
+    init: true
+    restart: unless-stopped
     networks: [data, exec, egress]
-    extra_hosts: ["host.docker.internal:host-gateway"]   # Linux; built in on Docker Desktop
-    depends_on: [postgres, workspace]
+    extra_hosts: ["host.docker.internal:host-gateway"]   # Linux only; built in on Docker Desktop
   workspace:
     build: { context: ., dockerfile: packages/workspace/Dockerfile }
-    volumes:                               # what the agent can touch = what you mount
+    volumes:                                             # what the agent can touch = what you mount
       - ${HOME}/notes:/work/notes
       - ${GREMLIN_PRIVATE}/skills:/skills/private:ro
       - ./skills:/skills/public:ro
-    networks: [exec, egress]               # egress: Q8
+    init: true                                           # reaps orphaned grandchildren
+    restart: unless-stopped
+    networks: [exec, egress]                             # egress: Q8
 networks:
   data:   { internal: true }
   exec:   { internal: true }
@@ -903,35 +1186,47 @@ volumes:
   pgdata: {}
 ```
 
-**LM Studio operations** (host side, R5.5–R5.7):
-- Preload models with `lms load <model> --context-length <N> --parallel <K>` and no TTL. JIT loading would use the 8k default context (0.4.16+), and JIT or TTL reloads reset parallelism to 4.
-- Keep the server running with "run LLM server on login" or the llmster daemon. macOS has no launchd guide.
-- Check that `host.docker.internal` reaches LM Studio on 127.0.0.1 (S5). If it doesn't, bind to 0.0.0.0 **and** enable token auth, which needs one GUI step.
+**Networking notes** (R10):
+- **Docker Desktop on macOS.** `host.docker.internal` is built in. It reaches services bound to 127.0.0.1 on the Mac, also from a container on internal plus normal networks. A container on an internal-only network can't resolve it.
+- **Linux.** `host-gateway` resolves to the docker0 bridge IP, so a 127.0.0.1-bound LM Studio is unreachable. Bind LM Studio to the bridge IP or 0.0.0.0, with token auth.
+- **`internal: true` networks.** They block the internet and other networks, but still allow the network's gateway IP. Removing `egress` from the workspace therefore wouldn't hide host services listening on 0.0.0.0.
+- **The app needs a resilient start.** It retries its database connection at boot, and the app's restart policy keeps the scheduler running after crashes, Docker restarts and reboots. If the app itself is down it can't send alerts, so pair it with an external dead-man's-switch ping (Q1).
 
-**Hygiene:**
+**LM Studio operations** (host side, R5.4–R5.7):
+- **Enable token auth** (one GUI step), and keep the token only in the app's env (C3).
+- **Preload models** with `lms load <model> --context-length <N> --parallel <K>` and no TTL.
+- **Check the model at run start.** The app checks `GET /api/v1/models` for the loaded instance and its `parallel` and context values. If the instance is missing, for example after a reboot, the app either loads it with `POST /api/v1/models/load` at the intended context or defers with an alert. It never relies on JIT, for three reasons:
+  - JIT loading uses the 8k default context (0.4.16+);
+  - JIT and TTL reloads reportedly reset parallelism to 4 (R5.7);
+  - the REST `parallel` field is changelog-only (R5.4), and S2 checks it.
+- **Keep the server alive** with "run LLM server on login" or the llmster daemon. llmster has no macOS launchd guide.
+
+**Hygiene, from M1:**
 - gitleaks in a pre-commit hook and in CI, plus GitHub push protection.
 - The app validates config and env against a schema at boot and refuses to start otherwise.
+- `tsc --noEmit` runs in CI (C7).
 
 ## 4.10 Milestones
 
 | | Scope | Done when |
 |---|---|---|
-| **M0 Spikes** | S1–S5 (Part 5), throwaway scripts with pass/fail results | Every spike is answered; D1, D2 and D13 can be closed |
-| **M1 Walking skeleton**, the brief's slice | compose (postgres, app, workspace); Task/Run/Item/Event; `gremlin apply`; scheduler tick, croner and the overlap index; loop with `shell`/`read_file`/`write_file` through the workspace; one model profile (API key or LM Studio); `gremlin runs show <id>` prints the transcript | A task fires on schedule, edits real files, and you can read exactly what it did |
-| **M2 Hardening** | Process-group kill, output caps, argument validation, budgets plus finalize, narration nudges, abandoned/catch-up/deferred, history repair, failure notification (Q1) | A deliberately broken task degrades gracefully and you hear about it |
-| **M3 Skills and state** | SKILL.md discovery, catalog, `activate_skill`, per-task env, carried state (Q2) | A task uses one of your skills and remembers something across runs |
-| **M4 Second provider and auth** | SIWC or LM Studio, whichever M1 didn't use; per-profile concurrency; review cache telemetry | The same task runs on both backends |
-| **M5 Compaction seam** | Threshold, `planCompaction`, a plain summarising turn; **only if M4 telemetry shows context growth** | A long run crosses the threshold and continues |
-| **M6 Publish** | `core` API docs and reference loop, gitleaks in pre-commit and CI, boot config validation, npm publish | The repo is safe to make public |
+| **M0 Spikes** | S1–S5 (Part 5), throwaway scripts with pass/fail results | D1, the technical half of D2, D3, D8, D13 and D15 can be closed |
+| **M1 Walking skeleton** (the brief's slice) | compose with restart policies, healthcheck and two DB roles; Task, Run, Item and Event; `gremlin apply`; the tick with `ON CONFLICT` and the overlap index; the boot sweep; the worker; the loop with `shell`, `read_file` and `write_file` through the workspace (per-command timeout, process-group kill, closed stdin, output normalisation); one profile, an OpenAI API key (D14); `gremlin runs show <id>`; gitleaks, push protection, boot config validation, `tsc` in CI | A task fires on schedule, edits real files and leaves a readable transcript, and the system survives an app restart and a hung command |
+| **M2 Hardening** | The rest of 4.5: argument validation, output caps, budgets, context-fill check and finalize; the compaction seam (`estimateTokens`, `planCompaction` returning null); narration nudges; first-output and idle timeouts; catch-up grace; profile backoff and `deferred`; history repair; DST tests; failure notification and dead-man's switch (Q1) | A deliberately broken task degrades gracefully, and you hear about it |
+| **M3 Skills and state** | SKILL.md discovery in the app, catalog, `activate_skill`, per-task env, carried state (Q2) | A task uses one of your skills and remembers something across runs |
+| **M4 LM Studio** | Local profile, token auth, model check at run start, per-profile concurrency, review of cache telemetry | The same task runs on both backends |
+| **M5 SIWC** | Gated on S4 and Q9: login (compose-run with a published port, or host login plus import), the credential refresh protocol, plan-limit deferral | A task runs on plan usage and defers cleanly at the limit |
+| **M6 Compaction summariser** | A plain summarising turn behind the M2 seam, **only if telemetry shows context growth** | A long run crosses the threshold and continues |
+| **M7 Publish** | `core` API docs and reference loop, npm publish | The package is published |
 
 ## 4.11 Won't build (scope fence, C10)
 
-- Plugin system, provider registry, event bus, multi-agent orchestration.
+- A plugin system, provider registry, event bus or multi-agent orchestration.
 - Vector memory or RAG, until a skill needs it. `pgvector` stays available but unused.
 - A web UI, until the CLI hurts.
-- Switching models mid-run. Reasoning items are tied to one model; switch only between runs.
-- OpenAI-hosted tools and skills (R4). They would split the code path from LM Studio.
-- A soft budget of about 1.5k lines for `core`. Crossing it means something is being reimplemented.
+- Switching models mid-run. Reasoning is tied to one model family; switch only between runs.
+- OpenAI-hosted tools, or OpenAI's shell-tool skills in either mode (R4). They would split the code path from LM Studio.
+- A soft size budget of about 1.5k lines for `core`. Crossing it means something is being reimplemented.
 
 ---
 
@@ -942,44 +1237,66 @@ volumes:
 | ID | Decision | Options | Recommendation | Status |
 |---|---|---|---|---|
 | D1 | LLM wire API | Responses only · Chat Completions only · both behind a thin adapter | **Responses only** (C1) | open |
-| D2 | OpenAI auth order | API key first · SIWC first · both at once | **API key first, SIWC after S4** (C2) | open |
+| D2 | OpenAI auth order | API key first · SIWC first · both at once | **API key first; SIWC after S4 and Q9** (C2) | open |
 | D3 | Where the shell and file tools run | Workspace container · app container | **Workspace container** (C3) | open |
 | D4 | What a skill is | SKILL.md plus a few app tools · JSON Schema plus handler (as briefed) · SKILL.md plus typed sidecars | **SKILL.md plus a few app tools** (C4) | open |
 | D5 | Where task definitions live | DB canonical with TASK.md apply · files canonical · DB only | **DB canonical with TASK.md apply** (C6) | open |
 | D6 | Scheduler (originally open) | In-process DB tick · cron/systemd invoking a CLI · `Bun.cron` timers | **In-process DB tick** (4.8) | open |
-| D7 | History storage | One row per item · `jsonb` array per run | **Row per item** (C11) | open |
+| D7 | History storage | One row per item · a `jsonb` array per run | **Row per item** (C11) | open |
 | D8 | Narration fallback | Nudge · execute the parsed call | **Nudge; strict execute opt-in per profile** (C9) | open |
-| D9 | Run limits | Iteration cap only · budgets plus finalize turn | **Budgets plus finalize turn** (C8) | open |
+| D9 | Run limits | Iteration cap only · budgets, context check and finalize turn | **Budgets, context check and finalize** (C8) | open |
 | D10 | Core packaging | One package with subpath exports · one package per library | **One package** (4.2) | open |
-| D11 | Compaction trigger | Threshold, chunky · sliding window | **Threshold** (C5) | open |
+| D11 | Compaction trigger | Threshold, chunky, at turn boundaries · sliding window | **Threshold at turn boundaries** (C5) | open |
 | D12 | Cron expressions | croner · `Bun.cron.parse` | **croner** (4.8) | open |
 | D13 | ORM fallback, only if S1 fails | EntitySchema · run the app on Node | **EntitySchema first** (C7) | conditional |
+| D14 | First backend for M1 | OpenAI API key · LM Studio | **OpenAI API key**: the most reliable tool calling, so early harness bugs aren't mixed up with local-model quirks. LM Studio comes in M4 | open |
+| D15 | `emitDecoratorMetadata` | Off, with explicit types · on, with `Relation<T>` and `import type` | **Off** (C7); S1 confirms | open |
+| D16 | Meaning of overlap `queue` | Coalesce (fire once after the active run) · a real depth-1 queue (needs two partial indexes) | **Coalesce** (4.8) | open |
+| D17 | Isolating skill secrets | Visible workspace-wide (documented) · per-task uid in the workspace | **Workspace-wide for now**; revisit with Q5. Per-task uids edge toward the non-goal | open |
 
 ## Open questions
 
 | ID | Question | Why it matters |
 |---|---|---|
-| Q1 | Where do run results and failures go: push notification, email, a file, a daily digest? | Nothing in the brief delivers output. A 3am failure nobody sees is the classic failure mode. |
-| Q2 | What is "state between runs": prose notes or structured `jsonb`? Written by an app tool (`remember`) or taken from the final answer? | Shapes `task.state`, the run input and one app tool. |
+| Q1 | Where do run results and failures go: push notification, email, a file, a daily digest? And should an external dead-man's switch watch the app itself? | Nothing in the brief delivers output. A 3am failure nobody sees is the classic failure mode, and a dead app can't alert anyone. |
+| Q2 | What is "state between runs": prose notes or structured `jsonb`? Is it written by an app tool (`remember`) or taken from the final answer? | Shapes `task.state`, the run input and one app tool. |
 | Q3 | Which local models will you run? | Decides whether LM Studio parses their tool calls natively or falls back to its injected prompt (R5.2), and so how often narration happens. |
-| Q4 | Plus or Pro? | Only Plus shares a 5-hour window with your own ChatGPT and Codex use (R1.2). |
-| Q5 | Can two tasks touch the same mounted directories? | There is no app-level answer to two agents editing the same files. If yes, use a convention such as one working directory per task. |
-| Q6 | One app instance, always? | Assumed. The DB locks make a second instance safe, but the concurrency semaphores would have to move into the DB. |
+| Q4 | Which plan would SIWC use: Plus, Pro, or an existing Business or Go seat? | Plus shares a 5-hour window with your own Codex use. Plus and Pro both draw on the weekly "ChatGPT Work and Codex" allowance. Whether Business or Go qualifies is unsettled (R1.2), and S4 tests it. |
+| Q5 | Can two tasks touch the same mounted directories? | There is no app-level answer to two agents editing the same files. If they can, adopt a convention such as one working directory per task, and decide D17. |
+| Q6 | One app instance, always? | Assumed. The boot-time `abandoned` sweep and the in-process semaphores rely on it. The DB locks keep a second instance from corrupting data, but liveness would need advisory locks or longer heartbeat thresholds. |
 | Q7 | Is a CLI transcript (`gremlin runs show`) enough for inspecting runs at first? | Assumed yes until M2 or later. |
-| Q8 | Does the workspace need internet access? | Assumed yes, through the egress network. |
-| Q9 | Does SIWC eligibility cover a personal, unattended, scheduled runner? | The docs don't say (R1.2). Ask OpenAI or read the terms before relying on it. |
+| Q8 | Does the workspace need internet access? If so, is reaching host services (`host.docker.internal`) an accepted risk, or should egress go through a proxy? | Assumed yes, with LM Studio token auth and host services treated as exposed (C3, R10). A proxy matters more on client boxes. |
+| Q9 | Does SIWC cover a personal, unattended, scheduled runner? | The docs don't say. **For:** a guide for running an open-source app on a remote VM; the example agent name is OpenClaw, which has a built-in cron scheduler; and OpenAI's Codex lead called use through Sign in with ChatGPT in OSS clients "completely fine" (R1.4). **Against:** the Codex docs say "The right way to authenticate automation is with an API key" (R1.3). It needs OpenAI's answer or a reading of the terms, not a spike. |
 | Q10 | Is a client deployment always one install per client, with no multi-tenancy? | Assumed yes. Otherwise every table needs a tenant key from the start. |
-| Q11 | Which timezone do schedules use by default? | croner needs an explicit zone, and containers run in UTC. Proposal: `tz` per task, with a deployment default. |
+| Q11 | Which time zone do schedules use by default? | Without a zone, croner uses the process zone, which is UTC in containers (R8). Proposal: `tz` per task, with a deployment default (4.8). |
 
 ## Spikes (M0)
 
 | ID | Spike | Pass when | Unblocks |
 |---|---|---|---|
-| S1 | TypeORM on Bun | Entities with circular relations across files (`Relation<T>`), `jsonb`, a partial unique index, a `SKIP LOCKED` claim inside a transaction, `migration:generate` and `migration:run` through `bunx --bun`, and the boot self-check all work on Bun 1.4.x | ORM choice; D13 |
-| S2 | LM Studio `/v1/responses` with **your** models | Multi-turn function calls with client-held history, developer item honoured, `tool_choice:"none"` works, malformed-call behaviour observed (text or HTTP 500), `cached_tokens` reported | D1, D8 |
-| S3 | OpenAI Responses with the target GPT model | `store:false` with reasoning-item replay across tool turns, cached and written tokens visible, and whether a `tool_choice` change keeps the cache | D1, caching config |
-| S4 | SIWC end to end | Login from or for a container, refresh rotation under two concurrent runs (serialised), namespaced tools or `additional_tools`, the 429 response shape | D2, Q9 |
-| S5 | Docker plumbing | `host.docker.internal` reaches LM Studio on 127.0.0.1; the exec server kills process groups on timeout and caps output by reading the stream | D3, 4.9 |
+| S1 | TypeORM and Postgres on Bun | Entities with circular relations across files, with metadata both off and on. `jsonb`, the partial unique index, and a find-options `SKIP LOCKED` claim inside a transaction work. The `ON CONFLICT` tick with one conflicting task doesn't block the others. The tick-vs-finalisation lock order holds under a race. Both migration commands run through `bunx --bun` from `packages/app`. The tsconfig matrix passes: started from root and from `packages/app`, in the image and in `bun test`. The boot self-check fires when it should. The two roles and the INSERT-only grant hold. | ORM choice; D13, D15 |
+| S2 | LM Studio `/v1/responses` with **your** models | Multi-turn function calls with client-held history; the developer item honoured; `tool_choice:"none"` works and whether it keeps the KV prefix; malformed-call behaviour (text or HTTP 500); BT#2257's intermittent 500s; `cached_tokens` reported; the longest silent gap measured; the REST `parallel` load field. | D1, D8 |
+| S3 | OpenAI Responses with the target GPT model | `store:false` with reasoning items replayed from `output_item.done` across tool turns; replay across a compaction boundary; cached and written tokens visible; whether `tool_choice:"none"` keeps the cache; whether an explicit breakpoint and the implicit end-of-input breakpoint both apply; reasoning summaries as a liveness signal; the longest silent gap. | D1, D11, caching config |
+| S4 | SIWC end to end | Eligibility on the actual account type; both login routes (C2); the issued `client_id` stored and used; refresh rotation under two concurrent runs, serialised; namespaced tools or `additional_tools`; the limit-error shapes (429 before the stream, `response.failed` mid-stream, bare `{"detail"}` bodies) and any reset hint; whether reasoning summaries are allowed. | The technical half of D2; Q9 is answered separately |
+| S5 | Docker plumbing and the exec server | `host.docker.internal` reaches LM Studio on 127.0.0.1 (Docker Desktop only; on Linux, bind to the bridge IP). The exec server kills process groups on timeout and on client disconnect, returns promptly when a background grandchild holds the pipe, never blocks on stdin, reaps zombies under `init`, and stores binary and NUL output safely. Internal-network reachability matches R10. | D3, 4.9 |
+
+---
+
+## Verification log
+
+After the first draft, independent agents fact-checked the research against primary sources and reviewed the design. Each serious correction was then re-checked by a second agent, with instructions to keep the brief's claim unless the evidence against it was solid. Every correction below has been applied.
+
+| Area | Claims checked | Corrections | Notable |
+|---|---|---|---|
+| OpenAI subscription and SIWC (R1) | 58 | 14 | Eligibility sources conflict; limit errors also arrive mid-stream with no reset time; 15 omitted fields, not 8; issued `client_id`; Terms of Use and fraud-flagging context; post dates |
+| Responses API and OpenAI skills (R2, R4) | 36 | 4 | Local-mode API skills exist (still OpenAI's `shell` tool); reasoning shared within a model family; `output_item.done` |
+| Prompt caching (R3) | 36 | 6 | `24h` is a maximum, typically about 30 minutes; `tool_choice` changes are cache-safe; eligible breakpoints; more cache breakers |
+| LM Studio (R5) | 68 | 7 | BT#1756 closed; the `strict` warning was on `/v1/responses`; the 0.4.15 fix was for Claude Code; the REST `parallel` field is undocumented |
+| TypeORM (R6.1, R6.3) | 53 | 6 | Driver change is per family, so Postgres is unaffected; the `null` guard's scope by API and version; `emitDecoratorMetadata` optional; `FOR UPDATE OF` whenever joining |
+| Bun (R6.2, R8) | 48 | 14 | **Bun reads the cwd's tsconfig**; `Bun.cron` gained `{ tz }` in 1.4.0; `maxBuffer` is per stream; #14888 is a Bun issue |
+| Agent Skills and background (R7, R9, 4.9) | 34 | 5 | Codex's sidecar holds no typed tools; Unicode skill names; TypeORM #12712; Docker gateway caveats |
+| Completeness against the research notes | | 3 dropped, 12 distorted | Lost hedges restored; Part 1 status tables moved to 3.0 |
+| Design review (Parts 3–5) | | 31 issues | **High severity:** `ON CONFLICT` tick; heartbeat timer; context-fill check; NUL-safe storage. **Medium severity, among others:** lock order, role separation, skills mounted in the app, milestone order |
 
 ---
 
@@ -987,35 +1304,52 @@ volumes:
 
 **OpenAI**
 - help.openai.com/en/articles/8156019 (API billing)
-- help.openai.com/en/articles/20001542 (SIWC)
-- developers.openai.com/siwc/token-sharing-open-source, plus /sign-in, /models-and-inference, /preview-limitations, /token-reference, /errors-and-recovery
-- developers.openai.com/api/docs/guides/migrate-to-responses
-- developers.openai.com/api/docs/deprecations
-- developers.openai.com/api/docs/guides/reasoning
-- developers.openai.com/api/docs/guides/prompt-caching
-- developers.openai.com/api/docs/guides/tools-skills
+- help.openai.com/en/articles/20001542 (plan usage; read via web.archive.org)
+- help.openai.com/en/articles/6825453 (release notes)
+- developers.openai.com/siwc/quickstart
+- developers.openai.com/siwc/token-sharing-open-source, plus /sign-in, /profiles-and-sessions, /models-and-inference, /preview-limitations, /token-reference, /errors-and-recovery, /self-hosted-vms, /codex-app-server
+- developers.openai.com/cookbook/articles/sign-in-with-chatgpt
+- developers.openai.com/api/docs/guides/migrate-to-responses, /deprecations, /guides/reasoning, /guides/function-calling, /guides/prompt-caching, /guides/prompt-caching/diagnostics, /guides/tools-skills, /guides/agents-api/overview, /changelog
+- developers.openai.com/api/docs/models/gpt-6.1-sol, /gpt-6-sol, /gpt-6-astra
 - developers.openai.com/blog/responses-api
-- learn.chatgpt.com/docs/auth, learn.chatgpt.com/docs/auth/ci-cd-auth, learn.chatgpt.com/docs/build-skills
+- learn.chatgpt.com/docs/auth, /docs/auth/ci-cd-auth, /docs/build-skills, /docs/sign-in-with-chatgpt
+- openai.com/policies/terms-of-use (effective 2026-01-01; read via web.archive.org)
 - openai-node 7.32.0 type definitions
-- Secondary: WorkOS (2026-10-01), The Star (2026-10-04), Simon Willison (2025-12-12, 2025-12-20, 2026-02-11), OpenCode v1.1.11 release notes, X mirrors of posts by Tibo Sottiaux
+- x.com/thsottiaux/status/2009742187484065881, /2090675027670978569, /2104991529416999243
+- Secondary: WorkOS (2026-10-01), The Star (2026-10-04), VentureBeat (2026-01-09), Simon Willison (2025-12-12, 2025-12-20, 2026-02-11), OpenCode v1.1.11 release notes and issue #7410, devday.openai.com
 
 **LM Studio**
-- lmstudio.ai/docs, specifically /developer/openai-compat, /developer/openai-compat/tools, /developer/rest, /developer/core/headless, /developer/core/ttl-and-auto-evict, /developer/core/authentication (source: github.com/lmstudio-ai/docs)
-- lmstudio.ai/changelog
-- lmstudio.ai/blog/lmstudio-v0.3.29, /blog/openresponses, /blog/0.4.0, /blog/mlx-engine-agentic-workloads
+- lmstudio.ai/docs, specifically /developer/openai-compat, /developer/openai-compat/tools, /developer/rest, /developer/rest/load, /developer/rest/list, /developer/core/headless, /developer/core/ttl-and-auto-evict, /developer/core/authentication (source: github.com/lmstudio-ai/docs)
+- lmstudio.ai/changelog, specifically 0.4.7, 0.4.10, 0.4.15, 0.4.26
+- lmstudio.ai/blog/lmstudio-v0.3.23, /lmstudio-v0.3.29, /openresponses, /0.4.0, /mlx-engine-agentic-workloads
 - github.com/lmstudio-ai/lmstudio-bug-tracker issues 670, 1154, 1628, 1709, 1714, 1756, 1904, 2061, 2074, 2086, 2115, 2224, 2257, 2320, 2390, 2419
 - github.com/lmstudio-ai/lms issue 489
 - mlx-engine PRs 352, 369
 
-**TypeORM and Bun**
-- typeorm.io/blog/typeorm-1-0, typeorm.io/docs/releases/1.0/release-notes/, typeorm.io/blog/future-of-typeorm, typeorm.io/docs/help/faq/#how-to-use-typeorm-in-esm-projects
-- github.com/typeorm/typeorm releases, issues 9738, 9862, 10118, PR 11437, and docs (query-builder, entities)
-- bun.com/blog/bun-v1.0.3, /bun-v1.3.10, /bun-v1.3.12
-- bun.com/docs/runtime/cron, bun.com/docs/runtime/child-process
-- github.com/oven-sh/bun issues 4136, 6172, 6326, 7591, 14888, 20994, 44120, PRs 35471, 36461
+**TypeORM, Postgres and Bun**
+- typeorm.io/blog/typeorm-1-0, /docs/releases/1.0/release-notes/, /docs/data-source/null-and-undefined-handling, /blog/future-of-typeorm, /docs/help/faq/#how-to-use-typeorm-in-esm-projects
+- github.com/typeorm/typeorm:
+  - releases 1.1.0 and 1.1.2;
+  - issues 9316, 9738, 9862, 10118, 12712;
+  - PRs 11437, 11766, 11836, 11878, 12690, 12692, 12730, 12771, 12860;
+  - `.github/workflows/tests.yml` and docs (query-builder, entities)
+- registry.npmjs.org/typeorm
+- postgresql.org/docs/current/sql-select.html
+- bun.com/blog/bun-v1.0.3, /bun-v1.3.10, /bun-v1.3.11, /bun-v1.3.12, /bun-v1.4.0
+- bun.com/docs/runtime/cron, /docs/runtime/child-process, /docs/pm/bunx
+- github.com/oven-sh/bun:
+  - issues 4136, 4290, 6172, 6326, 7591, 14888, 20994, 28131, 28605, 44120;
+  - PRs 27248, 34496, 35122, 35471, 36461, 36747, 38719, 40823
+- node-postgres issue 3201
 - github.com/Hexagon/croner
 
 **Agent Skills**
 - agentskills.io/specification, /client-implementation/adding-skills-support, /skill-creation/using-scripts
-- github.com/agentskills/agentskills
+- github.com/agentskills/agentskills (skills-ref parser, validator and tests)
 - code.claude.com/docs/en/skills
+
+**Docker**
+- docs.docker.com/reference/cli/docker/network/create/ (internal mode)
+- docs.docker.com/reference/compose-file/networks/
+- docs.docker.com/reference/cli/dockerd/ (host gateway IP)
+- docs.docker.com/reference/cli/docker/container/run/
