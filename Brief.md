@@ -12,6 +12,7 @@
 >   - **Round one:** after the first draft, 15 independent agents re-checked 333 claims against primary sources and reviewed the design. Some ran local tests on Bun 1.4.3, Postgres 16 and Docker Desktop. Their 56 factual corrections and 31 design issues are folded in.
 >   - **Round two:** one agent audited that all 106 findings had landed correctly, and another did a fresh review of the revised design. Their 38 issues are folded in too.
 >   - Anything still unverified is marked [M] or [L], or listed as a spike.
+> - **Since revision 2, 2026-10-12:** R11 records the first pass of spike S2, a tool loop on LM Studio. C1, Q3 and the spikes table point to it.
 
 ---
 
@@ -577,6 +578,46 @@ All **[H]**, reproduced locally on 2026-10-11.
   - **Fall-back, interval jobs:** these skip the whole repeated hour. Hourly goes from 00:00Z to 02:00Z on 2026-10-25, and `*/15` pauses for 75 minutes.
   - **Spring-forward gap:** a job in the gap runs an hour late (02:30 became 03:30 local on 2026-03-29), although croner's README says gap jobs are skipped.
 
+## R11. Spike S2, first pass: a tool loop on LM Studio
+
+All **[H]**, run locally on 2026-10-12.
+
+**Setup.**
+- **Server and model:** LM Studio 0.4.26 (build 4), with `prism-ml/bonsai-27b` loaded: Qwen3.5 architecture, MLX, a 262k context and 4 parallel slots. `/api/v1/models` reports it as `trained_for_tool_use`, with reasoning on by default.
+- **Script:** a throwaway two-turn loop on `POST /v1/responses`, with `stream: true` and `store: false`.
+- **Request:** one function tool (`read_file`, taking `{ path: string }`), a `developer` item, and the question "What exact command does the "check" script in package.json run? Quote it."
+- **Runs:** once with `reasoning.effort: "none"` and once with the model's default.
+
+**Findings.**
+- **Calls arrive structured.** Both runs returned a `function_call` item rather than text: `name: read_file`, `arguments: {"path":"package.json"}`, `call_id: call_…`, `id: fc_…`. LM Studio parses this model's calls natively (R5.2).
+- **Client-held history works.** Turn 2 replayed every item as received and answered correctly, quoting the script. The replay was the developer and user items, all of turn 1's output items, and a `function_call_output`.
+- **Reasoning off** (`effort: "none"`):
+  - turn 1's output was the call alone, in 44 s;
+  - turn 2 was the answer, in 32 s.
+- **Reasoning on:**
+  - turn 1's output, in 24 s, was:
+    - a `reasoning` item with plain `reasoning_text` content, an empty `summary` and no `encrypted_content`;
+    - a `message` item whose only text was `"\n\n"`;
+    - the call;
+  - turn 2, in 48 s, was another reasoning item and the answer, which began with `"\n\n"`;
+  - the replayed reasoning items were accepted.
+- **One response can mix text and calls.** So "has text" doesn't mean "is the answer": a loop must check for calls first, and treat whitespace-only text as no text.
+- **Streaming shape.**
+  - Reasoning and answer text stream as deltas (`response.reasoning_text.delta`, `response.output_text.delta`).
+  - Call arguments don't. They arrived in a single `response.function_call_arguments.done`, with no `.delta` events. The stream is therefore silent while the model writes a call, so C8's idle limit must allow for a whole call's generation.
+  - `response.completed` carried every output item, matching the `response.output_item.done` events.
+- **The prompt cache works across turns and conversations.**
+  - Every turn reported `usage.input_tokens_details.cached_tokens`. Turn 2 reused 375 of 683 input tokens in one run, and 403 of 709 in the other.
+  - The second run's first turn already reused 256 tokens from the first run. That fits the MLX cache sharing 256-token chunks across conversations (R5.3).
+- **Not covered yet:**
+  - whether the developer item is honoured (this question needed the file either way);
+  - `tool_choice: "none"`;
+  - malformed calls;
+  - BT#2257's intermittent HTTP 500s;
+  - the REST `parallel` field;
+  - object `tool_choice` and `allowed_tools`;
+  - other models.
+
 ---
 
 # Part 3: Where the brief stands, and challenges
@@ -617,7 +658,7 @@ These are **proposals, not decisions**. Each links to a decision in Part 5. "Bri
   - It also drops reasoning between calls (R2.3), which is exactly what a tool loop needs to keep.
   - SIWC is Responses-only (R1.2).
   - LM Studio serves `/v1/responses` with function tools and client-held history (R5.1), and only that endpoint reports `cached_tokens` (R5.3).
-  - So one Responses code path *could* cover every backend, and Chat Completions can't. LM Studio's side is pending S2.
+  - So one Responses code path *could* cover every backend, and Chat Completions can't. On LM Studio, S2's first check passes for one model: multi-turn function calls with client-held history (R11). The rest of S2 is pending.
 - **Consequences:**
   - **History** becomes a list of Responses *items* stored verbatim: `message`, `function_call`, `function_call_output`, and `reasoning` with `encrypted_content`. `call_id` is the brief's "tagged with its tool-call ID".
   - **Always stream.** SIWC requires it, it keeps long local generations from hitting HTTP timeouts, and token flow helps as a liveness signal; C8 covers the silent stretches.
@@ -1366,7 +1407,7 @@ The `migrate` service also runs `gremlin prune` on demand: `docker compose run -
 |---|---|---|
 | Q1 | Where do run results and failures go: push notification, email, a file, a daily digest? And should an external dead-man's switch watch the app itself? | Nothing in the brief delivers output. A 3am failure nobody sees is the classic failure mode, and a dead app can't alert anyone. |
 | Q2 | What is "state between runs": prose notes or structured `jsonb`? Is it written by an app tool (`remember`) or taken from the final answer? | Shapes `task.state`, the run input and one app tool. |
-| Q3 | Which local models will you run? | Decides whether LM Studio parses their tool calls natively or falls back to its injected prompt (R5.2), and so how often narration happens. |
+| Q3 | Which local models will you run? | Decides whether LM Studio parses their tool calls natively or falls back to its injected prompt (R5.2), and so how often narration happens. So far: `prism-ml/bonsai-27b`, whose calls LM Studio parses natively (R11). |
 | Q4 | Which plan would SIWC use: Plus, Pro, or an existing Business or Go seat? | Plus shares a 5-hour window with your own Codex use. Plus and Pro both draw on the weekly "ChatGPT Work and Codex" allowance. Whether Business or Go qualifies is unsettled (R1.2), and S4 tests it. |
 | Q5 | Can two tasks touch the same mounted directories? | There is no app-level answer to two agents editing the same files. If they can, adopt a convention such as one working directory per task, and decide D17. |
 | Q6 | One app daemon, always? | Assumed, and enforced: `gremlin serve` takes an advisory lock and refuses to start a second daemon (4.8). The boot sweep and the in-process semaphores rely on it. Running two would need heartbeat-based recovery and DB-backed semaphores. |
@@ -1385,6 +1426,8 @@ The `migrate` service also runs `gremlin prune` on demand: `docker compose run -
 | S3 | OpenAI Responses with the target GPT model | `store:false` with reasoning items replayed from `output_item.done` across tool turns; replay across a compaction boundary; cached and written tokens visible; whether `tool_choice:"none"` keeps the cache; whether an explicit breakpoint and the implicit end-of-input breakpoint both apply; reasoning summaries as a liveness signal; the longest silent gap. | D1, D11, caching config |
 | S4 | SIWC end to end | Eligibility on the actual account type; both login routes (C2); the issued `client_id` stored and used; refresh rotation under two concurrent runs, serialised; namespaced tools or `additional_tools`; the limit-error shapes (429 before the stream, `response.failed` mid-stream, bare `{"detail"}` bodies) and any reset hint; whether reasoning summaries are allowed. Runs at the start of M5, not in M0. | The technical half of D2; Q9 is answered separately |
 | S5 | Docker plumbing and the exec server | **Networking:** `host.docker.internal` reaches LM Studio on 127.0.0.1 (Docker Desktop only; on Linux, bind to the bridge IP), and internal-network reachability matches R10. **Process control:** the exec server kills process groups on timeout and on client disconnect; kills processes that escaped with `setsid` through `GREMLIN_RUN_ID`; on reset, kills everything except PID 1 and itself; returns promptly when a background grandchild holds the pipe; never blocks on stdin; reaps zombies under `init`. **Output:** `yes` with a 5-minute timeout returns head and tail within the cap while memory stays flat; binary, NUL and cut-emoji output is stored safely. **Ownership:** on a Linux host, files the agent writes are owned by the host user. | D3, 4.9 |
+
+**S2 status (2026-10-12).** On `prism-ml/bonsai-27b`, the first criterion passes: multi-turn function calls with client-held history. `cached_tokens` is reported too (R11). The other criteria are still open.
 
 ---
 
