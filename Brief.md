@@ -8,7 +8,10 @@
 > - **Part 3** opens with where each settled decision and known risk stands, then challenges them. Each challenge is a **proposal awaiting your decision**. None has been applied.
 > - **Part 4** is a draft design that assumes the recommended options. Sections that depend on an open decision name it.
 > - **Part 5** is the log of decisions, open questions and spikes, to work through one step at a time.
-> - **Verification.** After the first draft, 15 independent agents re-checked 333 claims against primary sources and reviewed the design. Some ran local tests on Bun 1.4.3, Postgres 16 and Docker Desktop. Their 56 factual corrections and 31 design issues are folded in, and the Verification log at the end summarises them. Anything still unverified is marked [M] or [L], or listed as a spike.
+> - **Verification.** There were two review rounds, both summarised in the Verification log at the end.
+>   - **Round one:** after the first draft, 15 independent agents re-checked 333 claims against primary sources and reviewed the design. Some ran local tests on Bun 1.4.3, Postgres 16 and Docker Desktop. Their 56 factual corrections and 31 design issues are folded in.
+>   - **Round two:** one agent audited that all 106 findings had landed correctly, and another did a fresh review of the revised design. Their 38 issues are folded in too.
+>   - Anything still unverified is marked [M] or [L], or listed as a spike.
 
 ---
 
@@ -60,7 +63,7 @@ Primary goal: solve my own problem. Secondary: the core may become an open-sourc
 Everything private (secrets, client specifics, my own skills and task definitions) lives in persistence and config, never in source. So the whole repo is publishable.
 - Enforce this mechanically, not by vigilance: secret scanning on commit, config schema validation at boot.
 
-▸ Proposed shape: a private git repo (tasks, skills, env) mounted into the containers, alongside the public repo (4.2, 4.9). Secret scanning (gitleaks in pre-commit and CI, plus GitHub push protection) and config validation at boot start in M1, before any secret exists (4.10).
+▸ Proposed shape: a private git repo (tasks, skills) mounted into the containers, plus untracked env files for secrets, alongside the public repo (4.2, 4.9). Secret scanning (gitleaks in pre-commit and CI, plus GitHub push protection) and config validation at boot start in M1, before any secret exists (4.10).
 
 ## Components the app needs
 
@@ -148,7 +151,7 @@ Everything private (secrets, client specifics, my own skills and task definition
 
 **Eligibility**
 - **Plans: OpenAI's sources conflict.**
-  - The developer docs, the cookbook, learn.chatgpt.com and the 2026-09-29 release note say "eligible ChatGPT Plus and Pro users".
+  - The developer docs, the cookbook, learn.chatgpt.com and the 2026-09-29 release note say that eligible Plus and Pro users qualify. The exact wording differs between them.
   - The help article (20001542, revised around 2026-10-05) says plan usage in commercial apps "is only available with Go, Plus, and Pro", and that "Supported open-source tools remain available to all ChatGPT users".
   - So whether Business or Go can use plan usage in an open-source, locally hosted client is not established.
   - An ineligible account gets HTTP 403 `subscription_sharing_user_not_eligible`.
@@ -159,7 +162,7 @@ Everything private (secrets, client specifics, my own skills and task definition
 - **Flow.** OAuth with PKCE (S256) and a loopback redirect at `http://127.0.0.1:<port>/auth/callback`. Only the port may vary, and `localhost` is not accepted.
 - **Registration.**
   - `client_id=dynamic_agent_client` plus `ext_agent_host_id` is the **first-time registration entry point, not the client ID to keep**. The callback returns an issued `client_id` (`oaiapp_…`), which must be stored and used for the code exchange, every refresh and later sign-ins.
-  - `ext_agent_host_id` must be stable and distinct per host.
+  - `ext_agent_host_id` must be stable and distinct per host, so a host that imports credentials keeps its own ID.
   - The authorise request also sends `agent_name_hint`.
 - **Scopes.** Identity: `openid profile email`; validate the ID token. Plan usage: `offline_access resource.invoke chatgpt.tokens.use.direct`.
 - **Token lifetimes.** Access tokens last 1 hour (`expires_in` 3600). Refresh tokens last 30 days and are replaced on every refresh. The docs say to "serialize refreshes for the same session". A racing refresh fails with `refresh_token_reused`, which forces a new OAuth sign-in.
@@ -209,7 +212,7 @@ Everything private (secrets, client specifics, my own skills and task definition
 - **Reading.** Unsupported: accepted for one person's own use through a sign-in client, flagged when a subscription becomes shared API traffic, and now superseded by SIWC. A bespoke unattended runner calling it directly falls between those two cases.
 - **Constraints, from community reverse-engineering:** `store:false`, streaming, replaying encrypted reasoning, Codex's own prompt in `instructions`, and Codex's 5-hour and weekly windows.
 
-**R1.5 Third-party harness timeline.** **[H]** The recollection that OpenAI publicly welcomed OpenCode using ChatGPT subscriptions, right after Anthropic's block, is correct.
+**R1.5 Third-party harness timeline.** The recollection that OpenAI publicly welcomed third-party harnesses right after Anthropic's block is mostly right **[M]**. Hours after the block, OpenAI said it was working with OpenCode so that Codex users could use their *Codex* subscriptions there. The dated events below are **[H]**.
 - **2026-01-09.** Anthropic blocked third-party harnesses from using Claude subscriptions, server-side (VentureBeat, 2026-01-09; OpenCode issue #7410, opened 02:20 UTC).
 - **2026-01-09, 21:40 UTC.** Tibo Sottiaux posted: "We are working with OpenCode to allow Codex users to use their Codex subscriptions and usage limits in OpenCode directly." (x.com/thsottiaux/status/2009742187484065881)
 - **2026-01-10.** OpenCode v1.1.11 added "Codex authentication support" (01:54 UTC). A follow-up post, "Codex ❤️ OSS", named OpenHands, RooCode and Pi (19:01 UTC).
@@ -557,7 +560,10 @@ All **[H]**, reproduced locally on 2026-10-11.
   - `INSERT … ON CONFLICT DO NOTHING RETURNING id` works against a partial unique index, both without a conflict target and with `ON CONFLICT (task_id) WHERE status IN (…)`. A row whose status is outside the predicate never conflicts, even in the same transaction.
   - **Deadlock.** A tick that locks a task row and then inserts a run, running concurrently with a finalisation that updates a run row and then the task row, deadlocks. This was reproduced in both directions.
   - **NUL bytes.** `jsonb` rejects `\u0000` ("unsupported Unicode escape sequence … \u0000 cannot be converted to text"), and `text` columns can't hold NUL at all.
+  - **Lone surrogates.** When a string is cut in the middle of an emoji, `JSON.stringify` (Bun 1.4.3) emits an escape for the lone surrogate U+D83D. `jsonb` rejects it with "Unicode low surrogate must follow a high surrogate".
   - **Grants.** A table owner can REVOKE UPDATE/DELETE from itself and then GRANT them straight back, and a superuser ignores grants entirely. An INSERT-only guarantee therefore needs a runtime role that is neither owner nor superuser.
+  - **Foreign-key actions bypass grants.** With `ON DELETE CASCADE` or `SET NULL` on a foreign key into an INSERT-only table, a non-owner role with no DELETE or UPDATE on that table still deletes or rewrites its rows, by deleting the parent row. Referential actions run as the table owner.
+  - **Outer joins and locking.** `… LEFT JOIN … FOR UPDATE SKIP LOCKED` fails with "FOR UPDATE cannot be applied to the nullable side of an outer join". `FOR UPDATE OF <table>` or a `NOT EXISTS` filter avoids it.
 - **Docker Desktop on macOS (Docker 29.8.2):**
   - A container on a normal user-defined network reaches a host server bound only to 127.0.0.1 via `host.docker.internal`. So does a container on internal plus normal networks, which is the workspace's setup in 4.9.
   - A container on an internal-only network can't even resolve the name.
@@ -584,7 +590,7 @@ All **[H]**, reproduced locally on 2026-10-11.
 | Language/runtime | Holds. Bun 1.4.3 is current (2026-10-10). Watch out: Bun reads the `tsconfig.json` of the directory it's started from (R6.2, C7). It has built-in cron (R8), which bears on D6. |
 | Database | Holds. Everything the scheduler needs is reachable from TypeORM: `FOR UPDATE SKIP LOCKED`, partial unique indexes, `ON CONFLICT DO NOTHING`, `jsonb` and native `vector` columns (R6.3, R10). |
 | ORM | Holds, with conditions. TypeORM 1.1.2 is healthy, but its CI doesn't run on Bun. Four transpiler gotchas are verified on Bun 1.4.3, and the migration and minify items are [M] (R6.2). See C7 and S1. |
-| LLM client | Holds: the `openai` SDK covers the Responses API natively. Two qualifications. LM Studio should always run with token auth (C3, 4.9), so "a dummy key locally" becomes a real token. SIWC's namespace rule for function tools may need its own code path (C2, S4). The separate Known-risks premise, "stick to mainstream chat-completions", has shifted (C1); D1 is open. |
+| LLM client | Holds: the `openai` SDK covers the Responses API natively. Two qualifications. LM Studio should always run with token auth (C3, 4.9), so "a dummy key locally" becomes a real token. SIWC's namespace rule for function tools may need its own code path (C2, S4). The separate Known-risks premise, "stick to mainstream chat-completions", has shifted: on OpenAI, Chat Completions can't call tools on GPT-5.4+ with reasoning (R2.2), while the LM Studio pass on its own still recommends it there (R5.8). See C1; D1 is open. |
 | Models | Holds. New: a ChatGPT subscription can now pay for your own calls through SIWC plan usage. That covers Plus and Pro; for other plans the sources conflict (R1.2, C2). |
 | Deployment and isolation | Holds. On macOS, LM Studio has to run on the host, outside compose (R9). Where the boundary sits: C3. |
 | Repo | Holds. Proposal: one `core` package with subpath exports (D10). |
@@ -593,7 +599,7 @@ All **[H]**, reproduced locally on 2026-10-11.
 
 | Risk | What the research found | Where it goes |
 |---|---|---|
-| TypeORM runtime type gap | **Closed:** 1.x throws on `null`/`undefined` in high-level `where` criteria, for find/count/exists since 1.0.0 and for writes since 1.1.0 (R6.1). **Remains open:** QueryBuilder `.where()` silently matches zero rows on `null`; a bare id under a relation key returns an arbitrary row (#12712, R9); entity-instance criteria are unvalidated; `jsonb` payloads are unchecked; partial-index predicates under explicit names aren't diffed (R6.3). | C7: pin `typeorm >= 1.1.0`, find-options locks, `{ run: { id } }` filters, `tsc` in CI, integration tests |
+| TypeORM runtime type gap | **Closed:** 1.x throws on `null`/`undefined` in high-level `where` criteria, for find/count/exists since 1.0.0 and for writes since 1.1.0 (R6.1). **Remains open:** QueryBuilder `.where()` silently matches zero rows on `null`; a bare id under a relation key returns an arbitrary row (#12712, R9); entity-instance criteria are unvalidated; `jsonb` payloads are unchecked; partial-index predicates under explicit names aren't diffed (R6.3); Bun's metadata ignores `strictNullChecks` while `emitDecoratorMetadata` is on (R6.2 gotcha 4, moot if D15 turns it off). | C7: pin `typeorm >= 1.1.0`, find-options locks, `{ run: { id } }` filters, `tsc` in CI, integration tests |
 | TypeORM on Bun | Works with legacy decorators, but isn't in TypeORM's CI. Four transpiler gotchas verified on 1.4.3, including the cwd-tsconfig rule. Migrations and minify are [M] (R6.2). | C7, S1, D13, D15 |
 | OpenAI compatibility | The premise has shifted. OpenAI's Chat Completions can't call tools on GPT-5.4+ unless reasoning effort is `none` (R2.2). LM Studio serves `/v1/responses` (R5.1), though the LM Studio pass alone would still pick Chat Completions (R5.8). | C1, D1, S2, S3 |
 | OpenAI subscription | No ChatGPT plan includes API credits (R1.1). SIWC plan usage (2026-09-29) is official for Plus and Pro; the sources conflict for other plans. It is Responses-only, with constraints, and the docs don't address unattended personal use (R1.2). | C2, D2, S4, Q4, Q9 |
@@ -633,10 +639,10 @@ These are **proposals, not decisions**. Each links to a decision in Part 5. "Bri
   - **Usage is shared.** Runs draw on the same "ChatGPT Work and Codex" pool as your own Codex work. On Plus that includes a shared 5-hour window, and on both Plus and Pro a weekly allowance (Q4).
   - **Hitting a limit must be a first-class outcome.** Before the stream opens it's HTTP 429; mid-stream it's a `response.failed` event; either way it gives no reset time. It sets the run to **`deferred`**, not `failed`, and puts the profile into backoff (4.8). Also document the "use credits after the limit" setting, which can cause charges (R1.2).
   - **Credentials need more than tokens.** Store the *issued* `client_id`, a stable per-host `ext_agent_host_id`, the ID token and the granted scopes as well as the tokens. Refresh tokens rotate on every refresh, and a racing refresh fails with `refresh_token_reused`, which forces a new sign-in. Refreshes are therefore serialised under a row lock, and the rotated token is committed before it is used (4.4).
-  - **Client deployments stay on API keys.** A paid client deliverable counts as a "paid" app under the interest-form rule; that reason is commercial, not that the box is remote. Self-hosting an open-source app on a remote VM is explicitly covered by the open-source flow.
+  - **Client deployments stay on API keys.** A paid client deliverable probably counts as a "paid" app under the interest-form rule, so API keys are the safe default. The reason is commercial, not that the box is remote: self-hosting an open-source app on a remote VM is explicitly covered by the open-source flow.
   - **The login flow needs care in Docker.** The OAuth callback must reach `127.0.0.1:<port>` on the machine running the browser. Two workable routes:
     - `docker compose run --rm -p 127.0.0.1:<P>:<P> app gremlin login --port <P>`, with the listener bound to 0.0.0.0 inside the container;
-    - sign in on the host to a file, then `gremlin credentials import`, following the docs' self-hosted VM procedure.
+    - sign in on the host to a file, then `gremlin credentials import`, following the docs' self-hosted VM procedure. The import keeps the app's own stable `ext_agent_host_id`, not the signing machine's.
 
     Postgres has no published port (4.9), so a host-side login can't write to the DB directly.
   - **Request shape differs.** SIWC needs `stream:true`, omits 15 request fields (including `temperature`, `max_output_tokens`, `max_tool_calls` and `prompt_cache_retention`), and wants function tools in namespaces or `additional_tools` (R1.2). The request builder takes these constraints from the model profile, so they stay config rather than a code path. The namespace rule might be the exception, which S4 checks.
@@ -656,11 +662,14 @@ These are **proposals, not decisions**. Each links to a decision in Part 5. "Bri
   - kill the process group on timeout;
   - when the direct child exits, wait about 1 s for the pipe to reach EOF, then kill the group and return what was read, since background grandchildren hold the pipe;
   - spawn with stdin closed and prompts disabled: `GIT_TERMINAL_PROMPT=0`, `PAGER=cat`, `GIT_PAGER=cat`, `CI=1`, `DEBIAN_FRONTEND=noninteractive`;
-  - cap output by reading the streams itself;
-  - normalise output so it can be stored: decode UTF-8 with replacement, replace U+0000 with a visible marker, and flag `binary: true` when output is mostly non-text;
-  - kill a command's group when the RPC client disconnects, and kill everything when the app starts.
+  - enforce a hard output cap by reading the streams itself: keep the head and tail up to N bytes, and read and discard the rest, so `yes` or `tail -f` can't exhaust memory;
+  - normalise output so it can be stored: decode UTF-8 with replacement, replace U+0000 with a visible marker, and flag `binary: true` when output is mostly non-text. A second sanitiser in the app covers every other source (C11);
+  - put `GREMLIN_RUN_ID` in every command's environment;
+  - kill a command's group when the RPC client disconnects;
+  - when a run ends, kill every process whose `/proc/<pid>/environ` carries that run's ID, which also catches processes that escaped `kill(-pid)` with `setsid`;
+  - on reset at app start, kill every process except PID 1 and the exec server itself.
 
-  Compose's `init: true` reaps orphaned grandchildren. A process that calls `setsid` escapes `kill(-pid)`; that's an accepted risk, cleaned up at the next app start.
+  Compose's `init: true` reaps orphaned grandchildren. The workspace runs as the host user (`user:` in 4.9), so files the agent writes into bind mounts aren't owned by root on Linux hosts.
 - **What it doesn't isolate** (be explicit):
   - **Skill secrets.** Per-skill env (4.7) is injected into exec calls, so it lives in the workspace. Every task shares one workspace container and one uid, so while two runs overlap, either agent can read the other run's environment from `/proc`. Files on shared mounts are readable across tasks too (Q5). Per-task uids would separate them, but that edges toward the non-goal (D17).
   - **Host services.** With internet egress, the workspace can reach `host.docker.internal`, and on Docker Desktop that includes every service bound to 127.0.0.1 on the Mac (R10). That includes LM Studio's model load, unload and download API, which is unauthenticated by default (R5.6). So **always enable LM Studio token auth**, keep the token only in the app's env, and treat other host services as exposed (Q8).
@@ -675,7 +684,7 @@ These are **proposals, not decisions**. Each links to a decision in Part 5. "Bri
 - **Brief says:** "Self-describing units (JSON Schema plus handler), loaded from a registry … Ideally compatible in spirit with the SKILL.md convention."
 - **Finding:** the SKILL.md spec has no typed tools. A skill is instructions plus scripts, and only its name and description are preloaded (R7). OpenAI has adopted the same standard (R4).
 - **Proposal:** with shell and `read_file` as base tools, a SKILL.md skill needs **no new tools**.
-  - `tools[]` stays small: the base tools, `activate_skill`, and a few app tools. It is **fixed for the life of a task**, while skills grow as a catalog in the preamble.
+  - `tools[]` stays small: the base tools, `activate_skill`, and a few app tools. It is **fixed per task definition and frozen for each run**, changing only when the task is edited or a new version is deployed (4.6). Skills grow as a catalog in the preamble instead.
   - That removes the "too many tools degrade the model's choices" problem, and a frozen `tools[]` is what caching wants (R3.4).
 
 | | Runs in | Defined as | Model sees |
@@ -710,12 +719,20 @@ These are **proposals, not decisions**. Each links to a decision in Part 5. "Bri
 ### C6. Task definitions: DB canonical, authored as TASK.md files
 - **Brief says:** "where task definitions live, presumably the DB."
 - **Proposal:** the DB is the source of truth, but you author tasks as `TASK.md` files in a private git repo, and `gremlin apply ./tasks` upserts them.
-  - **Frontmatter:** schedule, timezone, model profile, skills, budgets, overlap policy and catch-up policy. **Body:** the prompt.
+  - **Frontmatter:**
+    - schedule, timezone (`tz`), model profile, skills, budgets;
+    - `overlap`: `skip` or `queue` (D16);
+    - `catch_up`: `once` (the default) or `skip`;
+    - `catch_up_grace`, default a few minutes;
+    - `max_queue_age`, optional; unset means never skip;
+    - `inline` (4.7).
+
+    **Body:** the prompt.
   - **Every run** stores a snapshot of the resolved definition.
   - **`apply` semantics:**
     - It sets `next_run_at` on insert.
     - It recomputes `next_run_at` from now whenever the schedule, time zone or `enabled` changes.
-    - It rejects unknown skill names.
+    - It rejects unknown skill names and unknown model profiles.
     - It *disables* a task whose file was removed, so run history survives.
 - **Why:**
   - Prompts behave like code: you want diffs, history and your editor.
@@ -745,6 +762,7 @@ These are **proposals, not decisions**. Each links to a decision in Part 5. "Bri
 - **Runtime type gap:**
   - **Pin `typeorm >= 1.1.0`**, so writes get the `null`/`undefined` guard too (R6.1).
   - **Write claim queries with find options**, `lock: { mode: "pessimistic_write", onLocked: "skip_locked", tables }`, or `qb.setFindOptions()`, so they keep the guard. QueryBuilder `.where()` silently matches zero rows on `null`. Name the locked table whenever the query joins (R6.3).
+  - **The one exception is the scheduler tick's due-task query.** It filters on `profile_state`, which isn't a relation of `task`, so it is QueryBuilder or raw SQL: `… AND NOT EXISTS (SELECT 1 FROM profile_state ps WHERE …) FOR UPDATE OF task SKIP LOCKED` (4.8). A `LEFT JOIN … FOR UPDATE` errors on Postgres ("cannot be applied to the nullable side of an outer join"). Every parameter in it is non-null by construction, and integration tests cover it.
   - **Filter relations as `{ run: { id } }`**, never a bare id (#12712, R9). Run `tsc --noEmit` in CI, because Bun doesn't type-check.
   - **Integration tests** against a real Postgres cover every repository method, especially claims, locks and the `ON CONFLICT` tick.
   - **Index names:** let TypeORM *auto-generate* the partial-index name, so `migration:generate` sees predicate changes as drop and create (R6.3). The tick uses `ON CONFLICT DO NOTHING` and doesn't need the name.
@@ -761,9 +779,11 @@ These are **proposals, not decisions**. Each links to a decision in Part 5. "Bri
 - **Proposal: keep the iteration cap, and add budgets plus a context check.**
   - **Budgets:**
     - cumulative input tokens, which is dollars on an API key or allowance on SIWC;
-    - wall-clock time per run;
-    - a timeout per tool call.
-  - **Context-fill check after every turn:** last `usage.input_tokens` plus the size of the pending outputs, against the profile's `contextTokens`. Above about 85%, finalize. An API context-overflow error takes the same path.
+    - a timeout per tool call;
+    - a total-turn limit;
+    - wall-clock time per run, as a **hard deadline**.
+  - **How the deadline is enforced.** One `AbortController` per run passes its signal to `runTurn`, to every exec RPC (with an app-side deadline of the tool timeout plus a margin), and to every fetch: model loads, token refreshes, notifications. A stream that never stops sending, such as a local model stuck in a repetition loop, is cut off too. Where the backend allows it, a per-profile `maxOutputTokens` bounds each generation; SIWC forbids it (R1.2).
+  - **Context-fill check after every turn:** last `usage.input_tokens` + `usage.output_tokens` + `estimateTokens(pending outputs)`, against the profile's `contextTokens`. Output tokens count because the last response's message, call arguments and reasoning are all sent again. Above about 85%, finalize. An API context-overflow error takes the same path.
   - **Two stream timeouts per profile.** Healthy streams can be silent for minutes: during local prefill, a JIT load (R5.5), or OpenAI reasoning. So use:
     - a *time-to-first-output* limit, which is minutes for local and high-effort profiles;
     - a shorter *idle* limit between deltas.
@@ -800,7 +820,11 @@ These are **proposals, not decisions**. Each links to a decision in Part 5. "Bri
   - Rows are append-only, like the run log.
   - Compaction can *mark* rows instead of deleting them, so the audit trail survives.
   - Full-text search over history becomes possible later.
-- **Payloads must be NUL-free** (R10). The exec server's output normalisation (C3) takes care of that.
+- **Payloads must contain no NUL and no lone surrogates.**
+  - `jsonb` rejects `\u0000`, and it rejects the escape `JSON.stringify` emits for a string cut in the middle of an emoji. Both were reproduced on Postgres 16 (R10).
+  - One sanitiser in `core` (`toStorable`) runs at the persistence boundary on every `jsonb` payload and every `text` column. It replaces U+0000 with a marker and lone surrogates with U+FFFD.
+  - It covers model output, skill bodies, app-tool output and exec output alike. The exec server's normalisation (C3) is only one of those sources.
+  - Truncation always cuts on code-point boundaries.
 - **Decision:** D7.
 
 ---
@@ -856,9 +880,14 @@ mecha-gremlin/                          public repo
 ~/gremlin-private/                      private git repo, mounted, never in source
 ├── tasks/*.md                          TASK.md definitions (D5)
 ├── skills/<name>/SKILL.md              your own skills (D4)
-├── gremlin.env                         app secrets; validated at boot
-└── postgres.env                        database credentials (the postgres image requires a password)
+├── .gitignore                          *.env (secrets are never committed, even privately)
+├── gremlin.env.example                 committed template; the real gremlin.env holds API keys and
+│                                       the LM Studio token, validated at boot
+├── postgres.env.example                template for postgres.env (superuser password)
+└── migrate.env.example                 template for migrate.env (gremlin_owner credentials, 4.4)
 ```
+
+Run gitleaks on the private repo too. If you'd rather version the secrets, encrypt the env files (sops/age) instead of committing them in plain text.
 
 `core` is one package with subpath exports (`@mecha-gremlin/core/turn`, `…/compaction`, and so on) rather than six micro-packages. The app imports `core` only through those public exports, so the boundary stays real.
 
@@ -901,10 +930,13 @@ validateArgs(tool: FunctionTool, raw: string):
   { ok: true; args: unknown } | { ok: false; error: string }
 toOutputItem(callId: string, outcome: ToolOutcome, limits: OutputLimits): FunctionCallOutputItem
 truncateMiddle(text: string, maxBytes: number): { text: string; droppedBytes: number }
+  // cuts on code-point boundaries, never inside a surrogate pair
 normalizeOutput(bytes: Uint8Array): { text: string; binary: boolean }   // UTF-8 w/ replacement, no U+0000
+toStorable<T>(value: T): T     // persistence boundary: U+0000 → marker, lone surrogates → U+FFFD (C11)
 
 // ── loop policy (pure state machine; the caller's while-loop does the I/O) ──
 contextFill(lastUsage: Usage, pending: ResponseInputItem[], contextTokens: number): number  // 0..1
+  // (input_tokens + output_tokens + estimateTokens(pending)) / contextTokens
 nextStep(state: LoopState, result: TurnResult, budget: Budget): Step
   // Step = execute(calls) | nudge(text) | retry(afterMs) | defer(reason) | finalize
   //      | finish(text) | abort(status)
@@ -932,50 +964,76 @@ applyCompaction(items: ResponseInputItem[], plan: CompactionPlan,
  Task ──────────────< Run ───────────────< Item         conversation; append-only
   name (unique)        status                 seq, kind (message | function_call |
   schedule, tz         trigger (cron|manual)    function_call_output | reasoning),
-  prompt               task_snapshot jsonb      payload jsonb (verbatim item, NUL-free),
-  model_profile        created_at, started_at,  compacted_into (nullable)
-  skills text[]        ended_at, heartbeat_at
-  limits jsonb         usage jsonb    ────────< Event        run log; app role may only INSERT
-  overlap_policy       output text                seq, type (model_call | tool_exec | nudge |
-  catch_up,            state_after jsonb            finalize | compaction | error |
-  catch_up_grace                                    skill_activated), data jsonb (latency,
-  state jsonb ◀────────┘                            tokens, cached/written tokens, exit code,
-  next_run_at timestamptz                           timed_out, binary, output up to a hard cap)
-  enabled, definition_hash
+  prompt               model_profile            payload jsonb (verbatim item, toStorable),
+  model_profile        task_snapshot jsonb      compacted_into (nullable)
+  skills text[]        created_at, started_at,
+  limits jsonb         ended_at, heartbeat_at
+  overlap_policy       usage jsonb    ────────< Event        run log; app role may only INSERT
+  catch_up,            output text                seq, type (model_call | tool_start | tool_exec |
+  catch_up_grace,      state_after jsonb            nudge | finalize | compaction | error |
+  max_queue_age                                     skill_activated), data jsonb (latency,
+  state jsonb ◀────────┘                            tokens, cached/written tokens, command,
+  next_run_at timestamptz                           exit code, timed_out, binary, output up
+  enabled, last_error                               to a hard cap)
+  definition_hash
 
- ProfileState  (profile, blocked_until, backoff_seconds, reason)   plan limits, unreachable backends
- SkillSetting  (skill_name, task_id nullable = global, env jsonb)  injected into exec calls (4.7)
- Credential    (provider, kind: api_key | chatgpt_oauth, issued_client_id, ext_agent_host_id,
-                access_token, refresh_token, id_token, scopes, expires_at, refreshed_at)
+ ProfileState  (limit_domain, blocked_until, backoff_seconds, reason)   one row per limit domain:
+                the SIWC credential, or a backend's base URL; reason needs_login has no expiry
+ SchedulerState (single row: last_tick_at)                              catch-up and liveness ping
+ SkillSetting  (skill_name, task_id nullable = global, env jsonb)       injected into exec calls (4.7)
+ Credential    (provider = chatgpt_oauth, issued_client_id, ext_agent_host_id, access_token,
+                refresh_token, id_token, scopes, expires_at, refreshed_at, needs_login)   built in M5
 ```
 
 **States and transitions**
-- **Run status:** `queued → running → succeeded | failed | capped | deferred | abandoned`. `skipped` rows are inserted directly.
+- **Run status:**
+  - `queued → running | skipped | failed`;
+  - `running → succeeded | failed | capped | deferred | abandoned`;
+  - `skipped` rows can also be inserted directly.
+- **Every transition is conditional on the status it starts from:** `UPDATE run … WHERE id = $1 AND status = <expected>`. So a run marked `abandoned` can't later be overwritten with `succeeded`, and two racing paths can't both move the same row.
 - **One active run per task:** `UNIQUE (task_id) WHERE status IN ('queued','running')`, with an auto-generated name so `migration:generate` sees predicate changes (R6.3). Inserts use `ON CONFLICT DO NOTHING` (4.8).
-- **Conditional terminal transitions:** `UPDATE run … WHERE id = $1 AND status = 'running'`. A run marked `abandoned` can't later be overwritten with `succeeded`.
+- **`run.model_profile`** is copied from the resolved definition at insert. An index on `(model_profile, created_at) WHERE status = 'queued'` lets the worker claim per profile (4.8).
 
 **Locking and liveness**
-- **One lock order everywhere:** the task row first (`SELECT … FOR UPDATE`), then run rows. This applies to the tick, finalisation, `gremlin run` and recovery, and avoids the deadlock reproduced in R10. Finalisation retries SQLSTATE 40P01.
-- **Liveness:** `heartbeat_at` is written by a timer, every 10 s, while a run is live, not once per turn.
+- **One lock order everywhere:** the task row first (`SELECT … FOR UPDATE`), then run rows. This covers the tick, finalisation, deferral, `gremlin run` and recovery, and avoids the deadlock reproduced in R10. The claim, the heartbeat and the boot sweep touch only run rows. Finalisation retries SQLSTATE 40P01.
+- **Liveness:**
+  - `heartbeat_at` is written by a timer, every 10 s, while a run is live. It is what `gremlin runs show` displays.
+  - Recovery doesn't depend on it, because each run has a hard deadline (C8). Each run is wrapped in `try/finally`, which stops the timer, marks the run `failed` if it is still `running` (conditionally), and releases the profile semaphore.
+- **Record before running:**
+  - A turn's output items (reasoning, `function_call`) are written as soon as the turn completes, before anything executes.
+  - A `tool_start` event (command, working directory, timeout) is written before each exec, and the `tool_exec` result event after it.
+  - So a crash mid-command still leaves a record of what was running.
 
 **Queries**
-- **Claim queries** use find options with `lock: { mode: "pessimistic_write", onLocked: "skip_locked" }`, plus `tables` when joining. This keeps TypeORM's `null` guard (C7).
+- **Claim queries** use find options with `lock: { mode: "pessimistic_write", onLocked: "skip_locked" }`, plus `tables` when joining. This keeps TypeORM's `null` guard (C7). The tick's due-task query is the documented exception (C7, 4.8).
 - **Relation filters** are written `{ run: { id } }`, never as bare ids (R9).
 
-**Roles and credentials**
-- **Two database roles:**
-  - `gremlin_owner` runs migrations and owns the tables.
-  - `gremlin_app` is the runtime role, neither owner nor superuser. On `event` it gets INSERT and SELECT (TypeORM's `INSERT … RETURNING` needs SELECT), plus USAGE on the sequence, and no UPDATE or DELETE.
+**Roles, grants and migrations** (R10)
 
-  An owner or superuser connection would make the grant meaningless (R10). The roles are created by an init script that runs on an empty data directory.
-- **Credential refresh:**
-  - `BEGIN; SELECT … FOR UPDATE`, then re-check expiry, `POST` the refresh, `UPDATE` and `COMMIT`. Only then use the new access token.
-  - Refresh when the token expires within about 5 minutes, or once after a 401.
-  - `invalid_grant` or `refresh_token_reused` → run `failed`, plus an alert to sign in again.
+| Role | Used by | Rights |
+|---|---|---|
+| `gremlin_owner` | the one-shot `migrate` compose service only (4.9), with its own env file | owns every table |
+| `gremlin_app` | the runtime; neither owner nor superuser | SELECT, INSERT and UPDATE on `task`, `run`, `item`, `profile_state`, `scheduler_state`, `skill_setting` and `credential`; SELECT and INSERT on `event`, plus USAGE on sequences. No DELETE or TRUNCATE anywhere, since `apply` disables tasks rather than deleting them |
+
+- **Init script:** it creates both roles, then runs `ALTER DEFAULT PRIVILEGES FOR ROLE gremlin_owner GRANT SELECT, INSERT, UPDATE ON TABLES` (and `USAGE ON SEQUENCES`) `TO gremlin_app`.
+- **Migrations:** the migration that creates `event` runs `REVOKE UPDATE ON event FROM gremlin_app`.
+- **Foreign keys:** every foreign key into `event` and `item` uses `ON DELETE NO ACTION`. Cascades would let the app delete log rows through the parent row (R10).
+- **Retention:** `gremlin prune --older-than <days>` runs as the owner (through the `migrate` service). It deletes events, then items, then runs, in foreign-key order.
+- **Backups:** a nightly `pg_dump` writes to a host path outside the git repo. The `pgdata` volume is otherwise the only copy of `task.state`, run history and OAuth credentials.
+
+**Credentials and secrets**
+- **API keys and the LM Studio token** live in `gremlin.env`, validated at boot. A profile's auth reference names the variable.
+- **`Credential` holds only rotating OAuth credentials (SIWC),** so it is built in M5.
+- **Skill secrets** are written with `gremlin skill-env set <skill> [--task <name>] KEY`, which reads the value from stdin (M3).
+- **Credential refresh (SIWC), conditional on the token:**
+  - The caller passes the access token it used. Under `SELECT … FOR UPDATE`, refresh if the stored token is that same one or is close to expiry; otherwise use the newer stored token.
+  - Then `POST` the refresh, with a timeout of about 15 s, `UPDATE`, and `COMMIT`. Only then use the new token.
+  - Waiters set `SET LOCAL lock_timeout = '30s'`.
+  - Refresh before a turn when the token expires within about 5 minutes, and once after a 401. Making the refresh conditional on the token handles clock skew after the host sleeps.
+  - **`invalid_grant` or `refresh_token_reused`:** set `needs_login`, and block the credential's limit domain (`ProfileState` reason `needs_login`, no expiry) until `gremlin login` or an import clears it. Send one alert.
 
 **Config, not database**
-- **Model profiles** live in validated config: base URL, model, auth reference, concurrency, `contextTokens`, output cap, first-output and idle timeouts, request constraints, cache mode.
-- **Credentials** live in the database, because SIWC tokens rotate.
+- **Model profiles** live in validated config: base URL, model, auth reference, concurrency, `contextTokens`, `maxOutputTokens` where allowed, the model-visible output cap, first-output and idle timeouts, request constraints, cache mode, and the limit domain.
 
 ## 4.5 Agent loop
 
@@ -1026,14 +1084,16 @@ applyCompaction(items: ResponseInputItem[], plan: CompactionPlan,
 
 | Situation | Handling |
 |---|---|
-| SIWC plan limit: 429 before the stream, or `response.failed` mid-stream, with `subscription_sharing_usage_limit_exceeded` | Run becomes `deferred`, and the profile goes into backoff (4.8). The error gives no reset time. Never fall back to another model mid-run (C1) |
+| SIWC plan limit: 429 before the stream, or `response.failed` mid-stream, with `subscription_sharing_usage_limit_exceeded` | Run becomes `deferred`, its fire is re-armed, and the credential's limit domain goes into backoff (4.8). The error gives no reset time, so the block lifts on the backoff probe or by hand (`gremlin unblock <domain>`). One alert points you to ChatGPT settings → Usage for the reset time. Never fall back to another model mid-run (C1) |
 | `subscription_sharing_usage_unavailable` (503) | Bounded backoff within the run |
 | HTTP 429 rate limit or 5xx | Bounded exponential backoff owned by `nextStep` (the SDK uses `maxRetries: 0` everywhere), then `failed` |
 | `insufficient_quota` | `failed`, with no retry, and an alert |
 | Access token near expiry, or HTTP 401 | Refresh before the turn if it expires within about 5 minutes. On a 401, refresh once and retry the turn (4.4) |
-| Refresh fails with `invalid_grant` or `refresh_token_reused` | `failed`, plus an alert to sign in again |
-| Local backend unreachable (connection refused) | Run becomes `deferred`, with a short profile backoff |
-| Process crash mid-run | At the next boot: `running` becomes `abandoned`, and the exec server kills leftover processes. The next run starts fresh with the carried state |
+| Refresh fails with `invalid_grant` or `refresh_token_reused` | Run `failed`. The credential is marked `needs_login`, and its limit domain is blocked until you sign in again or import credentials (4.4), so later runs don't keep failing. One alert |
+| Backend unreachable, on any profile: DNS failure, connection refused, no route, TCP or TLS connect timeout | Run becomes `deferred`, its fire is re-armed, and the backend's limit domain (its base URL) goes into backoff on the short schedule (4.8). HTTP 5xx stays transient |
+| Hard deadline reached: wall clock, including a stream that never ends or a hung RPC or fetch | The run's `AbortController` fires. The run ends `capped`, with a synthesised summary (C8) |
+| Uncaught exception in the loop | `finally` marks the run `failed` (conditionally), stops the heartbeat, releases the semaphore, and alerts |
+| Process crash mid-run | At the next boot, the lock-holding daemon (4.8) marks `running` runs `abandoned`, and the exec server kills leftover processes. For `catch_up: once` tasks the fire is re-armed. The next run's input carries a note built from the abandoned run's items and events: its status, and the tool calls it started |
 
 ## 4.6 Request layout for caching
 
@@ -1051,14 +1111,14 @@ applyCompaction(items: ResponseInputItem[], plan: CompactionPlan,
 **Rules**
 - **Keep per-run data out of the developer item.** Never put the time, state or anything else that varies per run there.
 - **Freeze the request settings.** Never edit or reorder tools, or change `reasoning.effort`, `parallel_tool_calls`, `text.format`, verbosity, service tier or `prompt_cache_key` mid-run (R3.4).
-- **Use `tool_choice` to stop tools.** The finalize turn's `tool_choice:"none"` is the sanctioned way to disable tools: OpenAI documents it as keeping the prefix, and S3 measures it. On OpenAI, `allowed_tools` can also narrow them, but LM Studio rejects object `tool_choice` (R5.2).
+- **Use `tool_choice` to stop tools.** The finalize turn's `tool_choice:"none"` is the sanctioned way to disable tools: OpenAI documents it as keeping the prefix, and S3 measures it. On OpenAI, `allowed_tools` can also narrow them. LM Studio rejects object `tool_choice` on Chat Completions (R5.2); S2 checks `/v1/responses`.
 - **Send nudges and the finalize prompt as user messages,** so they end an eligible breakpoint (R3.1).
 - **Compaction is rare, chunky, and cut at turn boundaries** (C5).
 - **Log cache use.** Every `model_call` event records cached and written tokens, so cache effectiveness is measured from day one.
 
 **What carries across runs**
 - **OpenAI before GPT-5.6:**
-  - On the models listed in R3.2, organisations without ZDR get `24h` retention by default. That is a maximum: entries typically last about 30 minutes.
+  - On the models listed in R3.2, organisations without ZDR get `24h` retention by default, and gpt-5.5 and gpt-5.5-pro accept nothing else. That is a maximum: entries typically last about 30 minutes.
   - Other earlier models use `in_memory`, typically 5–10 minutes idle and at most 1 hour.
 - **GPT-5.6+:** a prefix is kept for at least 30 minutes after its last write or reuse (R3.1).
 - **So expect cross-run hits only when a task reruns within about 30 minutes,** and assume a daily task misses. On pre-5.6 models, a stable per-task `prompt_cache_key` helps route a task's runs to the same cache. On GPT-5.6+, a key only partitions billing.
@@ -1081,36 +1141,57 @@ applyCompaction(items: ResponseInputItem[], plan: CompactionPlan,
 ## 4.8 Scheduler and concurrency (D6, D12, D16)
 
 ```
- tick: every 15 s, one app process
- BEGIN
+ daemon start (`gremlin serve`)
+   take a session-level pg_try_advisory_lock(<constant>) on a dedicated connection; exit if taken.
+   Only the lock holder runs the boot sweep, the exec reset, the tick and the workers. Other CLI
+   commands (`gremlin run`, `apply`, `login`, `runs show`…) are plain DB clients and never sweep.
+   boot sweep: running → abandoned (re-arm the fire for catch_up: once tasks, 4.5);
+               queued runs of disabled tasks or unknown profiles → skipped / failed;
+               the exec server kills everything except PID 1 and itself
+
+ tick: every 15 s
+   prev = scheduler_state.last_tick_at
    SELECT … FROM task
      WHERE enabled AND next_run_at <= now()
-       AND the task's profile is not in backoff (profile_state.blocked_until)
-     FOR UPDATE SKIP LOCKED
-   per due task:
-     late by more than catch_up_grace and catch_up = skip
-        → INSERT run(status='skipped'); next_run_at = next fire after now
-     else
-        INSERT INTO run (…, status='queued') ON CONFLICT DO NOTHING RETURNING id
-        inserted                   → next_run_at = croner.nextRun(schedule, tz, from = now)
-        no row, overlap = skip     → INSERT run(status='skipped'); next_run_at = next fire after now
-        no row, overlap = queue    → leave next_run_at: the task fires on the first tick after the
-                                     active run ends, and missed fires coalesce into one (D16)
- COMMIT
+       AND NOT EXISTS (SELECT 1 FROM profile_state ps
+                       WHERE ps.limit_domain = <domain of task.model_profile>
+                         AND ps.blocked_until > now())
+     FOR UPDATE OF task SKIP LOCKED                      (C7: the documented QueryBuilder exception)
+   per due task, inside its own SAVEPOINT:
+     missed = next_run_at > prev AND now() − next_run_at > catch_up_grace
+              (the fire fell into a gap with no tick: app down, host asleep. Fires held back by an
+               overlap conflict or a profile block were already seen by an earlier tick, so they are
+               never "missed" and always fire once when released.)
+     missed and catch_up = skip → INSERT run(status='skipped'); next_run_at = next fire after now
+     else INSERT INTO run (…, status='queued', model_profile) ON CONFLICT DO NOTHING RETURNING id
+        inserted                → next_run_at = croner.nextRun(schedule, tz, from = now)
+        no row, overlap = skip  → INSERT run(status='skipped'); next_run_at = next fire after now
+        no row, overlap = queue → leave next_run_at: fires on the first tick after the active run
+                                  ends; further fires coalesce into one (D16)
+     on error → ROLLBACK TO SAVEPOINT; task.last_error = …; next_run_at += 5 min; alert
+   UPDATE scheduler_state SET last_tick_at = now()
+   COMMIT, then send the dead-man's-switch ping (Q1)
 
- worker (same process)
-   take the profile's semaphore, then claim one queued run for that profile:
-     find(… where status='queued', lock pessimistic_write + skip_locked) → status='running'
-   profile no longer in config → failed; queued longer than max_queue_age → skipped
-   heartbeat_at on a 10 s timer while running; terminal updates are conditional (4.4)
+ workers: one claim loop per profile
+   take a semaphore slot (non-blocking per poll; released in finally on every path)
+   limit domain blocked? → release the slot and wait until blocked_until; queued runs stay queued
+   claim the oldest: find({ where: { status: 'queued', modelProfile }, order: { createdAt: 'ASC' },
+                            lock: { mode: 'pessimistic_write', onLocked: 'skip_locked' } })
+     task disabled since queueing → skipped
+     max_queue_age set and exceeded (never for manual runs) → skipped
+     else → running; hard deadline, heartbeat timer and try/finally as in 4.4
+   every tick, and after config validation at boot: queued runs whose profile is no longer
+   configured → failed (UPDATE … WHERE status='queued' AND model_profile <> ALL($configured))
 
- boot (single instance, Q6):
-   running → abandoned (nothing else can own them); the exec server kills leftover processes;
-   queued rows older than catch_up_grace get catch_up re-applied
+ manual: `gremlin run <task> [--ignore-backoff]`
+   locks the task row and inserts a queued run (trigger manual) through the same ON CONFLICT;
+   reports "already active" when no row comes back; leaves next_run_at alone; exempt from catch_up
+   and max_queue_age. With --ignore-backoff it can serve as the probe.
 ```
 
 **Why this design over the alternatives**
 - **The `ON CONFLICT` insert is the critical detail.** A plain INSERT that hits the partial unique index aborts the whole transaction (R10), so one overlapping task would roll back every other due task and never advance `next_run_at`, stalling the scheduler.
+- **Per-task savepoints extend that protection** to every other per-task failure: a croner error, a bad time zone, a snapshot insert. One broken task records `last_error` and alerts, and the rest of the tick still commits. The liveness ping is sent only after a successful commit, so a tick that keeps failing shows up as dead even while the process stays up.
 - **Why not cron or systemd invoking a CLI:**
   - Schedules live in the DB, so an external cron would need a synced copy.
   - Cron inside containers is awkward (R9).
@@ -1129,18 +1210,21 @@ applyCompaction(items: ResponseInputItem[], plan: CompactionPlan,
   - fixed-time jobs run once in the fall-back hour;
   - interval jobs skip the repeated hour;
   - a job in the spring-forward gap runs an hour late.
-- `catch_up_grace`, around 2× the tick, separates "late tick" from "missed". With a 15 s tick every fire is seen up to 15 s late, so without a grace `catch_up: skip` would skip everything.
+- `catch_up` applies only to fires that fell into a gap with no tick (the `missed` rule above). `catch_up_grace` defaults to a few minutes rather than a multiple of the tick, so a single slow tick can't turn a fire into a miss.
 
 **Deferral and backoff**
-- A plan limit (SIWC) or an unreachable local backend ends the run as `deferred`, which is terminal and keeps the partial output.
-- It also sets `profile_state.blocked_until = now + backoff`. The backoff doubles: from 15 minutes up to 4 hours for SIWC, and from 1 minute up to 30 minutes for a local backend. It resets on success.
-- The tick doesn't enqueue that profile's tasks and doesn't advance their `next_run_at`, so when the block lifts each task fires once, with missed fires coalesced. The first run after the block acts as the probe.
+- **Deferred ends the run, not the fire.** A plan limit (SIWC) or an unreachable backend ends the run as `deferred`, which is terminal and keeps the partial output. In the same transaction, with the task row locked first, `task.next_run_at = least(next_run_at, now())`. The task is held while its limit domain is blocked, then fires once when the block lifts, as the probe. The next run's input carries a note on what the deferred run did.
+- **Backoff is tracked per limit domain**, not per profile: the SIWC credential, or a backend's base URL. Two profiles on one ChatGPT account or one LM Studio server therefore probe and back off together.
+- **Doubling:** `blocked_until = greatest(blocked_until, now() + backoff)`. The backoff doubles only when the previous block had already expired, from 15 minutes up to 4 hours for SIWC and from 1 minute up to 30 minutes for unreachable backends. Several runs failing at once therefore don't jump straight to the maximum.
+- **Reset:** the backoff resets when any turn in the domain succeeds, or once the last block is older than the maximum.
+- **Alerts** are sent once when a domain becomes blocked and once when it recovers, not for every deferral.
+- **While a domain is blocked,** the tick doesn't enqueue its tasks, and the workers don't claim its queued runs (above). Missed fires coalesce into one.
 
 **Concurrency**
-- Each model profile has an in-process semaphore with a configured limit.
+- Each model profile has an in-process semaphore with a configured limit, and its own claim loop. A busy profile therefore never blocks claims for another.
 - LM Studio allows 4 concurrent predictions by default (R5.4). Concurrent MLX requests reportedly evict each other's cache (R5.7), so 1 is a sensible default for local profiles.
 - SIWC limits come from the plan.
-- With one app process, in-process semaphores are enough. The DB-level locks above keep a second instance safe later (Q6).
+- One daemon, enforced by the advisory lock above, so in-process semaphores are enough. Running two daemons would need heartbeat-based recovery instead of the boot sweep, and DB-backed semaphores (Q6).
 
 ## 4.9 Docker / compose
 
@@ -1155,29 +1239,49 @@ services:
     healthcheck: { test: ["CMD-SHELL", "pg_isready -U postgres"], interval: 5s, retries: 12 }
     restart: unless-stopped
     networks: [data]
+  migrate:                                               # one-shot; the only holder of owner creds
+    build: { context: ., dockerfile: packages/app/Dockerfile }
+    command: ["bunx", "--bun", "typeorm", "migration:run", "-d", "src/data-source.ts"]
+    env_file: ${GREMLIN_PRIVATE}/migrate.env             # gremlin_owner
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+    networks: [data]
   app:
     build: { context: ., dockerfile: packages/app/Dockerfile }   # copies both tsconfig files (C7)
-    env_file: ${GREMLIN_PRIVATE}/gremlin.env
+    command: ["bun", "run", "src/main.ts", "serve"]      # WORKDIR is packages/app (C7)
+    env_file: ${GREMLIN_PRIVATE}/gremlin.env             # gremlin_app; API keys; LM Studio token
     volumes:
       - ${GREMLIN_PRIVATE}/tasks:/config/tasks:ro
       - ${GREMLIN_PRIVATE}/skills:/skills/private:ro     # same paths as in the workspace (4.7)
       - ./skills:/skills/public:ro
     depends_on:
-      postgres: { condition: service_healthy }
-      workspace: { condition: service_started }
+      migrate: { condition: service_completed_successfully }
+      workspace: { condition: service_healthy }
     init: true
     restart: unless-stopped
     networks: [data, exec, egress]
     extra_hosts: ["host.docker.internal:host-gateway"]   # Linux only; built in on Docker Desktop
   workspace:
     build: { context: ., dockerfile: packages/workspace/Dockerfile }
+    user: "${GREMLIN_UID}:${GREMLIN_GID}"                # host user; the image has a writable HOME
     volumes:                                             # what the agent can touch = what you mount
       - ${HOME}/notes:/work/notes
       - ${GREMLIN_PRIVATE}/skills:/skills/private:ro
       - ./skills:/skills/public:ro
+    healthcheck: { test: ["CMD", "/exec-server", "--health"], interval: 5s, retries: 12 }
     init: true                                           # reaps orphaned grandchildren
     restart: unless-stopped
     networks: [exec, egress]                             # egress: Q8
+  backup:                                                # nightly pg_dump to a host path
+    image: pgvector/pgvector:pg17
+    env_file: ${GREMLIN_PRIVATE}/migrate.env
+    volumes: ["${GREMLIN_BACKUPS}:/backups"]             # outside any git repo
+    entrypoint: ["sh", "-c", "while :; do pg_dump -Fc -f /backups/gremlin-$$(date +%F).dump; sleep 86400; done"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: unless-stopped
+    networks: [data]
 networks:
   data:   { internal: true }
   exec:   { internal: true }
@@ -1185,6 +1289,8 @@ networks:
 volumes:
   pgdata: {}
 ```
+
+The `migrate` service also runs `gremlin prune` on demand: `docker compose run --rm migrate bun run src/main.ts prune --older-than <days>`. Test a backup restore in M2.
 
 **Networking notes** (R10):
 - **Docker Desktop on macOS.** `host.docker.internal` is built in. It reaches services bound to 127.0.0.1 on the Mac, also from a container on internal plus normal networks. A container on an internal-only network can't resolve it.
@@ -1210,12 +1316,12 @@ volumes:
 
 | | Scope | Done when |
 |---|---|---|
-| **M0 Spikes** | S1–S5 (Part 5), throwaway scripts with pass/fail results | D1, the technical half of D2, D3, D8, D13 and D15 can be closed |
-| **M1 Walking skeleton** (the brief's slice) | compose with restart policies, healthcheck and two DB roles; Task, Run, Item and Event; `gremlin apply`; the tick with `ON CONFLICT` and the overlap index; the boot sweep; the worker; the loop with `shell`, `read_file` and `write_file` through the workspace (per-command timeout, process-group kill, closed stdin, output normalisation); one profile, an OpenAI API key (D14); `gremlin runs show <id>`; gitleaks, push protection, boot config validation, `tsc` in CI | A task fires on schedule, edits real files and leaves a readable transcript, and the system survives an app restart and a hung command |
-| **M2 Hardening** | The rest of 4.5: argument validation, output caps, budgets, context-fill check and finalize; the compaction seam (`estimateTokens`, `planCompaction` returning null); narration nudges; first-output and idle timeouts; catch-up grace; profile backoff and `deferred`; history repair; DST tests; failure notification and dead-man's switch (Q1) | A deliberately broken task degrades gracefully, and you hear about it |
-| **M3 Skills and state** | SKILL.md discovery in the app, catalog, `activate_skill`, per-task env, carried state (Q2) | A task uses one of your skills and remembers something across runs |
+| **M0 Spikes** | S1, S2, S3 and S5 (Part 5), as throwaway scripts with pass/fail results. S4 waits for M5, so the skeleton doesn't need a SIWC-eligible account | D1, D3, D8, D11, D13 and D15 can be closed |
+| **M1 Walking skeleton** (the brief's slice) | **Infrastructure:** compose with restart policies, healthchecks, the `migrate` service and two DB roles with the grant matrix; Task, Run, Item and Event; `gremlin apply`. **Scheduling:** `gremlin serve` with the advisory lock; the tick with `ON CONFLICT`, per-task savepoints and the overlap index; a boot sweep limited to `running → abandoned` plus the exec reset; the per-profile worker. **Execution:** the loop with `shell`, `read_file` and `write_file` through the workspace, with a per-command timeout, process-group kill, closed stdin, a hard output cap with the ~1 s pipe wait, and output normalisation plus `toStorable`. **Recording:** record-before-running events, the run's hard deadline, and `gremlin runs show <id>`. **Profile and hygiene:** one profile, an OpenAI API key (D14); gitleaks, push protection, boot config validation, `tsc` in CI | A task fires on schedule, edits real files and leaves a readable transcript, and the system survives an app restart, a hung command and `yes` |
+| **M2 Hardening** | The rest of 4.5: argument validation, model-visible output caps, budgets, the context-fill check and finalize; the compaction seam (`estimateTokens`, `planCompaction` returning null); narration nudges; first-output and idle timeouts; the catch-up rule and grace; limit-domain backoff and `deferred`, tested with an unreachable backend (an offline laptop now defers even the API-key profile); history repair; DST tests; failure notification and dead-man's switch (Q1); `gremlin prune`, nightly backups and a restore test | A deliberately broken task degrades gracefully, and you hear about it |
+| **M3 Skills and state** | SKILL.md discovery in the app, catalog, `activate_skill`, `gremlin skill-env set`, carried state (Q2) | A task uses one of your skills and remembers something across runs |
 | **M4 LM Studio** | Local profile, token auth, model check at run start, per-profile concurrency, review of cache telemetry | The same task runs on both backends |
-| **M5 SIWC** | Gated on S4 and Q9: login (compose-run with a published port, or host login plus import), the credential refresh protocol, plan-limit deferral | A task runs on plan usage and defers cleanly at the limit |
+| **M5 SIWC** | Starts with S4, and is gated on Q9: the `Credential` entity; login (compose-run with a published port, or host login plus import); the conditional refresh protocol and `needs_login`; plan-limit deferral and `gremlin unblock` | A task runs on plan usage and defers cleanly at the limit |
 | **M6 Compaction summariser** | A plain summarising turn behind the M2 seam, **only if telemetry shows context growth** | A long run crosses the threshold and continues |
 | **M7 Publish** | `core` API docs and reference loop, npm publish | The package is published |
 
@@ -1237,7 +1343,7 @@ volumes:
 | ID | Decision | Options | Recommendation | Status |
 |---|---|---|---|---|
 | D1 | LLM wire API | Responses only · Chat Completions only · both behind a thin adapter | **Responses only** (C1) | open |
-| D2 | OpenAI auth order | API key first · SIWC first · both at once | **API key first; SIWC after S4 and Q9** (C2) | open |
+| D2 | OpenAI auth order | API key first · SIWC first · both at once | **API key first; SIWC in M5, after S4 and Q9** (C2) | open |
 | D3 | Where the shell and file tools run | Workspace container · app container | **Workspace container** (C3) | open |
 | D4 | What a skill is | SKILL.md plus a few app tools · JSON Schema plus handler (as briefed) · SKILL.md plus typed sidecars | **SKILL.md plus a few app tools** (C4) | open |
 | D5 | Where task definitions live | DB canonical with TASK.md apply · files canonical · DB only | **DB canonical with TASK.md apply** (C6) | open |
@@ -1263,7 +1369,7 @@ volumes:
 | Q3 | Which local models will you run? | Decides whether LM Studio parses their tool calls natively or falls back to its injected prompt (R5.2), and so how often narration happens. |
 | Q4 | Which plan would SIWC use: Plus, Pro, or an existing Business or Go seat? | Plus shares a 5-hour window with your own Codex use. Plus and Pro both draw on the weekly "ChatGPT Work and Codex" allowance. Whether Business or Go qualifies is unsettled (R1.2), and S4 tests it. |
 | Q5 | Can two tasks touch the same mounted directories? | There is no app-level answer to two agents editing the same files. If they can, adopt a convention such as one working directory per task, and decide D17. |
-| Q6 | One app instance, always? | Assumed. The boot-time `abandoned` sweep and the in-process semaphores rely on it. The DB locks keep a second instance from corrupting data, but liveness would need advisory locks or longer heartbeat thresholds. |
+| Q6 | One app daemon, always? | Assumed, and enforced: `gremlin serve` takes an advisory lock and refuses to start a second daemon (4.8). The boot sweep and the in-process semaphores rely on it. Running two would need heartbeat-based recovery and DB-backed semaphores. |
 | Q7 | Is a CLI transcript (`gremlin runs show`) enough for inspecting runs at first? | Assumed yes until M2 or later. |
 | Q8 | Does the workspace need internet access? If so, is reaching host services (`host.docker.internal`) an accepted risk, or should egress go through a proxy? | Assumed yes, with LM Studio token auth and host services treated as exposed (C3, R10). A proxy matters more on client boxes. |
 | Q9 | Does SIWC cover a personal, unattended, scheduled runner? | The docs don't say. **For:** a guide for running an open-source app on a remote VM; the example agent name is OpenClaw, which has a built-in cron scheduler; and OpenAI's Codex lead called use through Sign in with ChatGPT in OSS clients "completely fine" (R1.4). **Against:** the Codex docs say "The right way to authenticate automation is with an API key" (R1.3). It needs OpenAI's answer or a reading of the terms, not a spike. |
@@ -1274,17 +1380,21 @@ volumes:
 
 | ID | Spike | Pass when | Unblocks |
 |---|---|---|---|
-| S1 | TypeORM and Postgres on Bun | Entities with circular relations across files, with metadata both off and on. `jsonb`, the partial unique index, and a find-options `SKIP LOCKED` claim inside a transaction work. The `ON CONFLICT` tick with one conflicting task doesn't block the others. The tick-vs-finalisation lock order holds under a race. Both migration commands run through `bunx --bun` from `packages/app`. The tsconfig matrix passes: started from root and from `packages/app`, in the image and in `bun test`. The boot self-check fires when it should. The two roles and the INSERT-only grant hold. | ORM choice; D13, D15 |
-| S2 | LM Studio `/v1/responses` with **your** models | Multi-turn function calls with client-held history; the developer item honoured; `tool_choice:"none"` works and whether it keeps the KV prefix; malformed-call behaviour (text or HTTP 500); BT#2257's intermittent 500s; `cached_tokens` reported; the longest silent gap measured; the REST `parallel` load field. | D1, D8 |
+| S1 | TypeORM and Postgres on Bun | **Entities:** circular relations across files, with metadata both off and on; `jsonb`; the partial unique index. **Claims and ticks:** a find-options `SKIP LOCKED` claim inside a transaction; the tick query with `NOT EXISTS … FOR UPDATE OF task`; the `ON CONFLICT` tick with one conflicting task doesn't block the others; a per-task savepoint contains a failing task; the tick-vs-finalisation lock order holds under a race. **Scheduling rules:** an `overlap: queue` plus `catch_up: skip` task fires once after a long run; a `catch_up: skip` task fires once when its domain's block lifts. **Tooling:** both migration commands run through `bunx --bun` from `packages/app`; the tsconfig matrix passes (started from root and from `packages/app`, in the image and in `bun test`); the boot self-check fires when it should. **Grants:** as `gremlin_app`, UPDATE, DELETE and TRUNCATE on `event` fail with 42501, and deleting a run that has events fails with 23503. **Driver:** TypeORM 1.1.2 on pure-JS `pg` (not `pg-native`) under Bun 1.4.3 holds up under concurrent claims and ticks. | ORM choice; D13, D15 |
+| S2 | LM Studio `/v1/responses` with **your** models | Multi-turn function calls with client-held history; the developer item honoured; `tool_choice:"none"` works and whether it keeps the KV prefix; malformed-call behaviour (text or HTTP 500); BT#2257's intermittent 500s; `cached_tokens` reported; the longest silent gap measured; the REST `parallel` load field; object `tool_choice` and `allowed_tools` on `/v1/responses`. | D1, D8 |
 | S3 | OpenAI Responses with the target GPT model | `store:false` with reasoning items replayed from `output_item.done` across tool turns; replay across a compaction boundary; cached and written tokens visible; whether `tool_choice:"none"` keeps the cache; whether an explicit breakpoint and the implicit end-of-input breakpoint both apply; reasoning summaries as a liveness signal; the longest silent gap. | D1, D11, caching config |
-| S4 | SIWC end to end | Eligibility on the actual account type; both login routes (C2); the issued `client_id` stored and used; refresh rotation under two concurrent runs, serialised; namespaced tools or `additional_tools`; the limit-error shapes (429 before the stream, `response.failed` mid-stream, bare `{"detail"}` bodies) and any reset hint; whether reasoning summaries are allowed. | The technical half of D2; Q9 is answered separately |
-| S5 | Docker plumbing and the exec server | `host.docker.internal` reaches LM Studio on 127.0.0.1 (Docker Desktop only; on Linux, bind to the bridge IP). The exec server kills process groups on timeout and on client disconnect, returns promptly when a background grandchild holds the pipe, never blocks on stdin, reaps zombies under `init`, and stores binary and NUL output safely. Internal-network reachability matches R10. | D3, 4.9 |
+| S4 | SIWC end to end | Eligibility on the actual account type; both login routes (C2); the issued `client_id` stored and used; refresh rotation under two concurrent runs, serialised; namespaced tools or `additional_tools`; the limit-error shapes (429 before the stream, `response.failed` mid-stream, bare `{"detail"}` bodies) and any reset hint; whether reasoning summaries are allowed. Runs at the start of M5, not in M0. | The technical half of D2; Q9 is answered separately |
+| S5 | Docker plumbing and the exec server | **Networking:** `host.docker.internal` reaches LM Studio on 127.0.0.1 (Docker Desktop only; on Linux, bind to the bridge IP), and internal-network reachability matches R10. **Process control:** the exec server kills process groups on timeout and on client disconnect; kills processes that escaped with `setsid` through `GREMLIN_RUN_ID`; on reset, kills everything except PID 1 and itself; returns promptly when a background grandchild holds the pipe; never blocks on stdin; reaps zombies under `init`. **Output:** `yes` with a 5-minute timeout returns head and tail within the cap while memory stays flat; binary, NUL and cut-emoji output is stored safely. **Ownership:** on a Linux host, files the agent writes are owned by the host user. | D3, 4.9 |
 
 ---
 
 ## Verification log
 
-After the first draft, independent agents fact-checked the research against primary sources and reviewed the design. Each serious correction was then re-checked by a second agent, with instructions to keep the brief's claim unless the evidence against it was solid. Every correction below has been applied.
+**Round one.** After the first draft, independent agents fact-checked the research against primary sources and reviewed the design. Each serious correction was then re-checked by a second agent, with instructions to keep the brief's claim unless the evidence against it was solid.
+
+**Round two.** One agent audited whether every round-one finding had landed correctly, and another reviewed the revised design afresh.
+
+All corrections from both rounds are applied in this version.
 
 | Area | Claims checked | Corrections | Notable |
 |---|---|---|---|
@@ -1297,6 +1407,8 @@ After the first draft, independent agents fact-checked the research against prim
 | Agent Skills and background (R7, R9, 4.9) | 34 | 5 | Codex's sidecar holds no typed tools; Unicode skill names; TypeORM #12712; Docker gateway caveats |
 | Completeness against the research notes | | 3 dropped, 12 distorted | Lost hedges restored; Part 1 status tables moved to 3.0 |
 | Design review (Parts 3–5) | | 31 issues | **High severity:** `ON CONFLICT` tick; heartbeat timer; context-fill check; NUL-safe storage. **Medium severity, among others:** lock order, role separation, skills mounted in the app, milestone order |
+| Round two: fix audit | 106 findings | 92 correct, 13 fixed | Restored hedges (R1.5 "mostly right" [M]); the catch-up rule no longer overrides `queue` or the post-block probe; smaller qualifiers in 4.5, 4.6, 3.0, C2 and C4 |
+| Round two: fresh design review | | 25 issues | **High severity:** "missed" fires defined by a gap with no tick (persisted `last_tick_at`); deferred runs re-arm their fire. **Medium severity:** workers respect backoff; `run.model_profile`; a single daemon via advisory lock; a hard per-run deadline; full grant matrix with no-cascade foreign keys and a `migrate` service; a storage sanitiser for NUL and lone surrogates; per-task savepoints; token-conditional refresh; per-profile claim loops; the exec output cap in M1. **Low severity:** limit-domain backoff, `tool_start` events, state machine, context fill counting output tokens, the tick query, `gremlin run`, secrets in env, milestone gating, env files untracked, workspace user, `setsid` cleanup, retention and backups, "unreachable" on every backend |
 
 ---
 
