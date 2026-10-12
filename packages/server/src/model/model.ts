@@ -12,6 +12,7 @@ export type ModelChoice =
 export async function resolveModel(config: Config): Promise<ModelChoice> {
     if (config.provider === "lmstudio") {
         const models = await fetchModels(config);
+
         if (!models.ok) {
             return models;
         }

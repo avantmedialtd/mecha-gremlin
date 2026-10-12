@@ -44,6 +44,7 @@ export async function runTurn(
     const { signal } = options;
 
     let stream: AsyncIterable<ResponseStreamEvent>;
+
     try {
         stream = await client.responses.create(
             { ...request, store: request.store ?? false, stream: true },
@@ -105,6 +106,7 @@ export async function runTurn(
 /** Concatenates the `output_text` parts of every message item, in order. */
 function outputText(response: Response): string {
     let text = "";
+
     for (const item of response.output) {
         if (item.type !== "message") {
             continue;
@@ -130,6 +132,7 @@ function classifyRequestError(error: unknown, signal: AbortSignal | undefined): 
     }
 
     const status = statusOf(error);
+
     if (status !== undefined) {
         const kind: TurnErrorKind =
             status === 401 || status === 403
@@ -169,6 +172,7 @@ function statusOf(error: unknown): number | undefined {
 function hasClassName(value: unknown, name: string): boolean {
     let proto: unknown =
         typeof value === "object" && value !== null ? Object.getPrototypeOf(value) : null;
+
     while (typeof proto === "object" && proto !== null) {
         if (proto.constructor.name === name) {
             return true;

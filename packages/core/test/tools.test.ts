@@ -201,6 +201,7 @@ describe("validateArgs", () => {
         const { tool, validated } = fakeTool();
         const error = errorOf(await validateArgs(tool, '{"path":'));
         let parserMessage = "";
+
         try {
             JSON.parse('{"path":');
         } catch (thrown) {

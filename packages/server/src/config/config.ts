@@ -45,6 +45,7 @@ export type Env = Record<string, string | undefined>;
 /** Reads and validates the server's settings. Pure: it touches nothing but `env`. */
 export function loadConfig(env: Env): ConfigResult {
     const rawProvider = read(env, "MODEL_PROVIDER") ?? "lmstudio";
+
     if (!isProvider(rawProvider)) {
         return {
             ok: false,
@@ -60,6 +61,7 @@ export function loadConfig(env: Env): ConfigResult {
 
     const rawBaseUrl = read(env, "MODEL_BASE_URL") ?? defaults.baseUrl;
     const baseUrl = parseBaseUrl(rawBaseUrl);
+
     if (baseUrl === undefined) {
         problems.push(
             `MODEL_BASE_URL must be an http(s) URL such as ${defaults.baseUrl}; got "${rawBaseUrl}".`,
@@ -71,11 +73,13 @@ export function loadConfig(env: Env): ConfigResult {
     }
 
     const apiKey = read(env, "MODEL_API_KEY") ?? defaults.apiKey;
+
     if (apiKey === undefined) {
         problems.push(`MODEL_API_KEY is required with MODEL_PROVIDER=${provider}.`);
     }
 
     const model = read(env, "MODEL");
+
     if (model === undefined && provider !== "lmstudio") {
         problems.push(
             `MODEL is required with MODEL_PROVIDER=${provider}; only lmstudio can pick the loaded model itself.`,
@@ -83,6 +87,7 @@ export function loadConfig(env: Env): ConfigResult {
     }
 
     const rawEffort = read(env, "MODEL_REASONING_EFFORT") ?? defaults.reasoningEffort;
+
     if (rawEffort !== undefined && !isEffort(rawEffort)) {
         problems.push(
             `MODEL_REASONING_EFFORT must be one of ${REASONING_EFFORTS.join(", ")}; got "${rawEffort}".`,
@@ -114,6 +119,7 @@ function read(env: Env, name: string): string | undefined {
 /** An http(s) URL without query or fragment, with any trailing slash removed. */
 function parseBaseUrl(value: string): string | undefined {
     let url: URL;
+
     try {
         url = new URL(value);
     } catch {
@@ -121,6 +127,7 @@ function parseBaseUrl(value: string): string | undefined {
     }
 
     const isHttp = url.protocol === "http:" || url.protocol === "https:";
+
     if (!isHttp || url.search !== "" || url.hash !== "") {
         return undefined;
     }

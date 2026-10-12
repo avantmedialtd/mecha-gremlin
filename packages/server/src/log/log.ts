@@ -40,6 +40,7 @@ export function createLogger(format: LogFormat): Logger {
 function pretty(time: Date, level: Level, message: string, fields: Fields): string {
     const line = [time.toTimeString().slice(0, 8), level.toUpperCase().padEnd(5), message];
     const blocks: string[] = [];
+
     for (const [key, value] of Object.entries(fields)) {
         if (value === undefined) {
             continue;

@@ -40,6 +40,7 @@ async function readFile(root: string, path: string): Promise<ToolOutcome> {
 
     // A path that's outside lexically is refused without touching the disk at all.
     const target = resolve(root, path);
+
     if (!isInside(resolve(root), target)) {
         return outside();
     }
@@ -51,6 +52,7 @@ async function readFile(root: string, path: string): Promise<ToolOutcome> {
     try {
         // Again with symbolic links resolved, so a link can't lead outside or to a secret.
         const real = await realpath(target);
+
         if (!isInside(await realpath(root), real)) {
             return outside();
         }
@@ -60,11 +62,13 @@ async function readFile(root: string, path: string): Promise<ToolOutcome> {
         }
 
         const info = await stat(real);
+
         if (info.isDirectory()) {
             return failure(`${name} is a directory.`);
         }
 
         const bytes = await readHead(real, READ_LIMIT + 1);
+
         if (bytes.subarray(0, BINARY_PROBE).includes(0)) {
             return failure(`${name} is a binary file.`);
         }
@@ -99,6 +103,7 @@ function isEnvFile(path: string): boolean {
 
 async function readHead(file: string, length: number): Promise<Uint8Array> {
     const chunks: Uint8Array[] = [];
+
     for await (const chunk of createReadStream(file, { start: 0, end: length - 1 })) {
         chunks.push(chunk as Uint8Array);
     }
@@ -109,6 +114,7 @@ async function readHead(file: string, length: number): Promise<Uint8Array> {
 /** UTF-8 continuation bytes are 10xxxxxx; cutting just before one would split a character. */
 function characterBoundary(bytes: Uint8Array, cut: number): number {
     let boundary = cut;
+
     while (boundary > 0 && ((bytes[boundary] ?? 0) & 0xc0) === 0x80) {
         boundary--;
     }

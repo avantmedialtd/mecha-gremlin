@@ -48,11 +48,13 @@ export function toFunctionTool(tool: Tool): FunctionTool {
  */
 export function classify(output: readonly ResponseOutputItem[]): Turn {
     const calls = output.filter((item): item is ToolCall => item.type === "function_call");
+
     if (calls.length > 0) {
         return { kind: "calls", calls };
     }
 
     let text = "";
+
     for (const item of output) {
         if (item.type !== "message") {
             continue;
@@ -76,6 +78,7 @@ export async function validateArgs<Args>(tool: Tool<Args>, raw: string): Promise
 
     // Some models send no arguments at all to a tool that takes none.
     let value: unknown = {};
+
     if (raw.trim() !== "") {
         try {
             value = JSON.parse(raw);
@@ -91,6 +94,7 @@ export async function validateArgs<Args>(tool: Tool<Args>, raw: string): Promise
     }
 
     const result = await tool.schema["~standard"].validate(value);
+
     if (result.issues === undefined) {
         return { ok: true, args: result.value };
     }
@@ -101,6 +105,7 @@ export async function validateArgs<Args>(tool: Tool<Args>, raw: string): Promise
 
 function issuePath(issue: StandardSchemaV1.Issue): string {
     const path = issue.path ?? [];
+
     if (path.length === 0) {
         return "(root)";
     }

@@ -70,6 +70,7 @@ function stats(number: number, turnUsage: ResponseUsage = usage()): TurnStats {
 
 async function start(config: Config, options: SessionOptions): Promise<Session> {
     const created = await createSession(config, options);
+
     if (!created.ok) {
         throw new Error(`the session didn't start: ${created.reason}`);
     }
@@ -91,6 +92,7 @@ async function runSession(
 
     const session = await start(config, { tools: [tool.handler], history: START, ...options });
     const steps: SessionStep[] = [];
+
     for await (const step of session.steps) {
         steps.push(step);
     }

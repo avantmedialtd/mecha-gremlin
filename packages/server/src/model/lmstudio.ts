@@ -19,6 +19,7 @@ export async function fetchModels(config: Config): Promise<ModelsResult> {
     const url = `${new URL(config.baseUrl).origin}/api/v1/models`;
 
     let response: Response;
+
     try {
         response = await fetch(url, {
             headers: { Authorization: `Bearer ${config.apiKey}` },
@@ -61,6 +62,7 @@ export function lmStudioKeyRejected(status: number): string {
  */
 export function pickModel(payload: unknown, configured?: string): ModelChoice {
     const loaded = loadedModels(payload);
+
     if (loaded === undefined) {
         return {
             ok: false,
@@ -88,6 +90,7 @@ export function pickModel(payload: unknown, configured?: string): ModelChoice {
     }
 
     const [first] = instanceIds;
+
     if (first === undefined) {
         return {
             ok: false,
@@ -113,6 +116,7 @@ function loadedModels(payload: unknown): LoadedModel[] | undefined {
     }
 
     const loaded: LoadedModel[] = [];
+
     for (const entry of payload.models) {
         if (!isRecord(entry) || typeof entry.key !== "string" || typeof entry.type !== "string") {
             return undefined;
@@ -123,6 +127,7 @@ function loadedModels(payload: unknown): LoadedModel[] | undefined {
         }
 
         const instances = entry.loaded_instances ?? [];
+
         if (!Array.isArray(instances)) {
             return undefined;
         }
@@ -130,6 +135,7 @@ function loadedModels(payload: unknown): LoadedModel[] | undefined {
         const instanceIds = instances.flatMap((instance) =>
             isRecord(instance) && typeof instance.id === "string" ? [instance.id] : [],
         );
+
         if (instanceIds.length > 0) {
             loaded.push({ key: entry.key, instanceIds });
         }

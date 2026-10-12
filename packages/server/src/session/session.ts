@@ -64,6 +64,7 @@ export async function createSession(
     options: SessionOptions,
 ): Promise<({ ok: true } & Session) | { ok: false; reason: string }> {
     const choice = await resolveModel(config);
+
     if (!choice.ok) {
         return choice;
     }
@@ -89,6 +90,7 @@ async function* run(
 
     for (let number = 1; ; number++) {
         const input = toInput(history);
+
         if (!input.ok) {
             yield { kind: "history", detail: input.detail };
             return;
@@ -102,6 +104,7 @@ async function* run(
             tools: functionTools,
             reasoning,
         });
+
         if (!result.ok) {
             yield { kind: "turn_failed", failure: result };
             return;
@@ -112,6 +115,7 @@ async function* run(
         const turn = { number, usage: result.usage, seconds: (performance.now() - started) / 1000 };
 
         const next = classify(output);
+
         if (next.kind !== "calls") {
             yield { ...next, turn };
             return;
@@ -128,6 +132,7 @@ async function* run(
         }
 
         const calls: CallResult[] = [];
+
         for (const call of next.calls) {
             const outcome = await runCall(call, handlers);
             history.push(toOutputItem(call.call_id, outcome));
@@ -143,6 +148,7 @@ async function runCall(
     handlers: ReadonlyMap<string, ToolHandler>,
 ): Promise<ToolOutcome> {
     const handler = handlers.get(call.name);
+
     if (handler === undefined) {
         const available = [...handlers.keys()].join(", ");
         return {

@@ -64,6 +64,7 @@ afterEach(() => {
  */
 async function hello(env: Settings = {}, server: FakeServer = {}, args: string[] = []) {
     const settings: Settings = { LOG_FORMAT: "json", ...env };
+
     for (const name of SETTINGS) {
         vi.stubEnv(name, settings[name]);
     }
@@ -82,6 +83,7 @@ async function hello(env: Settings = {}, server: FakeServer = {}, args: string[]
     const log = vi.spyOn(console, "log").mockImplementation((line: unknown) => {
         output += `${String(line)}\n`;
     });
+
     try {
         // A module runs only once until the registry is reset.
         vi.resetModules();

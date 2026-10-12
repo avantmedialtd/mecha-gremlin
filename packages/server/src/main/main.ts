@@ -30,6 +30,7 @@ async function run(args: readonly string[]): Promise<number> {
     }
 
     const loaded = loadConfig(process.env);
+
     if (!loaded.ok) {
         for (const problem of loaded.problems) {
             log.error(problem);
@@ -48,6 +49,7 @@ async function run(args: readonly string[]): Promise<number> {
             { role: "user", content: `File: ${file}\nQuestion: ${question}` },
         ],
     });
+
     if (!session.ok) {
         return fail(session.reason);
     }
@@ -57,6 +59,7 @@ async function run(args: readonly string[]): Promise<number> {
     }
 
     log.info("asking", { model: session.model, baseUrl: config.baseUrl, file, question });
+
     for await (const step of session.steps) {
         if ("turn" in step) {
             log.info("turn", turnFields(step.turn));
@@ -73,6 +76,7 @@ async function run(args: readonly string[]): Promise<number> {
 
         for (const { call, outcome } of step.calls) {
             log.info("tool call", { tool: call.name, arguments: parsed(call.arguments) });
+
             if (outcome.ok) {
                 const bytes = new TextEncoder().encode(outcome.output).byteLength;
                 log.info("tool result", { tool: call.name, bytes });
@@ -88,6 +92,7 @@ async function run(args: readonly string[]): Promise<number> {
 /** The question's words are joined, so it needn't be quoted. */
 function parseArgs(args: readonly string[]): { file: string; question: string } {
     const [file, ...words] = args;
+
     if (file === undefined) {
         return { file: DEFAULT_FILE, question: DEFAULT_QUESTION };
     }
@@ -119,6 +124,7 @@ function failure(step: Exclude<SessionStep, { kind: "calls" | "final" }>, config
     switch (step.kind) {
         case "turn_failed": {
             const { error, detail, status } = step.failure;
+
             if (error === "auth") {
                 return keyRejected(config, status ?? 401);
             }
