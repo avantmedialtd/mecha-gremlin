@@ -176,7 +176,7 @@ describe("Alternate model turns and tool calls until the model answers", () => {
             responses: script(() => completed([message("42")])),
         });
 
-        expect(steps).toEqual([{ kind: "answer", turn: stats(1), text: "42" }]);
+        expect(steps).toEqual([{ kind: "final", turn: stats(1), text: "42" }]);
         expect(history).toEqual([...START, message("42")]);
         expect(bodies).toHaveLength(1);
         expect(bodies[0]).toMatchObject({
@@ -210,7 +210,7 @@ describe("Alternate model turns and tool calls until the model answers", () => {
                 ],
             },
             {
-                kind: "answer",
+                kind: "final",
                 turn: stats(2, usage({ input_tokens: 200 })),
                 text: "It runs the checks.",
             },
@@ -365,13 +365,8 @@ describe("Stop at the turn limit", () => {
             "f5.txt",
             "f6.txt",
         ]);
-        expect(steps.map((step) => step.kind)).toEqual([...Array(7).fill("calls"), "stop"]);
-        expect(last).toEqual({
-            kind: "stop",
-            reason: "turn_limit",
-            detail: "the model was still calling tools after 8 turns",
-            turn: stats(8),
-        });
+        expect(steps.map((step) => step.kind)).toEqual([...Array(7).fill("calls"), "turn_limit"]);
+        expect(last).toEqual({ kind: "turn_limit", turn: stats(8) });
         expect(history.at(-1)).toEqual(
             output("call_7", "Error: not run: the turn limit was reached"),
         );
@@ -382,11 +377,11 @@ describe("Stop at the turn limit", () => {
 
         expect(bodies).toHaveLength(2);
         expect(paths).toEqual(["f0.txt"]);
-        expect(last).toMatchObject({ kind: "stop", reason: "turn_limit" });
+        expect(last).toMatchObject({ kind: "turn_limit" });
     });
 });
 
-describe("End with a stop step", () => {
+describe("End with a step, not a throw", () => {
     test("a later turn fails", async () => {
         const { last, history } = await runSession({
             responses: script(
@@ -396,11 +391,13 @@ describe("End with a stop step", () => {
         });
 
         expect(last).toEqual({
-            kind: "stop",
-            reason: "turn_failed",
-            error: "server_error",
-            status: 500,
-            detail: expect.stringContaining("the engine fell over"),
+            kind: "turn_failed",
+            failure: {
+                ok: false,
+                error: "server_error",
+                status: 500,
+                detail: expect.stringContaining("the engine fell over"),
+            },
         });
         expect(history).toEqual([
             ...START,
@@ -414,14 +411,7 @@ describe("End with a stop step", () => {
             responses: script(() => completed([reasoning()])),
         });
 
-        expect(steps).toEqual([
-            {
-                kind: "stop",
-                reason: "empty",
-                detail: "the model's turn had neither tool calls nor text",
-                turn: stats(1),
-            },
-        ]);
+        expect(steps).toEqual([{ kind: "empty", turn: stats(1) }]);
         expect(history).toEqual([...START, reasoning()]);
         expect(bodies).toHaveLength(1);
     });
@@ -430,9 +420,7 @@ describe("End with a stop step", () => {
         const broken = [...START, { type: "made_up" } as unknown as HistoryItem];
         const { steps, bodies } = await runSession({}, { history: broken });
 
-        expect(steps).toEqual([
-            { kind: "stop", reason: "history", detail: expect.stringContaining("made_up") },
-        ]);
+        expect(steps).toEqual([{ kind: "history", detail: expect.stringContaining("made_up") }]);
         expect(bodies).toHaveLength(0);
     });
 });
@@ -451,7 +439,7 @@ describe("Yield the result of each turn as it completes", () => {
             output("call_1", "contents of package.json"),
         ]);
 
-        expect((await session.steps.next()).value).toMatchObject({ kind: "answer" });
+        expect((await session.steps.next()).value).toMatchObject({ kind: "final" });
         expect(turnBodies()).toHaveLength(2);
         expect(session.history.at(-1)).toEqual(message("Done."));
 

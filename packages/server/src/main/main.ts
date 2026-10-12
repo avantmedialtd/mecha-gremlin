@@ -58,17 +58,17 @@ async function run(args: readonly string[]): Promise<number> {
 
     log.info("asking", { model: session.model, baseUrl: config.baseUrl, file, question });
     for await (const step of session.steps) {
-        if (step.turn !== undefined) {
+        if ("turn" in step) {
             log.info("turn", turnFields(step.turn));
         }
 
-        if (step.kind === "stop") {
-            return fail(failure(step, config));
-        }
-
-        if (step.kind === "answer") {
+        if (step.kind === "final") {
             log.info("answer", { text: step.text });
             return 0;
+        }
+
+        if (step.kind !== "calls") {
+            return fail(failure(step, config));
         }
 
         for (const { call, outcome } of step.calls) {
@@ -82,7 +82,7 @@ async function run(args: readonly string[]): Promise<number> {
         }
     }
 
-    throw new Error("The agent loop ended without an answer or a stop step.");
+    throw new Error("The session's steps ran out before an answer or a failure.");
 }
 
 /** The question's words are joined, so it needn't be quoted. */
@@ -115,19 +115,20 @@ function turnFields({ number, usage, seconds }: TurnStats): Fields {
     };
 }
 
-function failure(step: Extract<SessionStep, { kind: "stop" }>, config: Config): string {
-    switch (step.reason) {
+function failure(step: Exclude<SessionStep, { kind: "calls" | "final" }>, config: Config): string {
+    switch (step.kind) {
         case "turn_failed": {
-            if (step.error === "auth") {
-                return keyRejected(config, step.status ?? 401);
+            const { error, detail, status } = step.failure;
+            if (error === "auth") {
+                return keyRejected(config, status ?? 401);
             }
 
-            if (step.error === "unreachable") {
-                return `Can't reach ${config.baseUrl} (${step.detail}). Check MODEL_BASE_URL.`;
+            if (error === "unreachable") {
+                return `Can't reach ${config.baseUrl} (${detail}). Check MODEL_BASE_URL.`;
             }
 
-            const status = step.status === undefined ? "" : `, HTTP ${step.status}`;
-            return `The turn failed (${step.error}${status}): ${step.detail}`;
+            const http = status === undefined ? "" : `, HTTP ${status}`;
+            return `The turn failed (${error}${http}): ${detail}`;
         }
         case "turn_limit":
             return `The model didn't answer within ${MAX_TURNS} turns: it was still calling tools. Try a narrower question.`;

@@ -29,7 +29,7 @@ export interface TurnOptions {
     signal?: AbortSignal;
 }
 
-type TurnFailure = Extract<TurnResult, { ok: false }>;
+export type TurnFailure = Extract<TurnResult, { ok: false }>;
 
 /**
  * Runs one model turn over the Responses API. The request is always streamed, and stored

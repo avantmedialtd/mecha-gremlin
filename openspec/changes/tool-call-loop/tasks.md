@@ -114,3 +114,8 @@
 - [x] 10.1 `runLoop` becomes `createSession(config, { model, tools, history })` in `session/session.ts`. It builds its own client from the config and takes the reasoning effort from it too. It returns `{ steps, history }`: the generator of steps, and the session's own, growing history. Steps no longer carry history copies.
 - [x] 10.2 `main.ts` passes the config and iterates `session.steps`. The session tests fake the global `fetch`, check that the client comes from the config, and check that the history keeps up step by step.
 - [x] 10.3 `createSession` chooses the model too, so it's async. It resolves to `{ ok: false, reason }` when no model can be used, or to the session with its `model` and the note on how it was picked. `main.ts` no longer calls `resolveModel`.
+
+## 11. Steps carry `core`'s results
+
+- [x] 11.1 The session yields `classify`'s `final` and `empty` results as they are, with the turn's stats, and `runTurn`'s failure whole, in a `turn_failed` step. `turn_limit` and `history` are steps of their own. The `answer` and `stop` steps are gone, and so are the `detail` texts that `stop` carried for `empty` and `turn_limit`; nothing read them.
+- [x] 11.2 `core` exports `TurnFailure`. `main.ts` switches on the step's kind, and the session tests assert the new steps.

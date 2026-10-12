@@ -101,16 +101,12 @@ The brief already sketches the rest of the loop:
   - `note`: set when the model was picked out of several;
   - `steps`: an async generator that yields one step per model turn, as the turn completes and before the next one starts;
   - `history`: the session's own history, which grows as it runs. Nothing reads it yet. It starts as a copy of the history the caller passed in.
-- **The steps:**
+- **The steps are `core`'s results, as they are,** plus what only the session knows:
   - `calls`: the turn's calls, each with its outcome, after they ran;
-  - `answer`: the answer's text. It is the last step;
-  - `stop`: the reason the session stopped. It is the last step.
-
-  A `stop` step's reason is one of:
-  - `turn_failed`: carries `runTurn`'s error kind and HTTP status, so the hello keeps its provider-specific messages;
-  - `empty`;
-  - `turn_limit`;
-  - `history`.
+  - `final` or `empty`: `classify`'s result. It is the last step;
+  - `turn_failed`: `runTurn`'s failure, whole, so the hello keeps its provider-specific messages. It is the last step;
+  - `turn_limit`: the session's own. It is the last step;
+  - `history`: `toInput`'s detail, when the history can't be replayed. It is the last step.
 
   A step for a turn the model completed carries the turn's number, usage and seconds; the session times turns with `performance.now()`. Steps don't carry the history. The session is paused while the caller handles a step, so `session.history` at that moment is the history as of that step. A future caller can persist a session turn by turn from it, a stopped one included.
 - **Why a generator:** the caller sees each turn as it completes, and acts on it between turns. That's the shape a later step needs: one that asks the user for input and takes the reply back before the session goes on. It isn't built yet. The reply could come back through the generator's `next(reply)`, or through a function on the step, which keeps `for await` working.
@@ -126,13 +122,14 @@ The brief already sketches the rest of the loop:
   - an unknown tool: "unknown tool X; available: …";
   - invalid arguments: the `validateArgs` text;
   - a handler that throws: the error message.
-- **Turn cap.** If the last allowed turn still returns calls, they are not run. Each gets an output saying it wasn't run because the turn limit was reached, so the history stays replayable for a future finalize turn (C8). The last step is then a `turn_limit` stop.
+- **Turn cap.** If the last allowed turn still returns calls, they are not run. Each gets an output saying it wasn't run because the turn limit was reached, so the history stays replayable for a future finalize turn (C8). The last step is then `turn_limit`.
 - **Calls run sequentially and in order** (Brief 4.5). `parallel_tool_calls` is left at its default.
 - **Progress:** the hello prints each step as it arrives: the turn's usage line, then its calls with their outcomes. A run takes a minute or more locally, so progress has to be live.
 - **Alternatives:**
   - A session in `core`: the "engine object" the brief rules out.
   - A progress callback plus a single result at the end, which was the first version. It reports progress, but a callback can't pause the loop for the caller's reply.
-  - Passing in a client, which was the version before this one. Every caller would build the same client from the same config.
+  - Passing in a client, which was an earlier version. Every caller would build the same client from the same config.
+  - Steps with names of their own, which was the version before this one: `answer` for `final`, and one `stop` step whose reason was `empty`, `turn_failed`, `turn_limit` or `history`. They said nothing `core`'s results don't, and the `stop` step's fields were optional, because each reason set only some of them.
   - A pure `nextStep` now: with three outcomes it would be a switch statement in another file (see Non-Goals).
 
 **6. `read_file`: confined, refuses secrets and binary files, capped.**

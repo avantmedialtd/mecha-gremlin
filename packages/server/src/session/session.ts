@@ -2,7 +2,8 @@ import {
     type HistoryItem,
     type ToolCall,
     type ToolOutcome,
-    type TurnErrorKind,
+    type Turn,
+    type TurnFailure,
     classify,
     runTurn,
     toFunctionTool,
@@ -41,17 +42,10 @@ export interface CallResult {
  */
 export type SessionStep =
     | { kind: "calls"; turn: TurnStats; calls: CallResult[] }
-    | { kind: "answer"; turn: TurnStats; text: string }
-    | {
-          kind: "stop";
-          reason: "turn_failed" | "empty" | "turn_limit" | "history";
-          detail: string;
-          /** Set when the model completed the turn that stopped the session. */
-          turn?: TurnStats;
-          /** Only for `turn_failed`. */
-          error?: TurnErrorKind;
-          status?: number;
-      };
+    | (Exclude<Turn, { kind: "calls" }> & { turn: TurnStats })
+    | { kind: "turn_limit"; turn: TurnStats }
+    | { kind: "turn_failed"; failure: TurnFailure }
+    | { kind: "history"; detail: string };
 
 export interface Session {
     model: string;
@@ -96,7 +90,7 @@ async function* run(
     for (let number = 1; ; number++) {
         const input = toInput(history);
         if (!input.ok) {
-            yield { kind: "stop", reason: "history", detail: input.detail };
+            yield { kind: "history", detail: input.detail };
             return;
         }
 
@@ -109,8 +103,7 @@ async function* run(
             reasoning,
         });
         if (!result.ok) {
-            const { error, detail, status } = result;
-            yield { kind: "stop", reason: "turn_failed", error, detail, status };
+            yield { kind: "turn_failed", failure: result };
             return;
         }
 
@@ -119,14 +112,8 @@ async function* run(
         const turn = { number, usage: result.usage, seconds: (performance.now() - started) / 1000 };
 
         const next = classify(output);
-        if (next.kind === "final") {
-            yield { kind: "answer", turn, text: next.text };
-            return;
-        }
-
-        if (next.kind === "empty") {
-            const detail = "the model's turn had neither tool calls nor text";
-            yield { kind: "stop", reason: "empty", detail, turn };
+        if (next.kind !== "calls") {
+            yield { ...next, turn };
             return;
         }
 
@@ -136,8 +123,7 @@ async function* run(
                 history.push(toOutputItem(call.call_id, NOT_RUN));
             }
 
-            const detail = `the model was still calling tools after ${number} turns`;
-            yield { kind: "stop", reason: "turn_limit", detail, turn };
+            yield { kind: "turn_limit", turn };
             return;
         }
 
