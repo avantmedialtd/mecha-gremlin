@@ -91,7 +91,7 @@ The brief already sketches the rest of the loop:
 - **`error` is written for the model,** following Brief 4.5: "Output item with the validation error and the expected schema". It names the tool and says what was wrong: invalid JSON with the parser's message, not an object, or one line per schema issue as `path: message`. It ends with the tool's expected JSON Schema, so the model can correct itself on the next turn.
 
 **5. The loop lives in the server.**
-- **Signature:** `runLoop(client, { model, reasoning?, tools, history, maxTurns = 8, onEvent? })`. The result is `{ ok: true, text, history, turns }` or `{ ok: false, reason, detail, history, turns, error?, status? }`. `reason` is one of:
+- **Signature:** `runLoop(client, { model, reasoning?, tools, history, maxTurns = 8, onEvent?, now? })`. The result is `{ ok: true, text, history }` or `{ ok: false, reason, detail, history, error?, status? }`. Per-turn usage goes out through `onEvent`. `reason` is one of:
   - `turn_failed`: carries `runTurn`'s error kind and HTTP status, so the hello keeps its provider-specific messages;
   - `empty`;
   - `turn_limit`;

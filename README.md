@@ -6,8 +6,8 @@ A self-hosted, scheduled agent runner, in early development. The design and its 
 
 | Package | What it is |
 |---|---|
-| [`packages/core`](packages/core) | `@mecha-gremlin/core`: stateless functions. So far `runTurn`, which runs one streamed model turn over the Responses API and returns the reply or a classified error. |
-| [`packages/server`](packages/server) | `@mecha-gremlin/server`: the app. So far it says hi to the configured model and prints the reply. |
+| [`packages/core`](packages/core) | `@mecha-gremlin/core`: stateless functions. `runTurn` runs one streamed model turn over the Responses API and returns the reply or a classified error. The tool-calling pieces are tools defined by any [Standard Schema](https://standardschema.dev) library, `classify` for a turn's output, `validateArgs`, `toOutputItem`, and `toInput`, which replays the chat history. |
+| [`packages/server`](packages/server) | `@mecha-gremlin/server`: the app. So far it asks the model a question about a file, which the model reads with the `read_file` tool in an agent loop. |
 
 ## Prerequisites
 
@@ -18,10 +18,24 @@ A self-hosted, scheduled agent runner, in early development. The design and its 
 
 ```sh
 bun install
-bun run hello
+bun run hello                                       # asks what package.json's check script runs
+bun run hello README.md                             # asks what README.md is for
+bun run hello package.json which vitest version     # your own question; quotes are optional
 ```
 
-The reply goes to stdout. Progress, usage and errors go to stderr, so `bun run hello | pbcopy` copies just the reply.
+The command is `bun run hello [file] [question…]`. The model reads the file with the `read_file` tool, and the loop runs until it answers, for at most 8 turns. A question usually takes two turns: one to read the file and one to answer. On a local 27B model, turns took from 15 seconds to about 2 minutes in testing, growing with the size of the file.
+
+The answer goes to stdout. Progress, usage and errors go to stderr, so `bun run hello | pbcopy` copies just the answer. The progress shows each turn's token usage (including the input tokens served from the model server's cache) and each tool call with its result.
+
+### What `read_file` reads
+
+`read_file` reads UTF-8 text files under the working directory: the directory you run the command in. It refuses:
+
+- paths outside the working directory, including through `..`, absolute paths and symbolic links;
+- `.env` files and anything else whose name starts with `.env`, because they hold secrets such as `MODEL_API_KEY`;
+- directories and binary files.
+
+It returns at most 32 KiB of a file, and notes when it cut the file short. Every refusal goes back to the model as the tool's output, so the model can explain it or try something else.
 
 ## Configuration
 
@@ -35,7 +49,7 @@ Settings come from the environment. Bun also reads a local `.env` file, which is
 | `MODEL` | the first loaded model | required | The model to use. With `lmstudio` it must be loaded |
 | `MODEL_REASONING_EFFORT` | `none` | the model's default | Sent as `reasoning.effort`; `none` keeps local reasoning models quick |
 
-For example, to say hi to OpenAI instead:
+For example, to ask OpenAI instead:
 
 ```sh
 MODEL_PROVIDER=openai MODEL_API_KEY=sk-… MODEL=gpt-5.5 bun run hello
