@@ -34,10 +34,10 @@ Every turn SHALL go to the OpenAI-compatible Responses endpoint at `{MODEL_BASE_
 - **THEN** the second request carries the file's contents in a `function_call_output`, stdout is exactly "It runs the checks." followed by a newline, and the exit code is 0
 
 ### Requirement: Report each tool call and turn on stderr
-The hello SHALL write to stderr, as they happen:
+The hello SHALL write to stderr:
 - before the first turn, the model, the endpoint and the file being asked about;
-- each tool call's name and arguments before it runs, and afterwards the size of its output in bytes, or its error;
-- after each turn, the turn number, the input tokens with the cached count, the output tokens with the reasoning count, and the elapsed seconds.
+- as each turn completes, the turn number, the input tokens with the cached count, the output tokens with the reasoning count, and the elapsed seconds;
+- then, for each of the turn's tool calls, its name and arguments, and the size of its output in bytes or its error.
 
 stdout SHALL contain only the answer.
 

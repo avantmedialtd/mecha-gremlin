@@ -91,13 +91,19 @@ The brief already sketches the rest of the loop:
 - **`error` is written for the model,** following Brief 4.5: "Output item with the validation error and the expected schema". It names the tool and says what was wrong: invalid JSON with the parser's message, not an object, or one line per schema issue as `path: message`. It ends with the tool's expected JSON Schema, so the model can correct itself on the next turn.
 
 **5. The loop lives in the server.**
-- **Signature:** `runLoop(client, { model, reasoning?, tools, history, maxTurns = 8, onEvent? })`. It times each turn with `performance.now()`. The result is `{ ok: true, text, history }` or `{ ok: false, reason, detail, history, error?, status? }`. Per-turn usage goes out through `onEvent`. `reason` is one of:
+- **An async generator of turn results.** `runLoop(client, { model, reasoning?, tools, history, maxTurns = 8 })` yields one step per model turn, as the turn completes and before the next one starts:
+  - `calls`: the turn's calls, each with its outcome, after they ran;
+  - `answer`: the answer's text. It is the last step;
+  - `stop`: the reason the loop stopped. It is the last step.
+
+  A `stop` step's reason is one of:
   - `turn_failed`: carries `runTurn`'s error kind and HTTP status, so the hello keeps its provider-specific messages;
   - `empty`;
   - `turn_limit`;
   - `history`.
 
-  The history so far is always returned, so a future caller can persist a failed run's transcript.
+  Each step carries its own copy of the history so far, so a future caller can persist a run, a stopped one included, turn by turn. A step for a turn the model completed also carries the turn's number, usage and seconds; the loop times turns with `performance.now()`.
+- **Why a generator:** the caller sees each turn as it completes, and acts on it between turns. That's the shape a later step needs: one that asks the user for input and takes the reply back before the loop goes on. It isn't built yet. The reply could come back through the generator's `next(reply)`, or through a function on the step, which keeps `for await` working.
 - **Tools carry their handlers.** The server pairs each `Tool<Args>` with `run(args) => Promise<ToolOutcome>` through a small helper, which validates and then runs. The arguments stay typed from the zod schema to the handler, while the loop holds a plain list. `core` never sees handlers.
 - **Outcomes, not strings.** A `ToolOutcome` is `{ ok: true, output }` or `{ ok: false, error }`. `core`'s `toOutputItem(callId, outcome)` (Brief 4.3) renders a failure as `Error: <error>`, so that convention lives in one place. The loop also knows whether a call succeeded, for progress, without parsing its text.
 - **Each turn:**
@@ -110,14 +116,12 @@ The brief already sketches the rest of the loop:
   - an unknown tool: "unknown tool X; available: …";
   - invalid arguments: the `validateArgs` text;
   - a handler that throws: the error message.
-- **Turn cap.** If the last allowed turn still returns calls, they are not run. Each gets an output saying it wasn't run because the turn limit was reached, so the history stays replayable for a future finalize turn (C8). The result is then a `turn_limit` failure.
+- **Turn cap.** If the last allowed turn still returns calls, they are not run. Each gets an output saying it wasn't run because the turn limit was reached, so the history stays replayable for a future finalize turn (C8). The last step is then a `turn_limit` stop.
 - **Calls run sequentially and in order** (Brief 4.5). `parallel_tool_calls` is left at its default.
-- **Progress:** `onEvent` reports each completed turn (number, usage, seconds) and each call before and after it runs (name, raw arguments, then the output's size or its error text). The hello prints these to stderr.
-
-  This is a callback within the app's own code, not `core` calling out to adapters. A run takes a minute or more locally, so progress has to be live.
+- **Progress:** the hello prints each step as it arrives: the turn's usage line, then its calls with their outcomes. A run takes a minute or more locally, so progress has to be live.
 - **Alternatives:**
   - `runLoop` in `core`: the "engine object" the brief rules out.
-  - An async generator that yields steps: it needs results passed back through `next()`, which types poorly.
+  - A progress callback plus a single result at the end, which was the first version. It reports progress, but a callback can't pause the loop for the caller's reply.
   - A pure `nextStep` now: with three outcomes it would be a switch statement in another file (see Non-Goals).
 
 **6. `read_file`: confined, refuses secrets and binary files, capped.**

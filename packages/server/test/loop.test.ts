@@ -1,8 +1,15 @@
 import { type HistoryItem, type ToolOutcome, toFunctionTool } from "@mecha-gremlin/core";
 import OpenAI from "openai";
+import type { ResponseUsage } from "openai/resources/responses/responses";
 import { describe, expect, test, vi } from "vitest";
 import { z } from "zod";
-import { type LoopEvent, type LoopOptions, MAX_TURNS, runLoop } from "../src/loop.ts";
+import {
+    type LoopOptions,
+    type LoopStep,
+    MAX_TURNS,
+    type TurnStats,
+    runLoop,
+} from "../src/loop.ts";
 import { defineTool } from "../src/tool-handler.ts";
 import {
     type FakeServer,
@@ -47,28 +54,44 @@ function output(callId: string, text: string): HistoryItem {
     return { type: "function_call_output", call_id: callId, output: text };
 }
 
-async function loop(server: FakeServer, options: Partial<LoopOptions> = {}) {
-    const { fetch, turnBodies } = fakeFetch(server);
-    const client = new OpenAI({
+function clientFor(fetch: ReturnType<typeof fakeFetch>["fetch"]): OpenAI {
+    return new OpenAI({
         apiKey: "test-key",
         baseURL: "http://model.test/v1",
         maxRetries: 0,
         fetch,
     });
+}
+
+function stats(number: number, turnUsage: ResponseUsage = usage()): TurnStats {
+    return { number, usage: turnUsage, seconds: 1.5 };
+}
+
+async function loop(server: FakeServer, options: Partial<LoopOptions> = {}) {
+    const { fetch, turnBodies } = fakeFetch(server);
     const tool = recordingTool();
-    const events: LoopEvent[] = [];
     // Every reading of the clock is 1.5 s after the last, so each turn takes 1.5 s.
     let clock = 0;
     vi.spyOn(performance, "now").mockImplementation(() => (clock += 1500));
-    const result = await runLoop(client, {
+
+    const steps: LoopStep[] = [];
+    const run = runLoop(clientFor(fetch), {
         model: "test-model",
         tools: [tool.handler],
         history: START,
-        onEvent: (event) => events.push(event),
         ...options,
     });
+    for await (const step of run) {
+        steps.push(step);
+    }
 
-    return { result, bodies: turnBodies(), paths: tool.paths, events, handler: tool.handler };
+    return {
+        steps,
+        last: steps.at(-1),
+        bodies: turnBodies(),
+        paths: tool.paths,
+        handler: tool.handler,
+    };
 }
 
 const roundTrip = [reasoning(), call("read_file", { path: "package.json" }, "call_1")];
@@ -82,11 +105,13 @@ function readThenAnswer() {
 
 describe("Alternate model turns and tool calls until the model answers", () => {
     test("an answer without tools", async () => {
-        const { result, bodies } = await loop({
+        const { steps, bodies } = await loop({
             responses: script(() => completed([message("42")])),
         });
 
-        expect(result).toEqual({ ok: true, text: "42", history: [...START, message("42")] });
+        expect(steps).toEqual([
+            { kind: "answer", turn: stats(1), text: "42", history: [...START, message("42")] },
+        ]);
         expect(bodies).toHaveLength(1);
         expect(bodies[0]).toMatchObject({
             model: "test-model",
@@ -97,29 +122,35 @@ describe("Alternate model turns and tool calls until the model answers", () => {
     });
 
     test("one tool round trip replays the whole history", async () => {
-        const { result, bodies } = await loop({
+        const afterCall = [...START, ...roundTrip, output("call_1", "contents of package.json")];
+        const { steps, bodies } = await loop({
             responses: script(
-                () => completed(roundTrip),
-                () => completed([message("\n\nIt runs the checks.")]),
+                () => completed(roundTrip, usage({ input_tokens: 100 })),
+                () => completed([message("\n\nIt runs the checks.")], usage({ input_tokens: 200 })),
             ),
         });
 
         expect(bodies).toHaveLength(2);
-        expect(bodies[1]?.input).toEqual([
-            ...START,
-            ...roundTrip,
-            output("call_1", "contents of package.json"),
+        expect(bodies[1]?.input).toEqual(afterCall);
+        expect(steps).toEqual([
+            {
+                kind: "calls",
+                turn: stats(1, usage({ input_tokens: 100 })),
+                calls: [
+                    {
+                        call: roundTrip[1],
+                        outcome: { ok: true, output: "contents of package.json" },
+                    },
+                ],
+                history: afterCall,
+            },
+            {
+                kind: "answer",
+                turn: stats(2, usage({ input_tokens: 200 })),
+                text: "It runs the checks.",
+                history: [...afterCall, message("\n\nIt runs the checks.")],
+            },
         ]);
-        expect(result).toEqual({
-            ok: true,
-            text: "It runs the checks.",
-            history: [
-                ...START,
-                ...roundTrip,
-                output("call_1", "contents of package.json"),
-                message("\n\nIt runs the checks."),
-            ],
-        });
     });
 
     test("tools are frozen for the run", async () => {
@@ -150,7 +181,7 @@ describe("Run every call in order and answer each exactly once", () => {
     test("two calls in one turn", async () => {
         const a = call("read_file", { path: "a.txt" }, "call_a");
         const b = call("read_file", { path: "b.txt" }, "call_b");
-        const { result, paths } = await loop({
+        const { last, paths } = await loop({
             responses: script(
                 () => completed([a, b]),
                 () => completed([message("Done.")]),
@@ -158,7 +189,7 @@ describe("Run every call in order and answer each exactly once", () => {
         });
 
         expect(paths).toEqual(["a.txt", "b.txt"]);
-        expect(result.history).toEqual([
+        expect(last?.history).toEqual([
             ...START,
             a,
             b,
@@ -239,7 +270,7 @@ describe("Stop at the turn limit", () => {
 
     test("the model never stops calling tools", async () => {
         expect(MAX_TURNS).toBe(8);
-        const { result, bodies, paths } = await loop(endless);
+        const { steps, last, bodies, paths } = await loop(endless);
 
         expect(bodies).toHaveLength(8);
         expect(paths).toEqual([
@@ -251,36 +282,39 @@ describe("Stop at the turn limit", () => {
             "f5.txt",
             "f6.txt",
         ]);
-        expect(result).toMatchObject({
-            ok: false,
+        expect(steps.map((step) => step.kind)).toEqual([...Array(7).fill("calls"), "stop"]);
+        expect(last).toEqual({
+            kind: "stop",
             reason: "turn_limit",
             detail: "the model was still calling tools after 8 turns",
+            turn: stats(8),
+            history: expect.any(Array),
         });
-        expect(result.history.at(-1)).toEqual(
+        expect(last?.history.at(-1)).toEqual(
             output("call_7", "Error: not run: the turn limit was reached"),
         );
     });
 
     test("the caller can set another limit", async () => {
-        const { result, bodies, paths } = await loop(endless, { maxTurns: 2 });
+        const { last, bodies, paths } = await loop(endless, { maxTurns: 2 });
 
         expect(bodies).toHaveLength(2);
         expect(paths).toEqual(["f0.txt"]);
-        expect(result).toMatchObject({ ok: false, reason: "turn_limit" });
+        expect(last).toMatchObject({ kind: "stop", reason: "turn_limit" });
     });
 });
 
-describe("Return failures as values, with the history so far", () => {
+describe("End with a stop step, with the history so far", () => {
     test("a later turn fails", async () => {
-        const { result } = await loop({
+        const { last } = await loop({
             responses: script(
                 () => completed(roundTrip),
                 () => httpError(500, "the engine fell over"),
             ),
         });
 
-        expect(result).toEqual({
-            ok: false,
+        expect(last).toEqual({
+            kind: "stop",
             reason: "turn_failed",
             error: "server_error",
             status: 500,
@@ -290,74 +324,82 @@ describe("Return failures as values, with the history so far", () => {
     });
 
     test("no answer", async () => {
-        const { result, bodies } = await loop({
+        const { steps, bodies } = await loop({
             responses: script(() => completed([reasoning()])),
         });
 
-        expect(result).toEqual({
-            ok: false,
-            reason: "empty",
-            detail: "the model's turn had neither tool calls nor text",
-            history: [...START, reasoning()],
-        });
+        expect(steps).toEqual([
+            {
+                kind: "stop",
+                reason: "empty",
+                detail: "the model's turn had neither tool calls nor text",
+                turn: stats(1),
+                history: [...START, reasoning()],
+            },
+        ]);
         expect(bodies).toHaveLength(1);
     });
 
     test("a history that can't be replayed", async () => {
         const broken = [...START, { type: "made_up" } as unknown as HistoryItem];
-        const { result, bodies } = await loop({}, { history: broken });
+        const { steps, bodies } = await loop({}, { history: broken });
 
-        expect(result).toEqual({
-            ok: false,
-            reason: "history",
-            detail: expect.stringContaining("made_up"),
-            history: broken,
-        });
+        expect(steps).toEqual([
+            {
+                kind: "stop",
+                reason: "history",
+                detail: expect.stringContaining("made_up"),
+                history: broken,
+            },
+        ]);
         expect(bodies).toHaveLength(0);
     });
 });
 
-describe("Report progress as it happens", () => {
-    test("progress for a tool round trip", async () => {
-        const { events } = await loop({
-            responses: script(
-                () => completed(roundTrip, usage({ input_tokens: 100 })),
-                () => completed([message("Done.")], usage({ input_tokens: 200 })),
-            ),
+describe("Yield the result of each turn as it completes", () => {
+    test("a turn's step comes before the next turn starts", async () => {
+        const { fetch, turnBodies } = fakeFetch({ responses: readThenAnswer() });
+        const steps = runLoop(clientFor(fetch), {
+            model: "test-model",
+            tools: [recordingTool().handler],
+            history: START,
         });
 
-        expect(events).toEqual([
-            { type: "turn", turn: 1, usage: usage({ input_tokens: 100 }), seconds: 1.5 },
-            { type: "call", name: "read_file", arguments: '{"path":"package.json"}' },
-            { type: "result", name: "read_file", ok: true, bytes: 24 },
-            { type: "turn", turn: 2, usage: usage({ input_tokens: 200 }), seconds: 1.5 },
-        ]);
+        expect((await steps.next()).value).toMatchObject({ kind: "calls" });
+        expect(turnBodies()).toHaveLength(1);
+
+        expect((await steps.next()).value).toMatchObject({ kind: "answer" });
+        expect(turnBodies()).toHaveLength(2);
+
+        expect(await steps.next()).toEqual({ done: true, value: undefined });
     });
 
-    test("sizes are in bytes, and failures carry their error", async () => {
+    test("a turn's calls carry their outcomes, failures included", async () => {
         const euro = recordingTool(async () => ({ ok: true, output: "€" }));
-        const { events } = await loop(
+        const a = call("read_file", { path: "a" }, "call_a");
+        const b = call("read_file", {}, "call_b");
+        const { steps } = await loop(
             {
                 responses: script(
-                    () =>
-                        completed([
-                            call("read_file", { path: "a" }, "call_a"),
-                            call("read_file", {}, "call_b"),
-                        ]),
+                    () => completed([a, b]),
                     () => completed([message("Done.")]),
                 ),
             },
             { tools: [euro.handler] },
         );
 
-        expect(events.filter((event) => event.type === "result")).toEqual([
-            { type: "result", name: "read_file", ok: true, bytes: 3 },
-            {
-                type: "result",
-                name: "read_file",
-                ok: false,
-                error: expect.stringContaining("don't match its schema"),
-            },
-        ]);
+        expect(steps[0]).toMatchObject({
+            kind: "calls",
+            calls: [
+                { call: a, outcome: { ok: true, output: "€" } },
+                {
+                    call: b,
+                    outcome: {
+                        ok: false,
+                        error: expect.stringContaining("don't match its schema"),
+                    },
+                },
+            ],
+        });
     });
 });

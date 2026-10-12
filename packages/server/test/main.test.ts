@@ -32,12 +32,14 @@ const SETTINGS = [
 type Settings = Partial<Record<(typeof SETTINGS)[number], string>>;
 
 const PACKAGE_JSON = `${JSON.stringify({ scripts: { check: "bun run lint && bun run test" } }, null, 4)}\n`;
+const MENU = "Café crème: 3 €\n";
 
 let cwd: string;
 
 beforeAll(async () => {
     cwd = await mkdtemp(join(tmpdir(), "hello-"));
     await writeFile(join(cwd, "package.json"), PACKAGE_JSON);
+    await writeFile(join(cwd, "menu.txt"), MENU);
 });
 
 afterAll(async () => {
@@ -166,6 +168,21 @@ describe("Report each tool call and turn on stderr", () => {
         );
         expect(stderr).toContain("Turn 2: ");
         expect(stdout).toBe("It runs the checks.\n");
+    });
+
+    test("sizes are in bytes, not characters", async () => {
+        const { stderr } = await hello(
+            {},
+            {
+                responses: script(
+                    () => completed([call("read_file", { path: "menu.txt" })]),
+                    () => completed([message("A café crème costs 3 €.")]),
+                ),
+            },
+        );
+
+        expect(Buffer.byteLength(MENU)).toBeGreaterThan(MENU.length);
+        expect(stderr).toContain(`← ${Buffer.byteLength(MENU)} bytes\n`);
     });
 
     test("a failed call shows its error", async () => {

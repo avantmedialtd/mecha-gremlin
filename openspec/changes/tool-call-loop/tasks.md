@@ -91,3 +91,9 @@
   - `vi.spyOn` for `console`, `process.cwd` and `performance.now`.
 
   Vitest undoes every fake after each test, and Stryker mutates `main.ts` too.
+
+## 7. The loop as an async generator
+
+- [x] 7.1 `runLoop` yields one step per turn as it completes: `calls` (each call with its outcome), `answer` or `stop`. Each step carries its own copy of the history, and the turn's stats when the model completed it. The `onEvent` callback and the single result type are gone.
+- [x] 7.2 `main.ts` prints each step as it arrives, through a `for await`. The byte count of an output moves to `main.ts`, with a test on a non-ASCII file.
+- [x] 7.3 Loop tests assert the steps, including that a step arrives before the next turn's request is sent

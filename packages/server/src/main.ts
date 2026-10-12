@@ -1,7 +1,7 @@
+import type { ToolOutcome } from "@mecha-gremlin/core";
 import OpenAI from "openai";
-import type { ResponseUsage } from "openai/resources/responses/responses";
 import { type Config, loadConfig } from "./config.ts";
-import { type LoopEvent, type LoopResult, MAX_TURNS, runLoop } from "./loop.ts";
+import { type LoopStep, MAX_TURNS, type TurnStats, runLoop } from "./loop.ts";
 import { keyRejected, resolveModel } from "./model.ts";
 import { readFileTool } from "./read-file.ts";
 
@@ -40,7 +40,7 @@ async function run(args: readonly string[]): Promise<number> {
     const { file, question } = parseArgs(args);
     console.error(`Asking ${choice.model} at ${config.baseUrl} about ${file}…`);
     const client = new OpenAI({ baseURL: config.baseUrl, apiKey: config.apiKey, maxRetries: 0 });
-    const result = await runLoop(client, {
+    const steps = runLoop(client, {
         model: choice.model,
         ...(config.reasoningEffort === undefined
             ? {}
@@ -50,16 +50,30 @@ async function run(args: readonly string[]): Promise<number> {
             { role: "developer", content: INSTRUCTIONS },
             { role: "user", content: `File: ${file}\nQuestion: ${question}` },
         ],
-        onEvent: (event) => console.error(progress(event)),
     });
 
-    if (!result.ok) {
-        return fail(failure(result, config));
+    for await (const step of steps) {
+        if (step.turn !== undefined) {
+            console.error(turnLine(step.turn));
+        }
+
+        if (step.kind === "stop") {
+            return fail(failure(step, config));
+        }
+
+        if (step.kind === "answer") {
+            // stdout carries the answer alone, so it can be piped: `bun run hello | pbcopy`.
+            console.log(step.text);
+            return 0;
+        }
+
+        for (const { call, outcome } of step.calls) {
+            console.error(`→ ${call.name} ${call.arguments}`);
+            console.error(outcomeLine(outcome));
+        }
     }
 
-    // stdout carries the answer alone, so it can be piped: `bun run hello | pbcopy`.
-    console.log(result.text);
-    return 0;
+    throw new Error("The agent loop ended without an answer or a stop step.");
 }
 
 function fail(message: string): number {
@@ -77,49 +91,42 @@ function parseArgs(args: readonly string[]): { file: string; question: string } 
     return { file, question: words.length > 0 ? words.join(" ") : FILE_QUESTION };
 }
 
-function progress(event: LoopEvent): string {
-    switch (event.type) {
-        case "turn":
-            return turnLine(event.turn, event.usage, event.seconds);
-        case "call":
-            return `→ ${event.name} ${event.arguments}`;
-        case "result":
-            return event.ok
-                ? `← ${event.bytes} bytes`
-                : `← Error: ${event.error.replaceAll("\n", "\n  ")}`;
-    }
-}
-
-function turnLine(turn: number, usage: ResponseUsage | undefined, seconds: number): string {
+function turnLine({ number, usage, seconds }: TurnStats): string {
     const elapsed = `${seconds.toFixed(1)} s`;
     if (usage === undefined) {
-        return `Turn ${turn}: ${elapsed}`;
+        return `Turn ${number}: ${elapsed}`;
     }
 
     const cached = usage.input_tokens_details?.cached_tokens ?? 0;
     const reasoning = usage.output_tokens_details?.reasoning_tokens ?? 0;
-    return `Turn ${turn}: ${usage.input_tokens} input tokens (${cached} cached), ${usage.output_tokens} output (${reasoning} reasoning), ${elapsed}`;
+    return `Turn ${number}: ${usage.input_tokens} input tokens (${cached} cached), ${usage.output_tokens} output (${reasoning} reasoning), ${elapsed}`;
 }
 
-function failure(result: Extract<LoopResult, { ok: false }>, config: Config): string {
-    switch (result.reason) {
+function outcomeLine(outcome: ToolOutcome): string {
+    return outcome.ok
+        ? `← ${new TextEncoder().encode(outcome.output).byteLength} bytes`
+        : `← Error: ${outcome.error.replaceAll("\n", "\n  ")}`;
+}
+
+function failure(step: Extract<LoopStep, { kind: "stop" }>, config: Config): string {
+    switch (step.reason) {
         case "turn_failed": {
-            if (result.error === "auth") {
-                return keyRejected(config, result.status ?? 401);
+            if (step.error === "auth") {
+                return keyRejected(config, step.status ?? 401);
             }
 
-            if (result.error === "unreachable") {
-                return `Can't reach ${config.baseUrl} (${result.detail}). Check MODEL_BASE_URL.`;
+            if (step.error === "unreachable") {
+                return `Can't reach ${config.baseUrl} (${step.detail}). Check MODEL_BASE_URL.`;
             }
 
-            const status = result.status === undefined ? "" : `, HTTP ${result.status}`;
-            return `The turn failed (${result.error}${status}): ${result.detail}`;
+            const status = step.status === undefined ? "" : `, HTTP ${step.status}`;
+            return `The turn failed (${step.error}${status}): ${step.detail}`;
         }
         case "turn_limit":
             return `The model didn't answer within ${MAX_TURNS} turns: it was still calling tools. Try a narrower question.`;
         case "empty":
             return "The model gave no answer: its turn had neither text nor tool calls. Try again, or rephrase the question.";
         case "history":
-            return `The conversation can't be continued (${result.detail}). The model sent something the openai SDK can't replay; try updating it.`;
+            return `The conversation can't be continued (${step.detail}). The model sent something the openai SDK can't replay; try updating it.`;
     }
 }

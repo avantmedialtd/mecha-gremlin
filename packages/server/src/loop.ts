@@ -23,41 +23,58 @@ export interface LoopOptions {
     tools: readonly ToolHandler[];
     history: readonly HistoryItem[];
     maxTurns?: number;
-    onEvent?: (event: LoopEvent) => void;
 }
 
-export type LoopEvent =
-    | { type: "turn"; turn: number; usage: ResponseUsage | undefined; seconds: number }
-    | { type: "call"; name: string; arguments: string }
-    | { type: "result"; name: string; ok: true; bytes: number }
-    | { type: "result"; name: string; ok: false; error: string };
+export interface TurnStats {
+    number: number;
+    usage: ResponseUsage | undefined;
+    seconds: number;
+}
 
-export type LoopResult =
-    | { ok: true; text: string; history: HistoryItem[] }
+export interface CallResult {
+    call: ToolCall;
+    outcome: ToolOutcome;
+}
+
+/**
+ * The result of one turn. A step that asks the user for input, and takes the reply back before
+ * the loop goes on, is meant to join these later.
+ */
+export type LoopStep =
+    | { kind: "calls"; turn: TurnStats; calls: CallResult[]; history: HistoryItem[] }
+    | { kind: "answer"; turn: TurnStats; text: string; history: HistoryItem[] }
     | {
-          ok: false;
+          kind: "stop";
           reason: "turn_failed" | "empty" | "turn_limit" | "history";
           detail: string;
+          /** Set when the model completed the turn that stopped the loop. */
+          turn?: TurnStats;
           /** Only for `turn_failed`. */
           error?: TurnErrorKind;
           status?: number;
-          /** So a failed run can still be inspected or stored. */
+          /** So a stopped run can still be inspected or stored. */
           history: HistoryItem[];
       };
 
 const NOT_RUN: ToolOutcome = { ok: false, error: "not run: the turn limit was reached" };
 
-export async function runLoop(client: OpenAI, options: LoopOptions): Promise<LoopResult> {
-    const { model, reasoning, tools, maxTurns = MAX_TURNS, onEvent = () => {} } = options;
+export async function* runLoop(
+    client: OpenAI,
+    options: LoopOptions,
+): AsyncGenerator<LoopStep, void, undefined> {
+    const { model, reasoning, tools, maxTurns = MAX_TURNS } = options;
     const history = [...options.history];
+    // Steps outlive the turn that made them, while the loop keeps appending to `history`.
+    const snapshot = (): HistoryItem[] => [...history];
     // Once per run: changing the tools mid-run invalidates the prompt cache (Brief R3.4).
     const functionTools = tools.map((handler) => toFunctionTool(handler.tool));
     const handlers = new Map(tools.map((handler) => [handler.tool.name, handler]));
 
-    for (let turn = 1; ; turn++) {
+    for (let number = 1; ; number++) {
         const input = toInput(history);
         if (!input.ok) {
-            return { ok: false, reason: "history", detail: input.detail, history };
+            yield { kind: "stop", reason: "history", detail: input.detail, history: snapshot() };
+            return;
         }
 
         const started = performance.now();
@@ -70,40 +87,52 @@ export async function runLoop(client: OpenAI, options: LoopOptions): Promise<Loo
         });
         if (!result.ok) {
             const { error, detail, status } = result;
-            return { ok: false, reason: "turn_failed", error, detail, status, history };
+            yield {
+                kind: "stop",
+                reason: "turn_failed",
+                error,
+                detail,
+                status,
+                history: snapshot(),
+            };
+            return;
         }
 
         const { output } = result.response;
         history.push(...output);
-        const seconds = (performance.now() - started) / 1000;
-        onEvent({ type: "turn", turn, usage: result.usage, seconds });
+        const turn = { number, usage: result.usage, seconds: (performance.now() - started) / 1000 };
 
         const next = classify(output);
         if (next.kind === "final") {
-            return { ok: true, text: next.text, history };
+            yield { kind: "answer", turn, text: next.text, history: snapshot() };
+            return;
         }
 
         if (next.kind === "empty") {
             const detail = "the model's turn had neither tool calls nor text";
-            return { ok: false, reason: "empty", detail, history };
+            yield { kind: "stop", reason: "empty", detail, turn, history: snapshot() };
+            return;
         }
 
-        if (turn >= maxTurns) {
+        if (number >= maxTurns) {
             // Every call needs an output before the history can be replayed (Brief 4.5).
             for (const call of next.calls) {
                 history.push(toOutputItem(call.call_id, NOT_RUN));
             }
 
-            const detail = `the model was still calling tools after ${turn} turns`;
-            return { ok: false, reason: "turn_limit", detail, history };
+            const detail = `the model was still calling tools after ${number} turns`;
+            yield { kind: "stop", reason: "turn_limit", detail, turn, history: snapshot() };
+            return;
         }
 
+        const calls: CallResult[] = [];
         for (const call of next.calls) {
-            onEvent({ type: "call", name: call.name, arguments: call.arguments });
             const outcome = await runCall(call, handlers);
-            onEvent(resultEvent(call.name, outcome));
             history.push(toOutputItem(call.call_id, outcome));
+            calls.push({ call, outcome });
         }
+
+        yield { kind: "calls", turn, calls, history: snapshot() };
     }
 }
 
@@ -126,15 +155,4 @@ async function runCall(
         const reason = error instanceof Error ? error.message : String(error);
         return { ok: false, error: `${call.name} failed: ${reason}` };
     }
-}
-
-function resultEvent(name: string, outcome: ToolOutcome): LoopEvent {
-    return outcome.ok
-        ? {
-              type: "result",
-              name,
-              ok: true,
-              bytes: new TextEncoder().encode(outcome.output).byteLength,
-          }
-        : { type: "result", name, ok: false, error: outcome.error };
 }
