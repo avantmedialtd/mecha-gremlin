@@ -14,8 +14,7 @@ export default {
     testRunner: "vitest",
     vitest: { configFile: "vitest.config.ts" },
     coverageAnalysis: "perTest",
-    // main.ts only wires `run` to the process; it has no logic of its own to test.
-    mutate: ["packages/*/src/**/*.ts", "!packages/server/src/main.ts"],
+    mutate: ["packages/*/src/**/*.ts"],
     reporters: ["clear-text", "progress", "html"],
     // Stryker rewrites tsconfig `extends` paths in its sandbox through the TypeScript JS API,
     // which TypeScript 7 no longer ships. Our tsconfigs only point inside the repo, so there is

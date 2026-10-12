@@ -70,6 +70,7 @@ bun run mutation       # Stryker mutation testing (a few minutes); report in rep
 - **Tests run on Node.** Vitest runs the tests on Node, not Bun, so Bun-specific behaviour (decorators, `Bun.spawn`) needs checks run with `bun` itself.
 - **`core`'s boundaries are enforced by the linter.** It may not touch `process`, `Bun` or `console`, through an override in `.oxlintrc.json`.
 - **Vitest is pinned to 4.x.** Stryker's Vitest runner silently stops working on Vitest 5 (see `stryker.config.mjs`).
+- **Tests fake the app's globals.** The app reads the environment, `fetch`, the clock and `console` directly, with nothing injected. Tests fake them with `vi.stubEnv`, `vi.stubGlobal` and `vi.spyOn`, and Vitest undoes every fake after each test. Importing `main.ts` runs it, so its tests import it only after faking, and never statically.
 
 ## CI
 

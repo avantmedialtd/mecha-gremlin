@@ -1,19 +1,15 @@
-// The Standard Schema v1 and Standard JSON Schema interfaces (https://standardschema.dev), declared
-// here as types, as the spec suggests, so `core` depends on no schema library. Any library that
-// implements both (zod 4, for one) can define a tool's arguments. Compatibility is structural.
+// Standard Schema v1 and Standard JSON Schema (https://standardschema.dev), copied here as the spec
+// suggests, so `core` depends on no schema library. Compatibility is structural: zod 4 and other
+// implementations fit without importing anything from here.
 
-/** The properties every standard shares. */
 export interface StandardTypedV1<Input = unknown, Output = Input> {
     readonly "~standard": StandardTypedV1.Props<Input, Output>;
 }
 
 export declare namespace StandardTypedV1 {
     interface Props<Input = unknown, Output = Input> {
-        /** The version number of the standard. */
         readonly version: 1;
-        /** The name of the schema library. */
         readonly vendor: string;
-        /** Inferred types associated with the schema. */
         readonly types?: Types<Input, Output> | undefined;
     }
 
@@ -23,14 +19,12 @@ export declare namespace StandardTypedV1 {
     }
 }
 
-/** A schema that validates values. */
 export interface StandardSchemaV1<Input = unknown, Output = Input> {
     readonly "~standard": StandardSchemaV1.Props<Input, Output>;
 }
 
 export declare namespace StandardSchemaV1 {
     interface Props<Input = unknown, Output = Input> extends StandardTypedV1.Props<Input, Output> {
-        /** Validates an unknown value, synchronously or not. */
         readonly validate: (
             value: unknown,
             options?: Options | undefined,
@@ -45,7 +39,6 @@ export declare namespace StandardSchemaV1 {
 
     interface SuccessResult<Output> {
         readonly value: Output;
-        /** The absence of issues indicates success. */
         readonly issues?: undefined;
     }
 
@@ -63,7 +56,6 @@ export declare namespace StandardSchemaV1 {
     }
 }
 
-/** A schema that describes itself as JSON Schema. */
 export interface StandardJSONSchemaV1<Input = unknown, Output = Input> {
     readonly "~standard": StandardJSONSchemaV1.Props<Input, Output>;
 }
@@ -74,13 +66,13 @@ export declare namespace StandardJSONSchemaV1 {
     }
 
     interface Converter {
-        /** The JSON Schema of the values the schema accepts. May throw for an unsupported target. */
+        /** May throw for a target the library doesn't support. */
         readonly input: (options: Options) => Record<string, unknown>;
-        /** The JSON Schema of the values the schema produces. May throw for an unsupported target. */
+        /** May throw for a target the library doesn't support. */
         readonly output: (options: Options) => Record<string, unknown>;
     }
 
-    /** The JSON Schema dialect to generate. `draft-2020-12` and `draft-07` are widely supported. */
+    /** The spec asks libraries to support `draft-2020-12` and `draft-07`; others are best effort. */
     type Target = "draft-2020-12" | "draft-07" | "openapi-3.0" | ({} & string);
 
     interface Options {

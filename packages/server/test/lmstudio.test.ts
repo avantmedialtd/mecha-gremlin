@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import type { Config } from "../src/config.ts";
 import { fetchModels, pickModel } from "../src/lmstudio.ts";
 
@@ -33,6 +33,7 @@ describe("pickModel", () => {
             { key: "qwen2.5-0.5b-instruct-mlx" },
             { key: "prism-ml/bonsai-27b", instances: ["prism-ml/bonsai-27b"] },
         );
+
         expect(pickModel(payload)).toEqual({ ok: true, model: "prism-ml/bonsai-27b" });
     });
 
@@ -42,6 +43,7 @@ describe("pickModel", () => {
             { key: "b", instances: ["b"] },
         );
         const choice = pickModel(payload);
+
         expect(choice).toMatchObject({
             ok: true,
             model: "a",
@@ -52,6 +54,7 @@ describe("pickModel", () => {
 
     test("accepts a configured instance id or model key that is loaded", () => {
         const payload = modelsPayload({ key: "qwen3", instances: ["qwen3", "qwen3:2"] });
+
         expect(pickModel(payload, "qwen3:2")).toEqual({ ok: true, model: "qwen3:2" });
         expect(pickModel(payload, "qwen3")).toEqual({ ok: true, model: "qwen3" });
     });
@@ -59,12 +62,14 @@ describe("pickModel", () => {
     test("rejects a configured model that is not loaded, listing what is", () => {
         const payload = modelsPayload({ key: "a", instances: ["a"] }, { key: "b" });
         const choice = pickModel(payload, "b");
+
         expect(choice).toMatchObject({ ok: false, reason: expect.stringContaining("Loaded: a.") });
         expect(choice).toMatchObject({ reason: expect.stringContaining("lms load b") });
     });
 
     test("fails when no model is loaded", () => {
         const choice = pickModel(modelsPayload({ key: "a" }, { key: "b" }));
+
         expect(choice).toMatchObject({
             ok: false,
             reason: expect.stringContaining("lms load <model>"),
@@ -78,6 +83,7 @@ describe("pickModel", () => {
             instances: ["nomic-embed"],
         });
         const choice = pickModel(payload);
+
         expect(choice).toMatchObject({
             ok: false,
             reason: expect.stringContaining("No model is loaded"),
@@ -99,16 +105,26 @@ describe("pickModel", () => {
     });
 });
 
+/** `fetchModels`, with the global `fetch` faked by `fake`. */
+function fetchModelsWith(
+    fake: (input: string | URL | Request, init?: RequestInit) => Promise<Response>,
+) {
+    vi.stubGlobal("fetch", fake);
+    return fetchModels(config);
+}
+
 describe("fetchModels", () => {
     test("calls the native models endpoint with the bearer token", async () => {
         const seen: { url: string; auth: string | null }[] = [];
-        const result = await fetchModels(config, async (input, init) => {
+        const result = await fetchModelsWith(async (input, init) => {
             seen.push({
                 url: String(input),
                 auth: new Headers(init?.headers).get("authorization"),
             });
+
             return Response.json(modelsPayload());
         });
+
         expect(result.ok).toBe(true);
         expect(seen).toEqual([
             { url: "http://lmstudio.test:1234/api/v1/models", auth: "Bearer test-key" },
@@ -116,9 +132,10 @@ describe("fetchModels", () => {
     });
 
     test("explains an unreachable server", async () => {
-        const result = await fetchModels(config, async () => {
+        const result = await fetchModelsWith(async () => {
             throw new TypeError("Unable to connect");
         });
+
         expect(result).toMatchObject({
             ok: false,
             reason: expect.stringContaining("http://lmstudio.test:1234"),
@@ -127,7 +144,8 @@ describe("fetchModels", () => {
     });
 
     test.each([401, 403])("explains a rejected token (HTTP %d)", async (status) => {
-        const result = await fetchModels(config, async () => new Response("denied", { status }));
+        const result = await fetchModelsWith(async () => new Response("denied", { status }));
+
         expect(result).toMatchObject({
             ok: false,
             reason: expect.stringContaining("MODEL_API_KEY"),
@@ -135,12 +153,10 @@ describe("fetchModels", () => {
     });
 
     test("reports other HTTP errors and non-JSON bodies", async () => {
-        const notFound = await fetchModels(
-            config,
-            async () => new Response("nope", { status: 404 }),
-        );
+        const notFound = await fetchModelsWith(async () => new Response("nope", { status: 404 }));
         expect(notFound).toMatchObject({ ok: false });
-        const html = await fetchModels(config, async () => new Response("<html>", { status: 200 }));
+
+        const html = await fetchModelsWith(async () => new Response("<html>", { status: 200 }));
         expect(html).toMatchObject({
             ok: false,
             reason: expect.stringContaining("didn't return JSON"),

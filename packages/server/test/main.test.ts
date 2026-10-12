@@ -2,8 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ResponseOutputItem, ResponseUsage } from "openai/resources/responses/responses";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { DEFAULT_QUESTION, FILE_QUESTION, run } from "../src/hello.ts";
+import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { MAX_TURNS } from "../src/loop.ts";
 import {
     type FakeServer,
@@ -15,6 +14,22 @@ import {
     reasoning,
     script,
 } from "./fake-model.ts";
+
+// main.ts runs as soon as it's imported, so it's never imported here at the top: `hello` fakes
+// the globals it reads, then imports it afresh. Its question texts are spelled out for the same
+// reason.
+const DEFAULT_QUESTION = "What exact command does the check script run? Quote it.";
+const FILE_QUESTION = "What is this file for? Answer in two or three sentences.";
+
+/** Each test sets or clears all of these, so settings in your shell can't leak in. */
+const SETTINGS = [
+    "MODEL_PROVIDER",
+    "MODEL_BASE_URL",
+    "MODEL_API_KEY",
+    "MODEL",
+    "MODEL_REASONING_EFFORT",
+] as const;
+type Settings = Partial<Record<(typeof SETTINGS)[number], string>>;
 
 const PACKAGE_JSON = `${JSON.stringify({ scripts: { check: "bun run lint && bun run test" } }, null, 4)}\n`;
 
@@ -29,30 +44,57 @@ afterAll(async () => {
     await rm(cwd, { recursive: true, force: true });
 });
 
-/** Runs the hello against a fake model server and captures everything it does. */
-async function hello(
-    env: Record<string, string> = {},
-    server: FakeServer = {},
-    args: string[] = [],
-) {
-    const { fetch, requests } = fakeFetch(server);
-    let stdout = "";
-    let stderr = "";
-    let clock = 0;
-    const code = await run({
-        env,
-        fetch,
-        args,
-        cwd,
-        stdout: (text) => void (stdout += text),
-        stderr: (text) => void (stderr += text),
-        now: () => (clock += 1500),
+afterEach(() => {
+    process.exitCode = undefined;
+});
+
+/** Vitest replaces `console` in its workers, so spying on the output streams wouldn't see it. */
+function capture(method: "log" | "error") {
+    let text = "";
+    const spy = vi.spyOn(console, method).mockImplementation((line: unknown) => {
+        text += `${String(line)}\n`;
     });
-    const turns = requests.filter((request) => request.url.endsWith("/v1/responses"));
-    return { code, stdout, stderr, requests, turns, turn: turns[0] };
+
+    return { text: () => text, restore: () => spy.mockRestore() };
 }
 
-/** The model reads `package.json`, then answers. */
+async function hello(env: Settings = {}, server: FakeServer = {}, args: string[] = []) {
+    for (const name of SETTINGS) {
+        vi.stubEnv(name, env[name]);
+    }
+
+    const { fetch, requests } = fakeFetch(server);
+    vi.stubGlobal("fetch", fetch);
+    vi.spyOn(process, "cwd").mockReturnValue(cwd);
+    // Every reading of the clock is 1.5 s after the last, so each turn takes 1.5 s.
+    let clock = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => (clock += 1500));
+
+    const argv = process.argv;
+    process.argv = [...argv.slice(0, 1), "main.ts", ...args];
+    const stdout = capture("log");
+    const stderr = capture("error");
+    try {
+        // A module runs only once until the registry is reset.
+        vi.resetModules();
+        await import("../src/main.ts");
+    } finally {
+        process.argv = argv;
+        stdout.restore();
+        stderr.restore();
+    }
+
+    const turns = requests.filter((request) => request.url.endsWith("/v1/responses"));
+    return {
+        code: process.exitCode,
+        stdout: stdout.text(),
+        stderr: stderr.text(),
+        requests,
+        turns,
+        turn: turns[0],
+    };
+}
+
 const readThenAnswer: FakeServer = {
     responses: script(
         () => completed([reasoning(), call("read_file", { path: "package.json" })]),
@@ -68,7 +110,6 @@ describe("Ask the model a question about a file and print the answer", () => {
             { role: "developer", content: expect.stringContaining("read_file") },
             { role: "user", content: `File: package.json\nQuestion: ${DEFAULT_QUESTION}` },
         ]);
-        expect(DEFAULT_QUESTION).toBe("What exact command does the check script run? Quote it.");
     });
 
     test("the file and question come from the arguments", async () => {
@@ -87,7 +128,6 @@ describe("Ask the model a question about a file and print the answer", () => {
             role: "user",
             content: `File: README.md\nQuestion: ${FILE_QUESTION}`,
         });
-        expect(FILE_QUESTION).toBe("What is this file for? Answer in two or three sentences.");
     });
 
     test("the model can read files with read_file", async () => {

@@ -6,15 +6,15 @@ import type { ResponseInputItem } from "openai/resources/responses/responses";
 import type { ToolOutcome } from "./tools.ts";
 
 /**
- * One item of a conversation, kept exactly as it was sent or received: the caller's messages,
- * every output item of every turn (reasoning, messages and calls alike), and the calls' outputs.
- * With `store: false` the whole history is sent again on every turn (Brief C1).
+ * Keep every item exactly as received, reasoning and calls included. With `store: false` the
+ * whole history is replayed on every turn (Brief C1), and a request can fail when items are
+ * missing.
  */
 export type HistoryItem = ResponseInputItemLike;
 
 export type InputResult = { ok: true; input: ResponseInputItem[] } | { ok: false; detail: string };
 
-/** The history item answering a call. The model sees a failure as `Error: <error>`. */
+/** A call's output has no error flag in the Responses API, so a failure is marked in its text. */
 export function toOutputItem(
     callId: string,
     outcome: ToolOutcome,
@@ -27,9 +27,8 @@ export function toOutputItem(
 }
 
 /**
- * The history as input for the next request, through the SDK's `toResponseInputItems`, which
- * strips SDK-only fields such as `parsed_arguments`. The SDK throws on an item type it doesn't
- * know; that comes back as a value instead.
+ * `toResponseInputItems` strips the fields the SDK adds, such as `parsed_arguments`, and throws on
+ * item types it doesn't know.
  */
 export function toInput(history: readonly HistoryItem[]): InputResult {
     try {

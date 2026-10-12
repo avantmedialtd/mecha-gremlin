@@ -1,6 +1,6 @@
 // LM Studio specifics: finding out which model is loaded, through LM Studio's native REST API.
 import type { Config } from "./config.ts";
-import type { Fetch, ModelChoice } from "./model.ts";
+import type { ModelChoice } from "./model.ts";
 
 export type ModelsResult = { ok: true; payload: unknown } | { ok: false; reason: string };
 
@@ -15,7 +15,7 @@ interface LoadedModel {
  * loaded makes LM Studio JIT-load it with its default context, which this app never relies on
  * (Brief 4.9).
  */
-export async function fetchModels(config: Config, fetch: Fetch): Promise<ModelsResult> {
+export async function fetchModels(config: Config): Promise<ModelsResult> {
     const url = `${new URL(config.baseUrl).origin}/api/v1/models`;
 
     let response: Response;
@@ -35,6 +35,7 @@ export async function fetchModels(config: Config, fetch: Fetch): Promise<ModelsR
     if (response.status === 401 || response.status === 403) {
         return { ok: false, reason: lmStudioKeyRejected(response.status) };
     }
+
     if (!response.ok) {
         return { ok: false, reason: `LM Studio answered HTTP ${response.status} for ${url}.` };
     }
@@ -77,6 +78,7 @@ export function pickModel(payload: unknown, configured?: string): ModelChoice {
         ) {
             return { ok: true, model: configured };
         }
+
         const loadedList =
             instanceIds.length > 0 ? `Loaded: ${instanceIds.join(", ")}.` : "No model is loaded.";
         return {
@@ -92,6 +94,7 @@ export function pickModel(payload: unknown, configured?: string): ModelChoice {
             reason: "No model is loaded in LM Studio. Load one with `lms load <model>` or in the LM Studio app; models are never loaded on demand.",
         };
     }
+
     if (instanceIds.length > 1) {
         return {
             ok: true,
@@ -99,6 +102,7 @@ export function pickModel(payload: unknown, configured?: string): ModelChoice {
             note: `Using ${first}, the first of ${instanceIds.length} loaded models (${instanceIds.join(", ")}). Set MODEL to choose another.`,
         };
     }
+
     return { ok: true, model: first };
 }
 
@@ -113,6 +117,7 @@ function loadedModels(payload: unknown): LoadedModel[] | undefined {
         if (!isRecord(entry) || typeof entry.key !== "string" || typeof entry.type !== "string") {
             return undefined;
         }
+
         if (entry.type !== "llm") {
             continue;
         }
@@ -121,6 +126,7 @@ function loadedModels(payload: unknown): LoadedModel[] | undefined {
         if (!Array.isArray(instances)) {
             return undefined;
         }
+
         const instanceIds = instances.flatMap((instance) =>
             isRecord(instance) && typeof instance.id === "string" ? [instance.id] : [],
         );
@@ -128,6 +134,7 @@ function loadedModels(payload: unknown): LoadedModel[] | undefined {
             loaded.push({ key: entry.key, instanceIds });
         }
     }
+
     return loaded;
 }
 

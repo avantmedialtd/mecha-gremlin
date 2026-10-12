@@ -22,12 +22,14 @@ describe("toOutputItem", () => {
 describe("toInput", () => {
     const developer: HistoryItem = { role: "developer", content: "Read files before answering." };
     const user: HistoryItem = { role: "user", content: "What does the check script run?" };
+
     const reasoning: HistoryItem = {
         type: "reasoning",
         id: "rs_1",
         summary: [],
         content: [{ type: "reasoning_text", text: "I should read package.json." }],
     };
+
     const message: HistoryItem = {
         type: "message",
         id: "msg_1",
@@ -35,6 +37,7 @@ describe("toInput", () => {
         status: "completed",
         content: [{ type: "output_text", text: "\n\n", annotations: [] }],
     };
+
     const callFields = {
         type: "function_call",
         id: "fc_1",
@@ -43,10 +46,12 @@ describe("toInput", () => {
         arguments: '{"path":"package.json"}',
         status: "completed",
     } as const;
+
     const output: HistoryItem = { type: "function_call_output", call_id: "call_1", output: "{}" };
 
     test("replays every item in order, without SDK-only fields", () => {
         const call = { ...callFields, parsed_arguments: { path: "package.json" } } as HistoryItem;
+
         expect(toInput([developer, user, reasoning, message, call, output])).toEqual({
             ok: true,
             input: [developer, user, reasoning, message, callFields, output],
@@ -55,6 +60,7 @@ describe("toInput", () => {
 
     test("an item the SDK can't replay comes back as a value", () => {
         const unknown = { type: "made_up" } as unknown as HistoryItem;
+
         expect(toInput([user, unknown])).toEqual({
             ok: false,
             detail: "Unsupported response item type: made_up",

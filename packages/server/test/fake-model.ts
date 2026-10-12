@@ -1,5 +1,3 @@
-// A scripted model server for the server's tests: LM Studio's native models endpoint and a
-// Responses endpoint that streams completed turns built from output items.
 import type {
     ResponseFunctionToolCall,
     ResponseOutputItem,
@@ -7,7 +5,9 @@ import type {
     ResponseReasoningItem,
     ResponseUsage,
 } from "openai/resources/responses/responses";
-import type { Fetch } from "../src/model.ts";
+
+/** Not `typeof fetch`: Bun's adds `fetch.preconnect`, which a fake has no use for. */
+type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 export function message(text: string): ResponseOutputMessage {
     return {
@@ -50,7 +50,6 @@ export function usage(fields: Partial<ResponseUsage> = {}): ResponseUsage {
     };
 }
 
-/** A streamed turn that completes with these output items. */
 export function completed(
     output: ResponseOutputItem[],
     turnUsage: ResponseUsage = usage(),
@@ -74,7 +73,6 @@ export function httpError(status: number, errorMessage: string): Response {
     return Response.json({ error: { message: errorMessage } }, { status });
 }
 
-/** The given turns, one per request, in order; a request beyond them gets an HTTP 500. */
 export function script(...turns: Array<() => Response>): (n: number) => Response {
     return (n) => turns[n]?.() ?? httpError(500, `the script has no turn ${n + 1}`);
 }
@@ -91,9 +89,7 @@ export const loadedBonsai = {
 };
 
 export interface FakeServer {
-    /** LM Studio's native `/api/v1/models`. */
     models?: () => Response;
-    /** The answer to the n-th request (from 0) to the OpenAI-compatible `/v1/responses`. */
     responses?: (n: number) => Response;
 }
 
@@ -103,7 +99,6 @@ export interface RecordedRequest {
     authorization: string | null;
 }
 
-/** A `fetch` that plays the fake server and records every request it gets. */
 export function fakeFetch(server: FakeServer = {}) {
     const requests: RecordedRequest[] = [];
     let turns = 0;
@@ -114,19 +109,23 @@ export function fakeFetch(server: FakeServer = {}) {
             body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
             authorization: new Headers(init?.headers).get("authorization"),
         });
+
         if (url.endsWith("/api/v1/models")) {
             return server.models?.() ?? Response.json(loadedBonsai);
         }
+
         if (url.endsWith("/v1/responses")) {
             const n = turns++;
             return server.responses?.(n) ?? completed([message("Hi there!")]);
         }
+
         return new Response("not found", { status: 404 });
     };
-    /** The bodies of the requests sent to `/v1/responses`, in order. */
+
     const turnBodies = () =>
         requests
             .filter((request) => request.url.endsWith("/v1/responses"))
             .map((request) => request.body);
+
     return { fetch, requests, turnBodies };
 }

@@ -91,7 +91,7 @@ The brief already sketches the rest of the loop:
 - **`error` is written for the model,** following Brief 4.5: "Output item with the validation error and the expected schema". It names the tool and says what was wrong: invalid JSON with the parser's message, not an object, or one line per schema issue as `path: message`. It ends with the tool's expected JSON Schema, so the model can correct itself on the next turn.
 
 **5. The loop lives in the server.**
-- **Signature:** `runLoop(client, { model, reasoning?, tools, history, maxTurns = 8, onEvent?, now? })`. The result is `{ ok: true, text, history }` or `{ ok: false, reason, detail, history, error?, status? }`. Per-turn usage goes out through `onEvent`. `reason` is one of:
+- **Signature:** `runLoop(client, { model, reasoning?, tools, history, maxTurns = 8, onEvent? })`. It times each turn with `performance.now()`. The result is `{ ok: true, text, history }` or `{ ok: false, reason, detail, history, error?, status? }`. Per-turn usage goes out through `onEvent`. `reason` is one of:
   - `turn_failed`: carries `runTurn`'s error kind and HTTP status, so the hello keeps its provider-specific messages;
   - `empty`;
   - `turn_limit`;
@@ -151,13 +151,20 @@ The brief already sketches the rest of the loop:
 - **Exit codes:**
   - 0 when there is an answer;
   - 1 on any failure: the turn-failure messages stay as they are, and new messages cover the turn limit and a missing answer.
-- **Wiring:** `run(io)` gains `args` and `cwd`, which `main.ts` fills from `process.argv.slice(2)` and `process.cwd()`. Tests pass a temporary directory.
-- **Names:** `bun run hello`, `hello.ts` and the `model-hello` capability keep their names, as asked. Its Purpose line is updated when the specs are synced.
+- **Wiring:** `main.ts` is the hello. It reads the process's globals directly: `process.env`, `process.argv`, `process.cwd()` and the global `fetch`. It prints the answer with `console.log`, logs everything else with `console.error`, and sets `process.exitCode` at top level. Nothing is injected, there is no `import.meta.main` guard, and nothing exports from it.
+- **Alternative:** a `run(io)` that takes its I/O as parameters, with a `main.ts` that wires in the real process behind an `import.meta.main` guard. That was the first change's design. Vitest can fake every one of those globals, so the injection bought testability the tests get anyway, at the cost of an interface, a `fetch` parameter threaded through `resolveModel` and `fetchModels`, and a guard.
+- **Names:** `bun run hello` and the `model-hello` capability keep their names, as asked. Its Purpose line is updated when the specs are synced.
 
 **8. Tests.**
 - **`core`:** unit tests with a hand-written Standard Schema fake. That proves `core` relies only on the interface, and keeps zod out of `core`'s dev dependencies.
 - **Zod wiring:** the server's tests cover it (`toFunctionTool` and `validateArgs` with the real `read_file` schema).
-- **Loop and hello:** the existing fake `fetch`, extended to answer `/v1/responses` from a queue of scripted turns. Tests assert the exact replayed input of the second request.
+- **Loop:** an `openai` client built on a fake `fetch` that answers `/v1/responses` from a queue of scripted turns. Tests assert the exact replayed input of the second request.
+- **Hello:** the tests fake the globals `main.ts` reads, then import it afresh with `vi.resetModules()`, so its top-level code runs as it would under `bun run hello`. That means:
+  - `vi.stubEnv` for every `MODEL_*` setting, set or cleared, so the shell's own can't leak in;
+  - `vi.stubGlobal` for `fetch`;
+  - `vi.spyOn` for `process.cwd`, `performance.now`, `console.log` and `console.error`. Vitest replaces `console` in its workers, so spying on the output streams wouldn't see the logs.
+
+  Vitest undoes every fake after each test (`restoreMocks`, `unstubEnvs`, `unstubGlobals`). Because importing `main.ts` runs it, the test file never imports it statically, and it spells out the question texts itself. Stryker now mutates `main.ts` too.
 - **`read_file`:** real temporary directories, with files, nested paths, `..`, absolute paths, links that point inside and outside the root, `.env` files, a directory, a binary file, and a 3-byte character straddling the cap.
 - **Stryker** covers the new code like the old. The live round trip against LM Studio is a manual check, as before.
 

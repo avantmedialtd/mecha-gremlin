@@ -33,7 +33,7 @@ The hello proves that one model turn works, but an agent needs the loop the brie
 
 - **Code:**
   - `packages/core/src`: new tool-calling module(s) and exports; `runTurn` is unchanged.
-  - `packages/server/src`: new `read_file` tool and loop; `hello.ts` and `main.ts` change (arguments and working directory).
+  - `packages/server/src`: new `read_file` tool and loop. `hello.ts` merges into `main.ts`, which reads its I/O from the process's globals instead of having it injected.
   - Tests for all of it, and the README.
 - **Dependencies:**
   - `zod` 4.x, in `server` only.

@@ -53,6 +53,7 @@ export function loadConfig(env: Env): ConfigResult {
             ],
         };
     }
+
     const provider = rawProvider;
     const defaults = DEFAULTS[provider];
     const problems: string[] = [];
@@ -91,6 +92,7 @@ export function loadConfig(env: Env): ConfigResult {
     if (problems.length > 0 || baseUrl === undefined || apiKey === undefined) {
         return { ok: false, problems };
     }
+
     return {
         ok: true,
         config: {
@@ -117,10 +119,12 @@ function parseBaseUrl(value: string): string | undefined {
     } catch {
         return undefined;
     }
+
     const isHttp = url.protocol === "http:" || url.protocol === "https:";
     if (!isHttp || url.search !== "" || url.hash !== "") {
         return undefined;
     }
+
     return url.href.replace(/\/+$/, "");
 }
 

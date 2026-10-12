@@ -26,10 +26,7 @@ const PARAMETERS = {
     additionalProperties: false,
 };
 
-/**
- * A tool whose schema is a hand-written Standard Schema, so the tests rely on the interface alone.
- * Records every value it is asked to validate and every JSON Schema target it is asked for.
- */
+/** Hand-written, so these tests rely on the Standard Schema interface alone. */
 function fakeTool(validate: Validate = (value) => ({ value: value as Args })) {
     const validated: unknown[] = [];
     const targets: string[] = [];
@@ -57,10 +54,10 @@ function fakeTool(validate: Validate = (value) => ({ value: value as Args })) {
             },
         },
     };
+
     return { tool, validated, targets };
 }
 
-/** The error of a failed validation; fails the test if validation succeeded. */
 function errorOf(result: ArgsResult<Args>): string {
     expect(result.ok).toBe(false);
     return (result as Extract<ArgsResult<Args>, { ok: false }>).error;
@@ -105,6 +102,7 @@ describe("Tools are defined by a name, a description and a Standard Schema", () 
             ...Object.keys(pkg.dependencies ?? {}),
             ...Object.keys(pkg.peerDependencies ?? {}),
         ];
+
         expect(runtime).toEqual(["openai"]);
     });
 });
@@ -123,6 +121,7 @@ describe("toFunctionTool", () => {
     test("requests the JSON Schema as draft-07", () => {
         const { tool, targets } = fakeTool();
         toFunctionTool(tool);
+
         expect(targets).toEqual(["draft-07"]);
     });
 });
@@ -130,6 +129,7 @@ describe("toFunctionTool", () => {
 describe("classify", () => {
     test("calls win over text", () => {
         const only = call("call_1");
+
         expect(classify([reasoning, message("\n\n"), only])).toEqual({
             kind: "calls",
             calls: [only],
@@ -139,6 +139,7 @@ describe("classify", () => {
     test("several calls keep their order", () => {
         const a = call("call_a");
         const b = call("call_b");
+
         expect(classify([a, message("Reading both."), b])).toEqual({
             kind: "calls",
             calls: [a, b],
@@ -181,6 +182,7 @@ describe("validateArgs", () => {
 
     test("valid arguments", async () => {
         const { tool, validated } = fakeTool();
+
         expect(await validateArgs(tool, '{"path":"package.json"}')).toEqual({
             ok: true,
             args: { path: "package.json" },
@@ -190,6 +192,7 @@ describe("validateArgs", () => {
 
     test.each(["", "  \n"])("empty arguments %j mean an empty object", async (raw) => {
         const { tool, validated } = fakeTool();
+
         expect(await validateArgs(tool, raw)).toEqual({ ok: true, args: {} });
         expect(validated).toEqual([{}]);
     });
@@ -203,6 +206,7 @@ describe("validateArgs", () => {
         } catch (thrown) {
             parserMessage = (thrown as SyntaxError).message;
         }
+
         expect(error).toContain(
             `The arguments for read_file are not valid JSON (${parserMessage}).`,
         );
@@ -215,6 +219,7 @@ describe("validateArgs", () => {
         async (raw) => {
             const { tool, validated } = fakeTool();
             const error = errorOf(await validateArgs(tool, raw));
+
             expect(error).toContain("The arguments for read_file must be a JSON object.");
             expect(error.endsWith(`JSON Schema: ${expectedSchema}`)).toBe(true);
             expect(validated).toEqual([]);
@@ -229,6 +234,7 @@ describe("validateArgs", () => {
             ],
         }));
         const error = errorOf(await validateArgs(tool, '{"file":"x"}'));
+
         expect(error).toContain("The arguments for read_file don't match its schema:");
         expect(error).toContain("- path: Required\n");
         expect(error).toContain("- items.0.name: Expected string\n");
@@ -243,18 +249,21 @@ describe("validateArgs", () => {
             ],
         }));
         const error = errorOf(await validateArgs(tool, '{"path":"a","limit":5}'));
+
         expect(error).toContain("- (root): Unrecognized key: limit\n");
         expect(error).toContain("- (root): Too many keys\n");
     });
 
     test("an asynchronous validator", async () => {
         const accepting = fakeTool(async (value) => ({ value: value as Args }));
+
         expect(await validateArgs(accepting.tool, '{"path":"a"}')).toEqual({
             ok: true,
             args: { path: "a" },
         });
 
         const rejecting = fakeTool(async () => ({ issues: [{ message: "Nope", path: ["path"] }] }));
+
         expect(errorOf(await validateArgs(rejecting.tool, '{"path":"a"}'))).toContain(
             "- path: Nope",
         );

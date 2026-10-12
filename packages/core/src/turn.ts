@@ -89,6 +89,7 @@ export async function runTurn(
         if (signal?.aborted) {
             return aborted();
         }
+
         // The stream had started, so the endpoint was reachable: whatever broke it is a failed turn.
         return { ok: false, error: "failed", detail: describe(error) };
     }
@@ -97,6 +98,7 @@ export async function runTurn(
     if (signal?.aborted) {
         return aborted();
     }
+
     return { ok: false, error: "failed", detail: "the stream ended without a terminal event" };
 }
 
@@ -107,12 +109,14 @@ function outputText(response: Response): string {
         if (item.type !== "message") {
             continue;
         }
+
         for (const part of item.content) {
             if (part.type === "output_text") {
                 text += part.text;
             }
         }
     }
+
     return text;
 }
 
@@ -141,9 +145,11 @@ function classifyRequestError(error: unknown, signal: AbortSignal | undefined): 
     if (hasClassName(error, "APIConnectionTimeoutError")) {
         return { ok: false, error: "timeout", detail: describe(error) };
     }
+
     if (hasClassName(error, "APIConnectionError")) {
         return { ok: false, error: "unreachable", detail: describe(error) };
     }
+
     return { ok: false, error: "fatal", detail: describe(error) };
 }
 
@@ -155,6 +161,7 @@ function statusOf(error: unknown): number | undefined {
     if (typeof error !== "object" || error === null || !("status" in error)) {
         return undefined;
     }
+
     return typeof error.status === "number" ? error.status : undefined;
 }
 
@@ -166,8 +173,10 @@ function hasClassName(value: unknown, name: string): boolean {
         if (proto.constructor.name === name) {
             return true;
         }
+
         proto = Object.getPrototypeOf(proto);
     }
+
     return false;
 }
 
@@ -175,6 +184,7 @@ function describe(error: unknown): string {
     if (!(error instanceof Error)) {
         return String(error);
     }
+
     const cause = error.cause instanceof Error ? error.cause.message : undefined;
     return cause && cause !== error.message ? `${error.message} (${cause})` : error.message;
 }

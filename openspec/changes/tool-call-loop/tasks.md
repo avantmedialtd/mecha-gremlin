@@ -80,3 +80,14 @@
   - `bun run hello` answers the default question with the `check` script's command, shows the `read_file` call and the per-turn usage on stderr, and exits 0;
   - `bun run hello README.md` and a custom question also work;
   - asking about `.env` gets a refusal back from the tool, not the file.
+
+## 6. Globals instead of injected I/O
+
+- [x] 6.1 `hello.ts` merges into `main.ts`, which reads the process's globals directly: the settings, the arguments, the working directory and `fetch`. It prints the answer with `console.log` and logs the rest with `console.error`. The `run(io)` injection and the `import.meta.main` guard are gone.
+- [x] 6.2 `resolveModel` and `fetchModels` use the global `fetch`, and the loop times turns with `performance.now`
+- [x] 6.3 Tests fake those globals and import `main.ts` afresh:
+  - `vi.stubEnv` for every `MODEL_*` setting;
+  - `vi.stubGlobal` for `fetch`;
+  - `vi.spyOn` for `console`, `process.cwd` and `performance.now`.
+
+  Vitest undoes every fake after each test, and Stryker mutates `main.ts` too.

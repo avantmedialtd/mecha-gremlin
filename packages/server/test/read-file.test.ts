@@ -39,12 +39,10 @@ afterAll(async () => {
     await rm(outside, { recursive: true, force: true });
 });
 
-/** Calls the tool the way the loop does, with the model's raw JSON arguments. */
 function read(path: string): Promise<ToolOutcome> {
     return readFileTool(root).invoke(JSON.stringify({ path }));
 }
 
-/** The error of a failed outcome; fails the test if the call succeeded. */
 function errorOf(outcome: ToolOutcome): string {
     expect(outcome.ok).toBe(false);
     return (outcome as Extract<ToolOutcome, { ok: false }>).error;
@@ -70,6 +68,7 @@ describe("Read a UTF-8 text file under a root directory", () => {
 
     test("the model sees a closed schema", () => {
         const tool = toFunctionTool(readFileTool(root).tool);
+
         expect(tool).toMatchObject({ type: "function", name: "read_file", strict: true });
         expect(tool.parameters).toEqual({
             type: "object",
@@ -81,6 +80,7 @@ describe("Read a UTF-8 text file under a root directory", () => {
 
     test("the model is told what the tool reads, and how much", () => {
         const tool = toFunctionTool(readFileTool(root).tool);
+
         expect(tool.description).toContain("UTF-8 text file in the working directory");
         expect(tool.description).toContain("32 KiB");
         expect(tool.parameters).toMatchObject({
@@ -93,6 +93,7 @@ describe("Read a UTF-8 text file under a root directory", () => {
     test("extra arguments are rejected before any file is read", async () => {
         // Had the file been looked up, a missing one would say so.
         const error = errorOf(await readFileTool(root).invoke('{"path":"missing.txt","limit":5}'));
+
         expect(error).toContain('(root): Unrecognized key: "limit"');
         expect(error).not.toContain("No such file");
     });
@@ -110,6 +111,7 @@ describe("Never read outside the root", () => {
 
     test("a symbolic link pointing outside", async () => {
         const error = errorOf(await read("link.txt"));
+
         expect(error).toBe('"link.txt" is outside the directory read_file may read.');
         expect(error).not.toContain("top secret");
     });
@@ -126,6 +128,7 @@ describe("Never read outside the root", () => {
 describe("Refuse secrets, directories and binary files", () => {
     test.each([".env", ".env.local", "docs/.env.missing"])("environment file %s", async (path) => {
         const error = errorOf(await read(path));
+
         expect(error).toBe(
             `${JSON.stringify(path)} is an environment file. read_file doesn't read those: they hold secrets.`,
         );
@@ -133,6 +136,7 @@ describe("Refuse secrets, directories and binary files", () => {
 
     test("a link to an environment file", async () => {
         const error = errorOf(await read("innocent.txt"));
+
         expect(error).toContain('"innocent.txt" is an environment file.');
         expect(error).not.toContain("sk-live-secret");
     });
@@ -187,6 +191,7 @@ describe("Cap what it returns", () => {
 
     test("the cut never splits a character", async () => {
         const outcome = await read("euro.txt");
+
         expect(outcome).toEqual({
             ok: true,
             output: `${"€".repeat(10_922)}\n\n[truncated: showing the first 32766 of 60000 bytes]`,

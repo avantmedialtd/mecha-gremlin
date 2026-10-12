@@ -16,9 +16,11 @@ function makeClient(handler: Handler) {
             if (typeof init?.body === "string") {
                 bodies.push(JSON.parse(init.body));
             }
+
             return handler(input instanceof Request ? input.url : String(input), init);
         },
     });
+
     return { client, bodies };
 }
 
@@ -264,6 +266,7 @@ describe("runTurn", () => {
                     );
                 },
             });
+
             return new Response(body, {
                 status: 200,
                 headers: { "content-type": "text/event-stream" },
@@ -283,6 +286,7 @@ describe("runTurn", () => {
 describe("core boundaries", () => {
     test("openai is a peer dependency", async () => {
         const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+
         expect(pkg.peerDependencies).toHaveProperty("openai");
     });
 });
