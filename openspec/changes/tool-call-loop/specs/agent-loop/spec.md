@@ -1,18 +1,53 @@
 ## ADDED Requirements
 
+### Requirement: Create a session from the configuration
+The server SHALL provide an async `createSession(config, options)`. It takes the server's configuration, plus a list of tools each paired with a handler, and a starting history. It SHALL:
+- choose the model as the server's model choice describes: LM Studio's loaded model, or `MODEL` for another provider;
+- build its own `openai` client from the configuration's base URL and API key;
+- send the configured reasoning effort, when there is one, with every turn.
+
+When no model can be chosen, it SHALL resolve to `{ ok: false, reason }`, and no turn is sent. Otherwise it SHALL resolve to `{ ok: true }` with:
+- `model`: the chosen model;
+- `note`: when the model was picked out of several, which one, and how to pick another;
+- `steps`: an async generator of the session's steps;
+- `history`: the session's history. It starts as a copy of the starting history, which is left unchanged, and grows as the session runs.
+
+#### Scenario: Another provider's configured model
+- **WHEN** the provider is `openai` and `MODEL` is `test-model`
+- **THEN** the session's model is `test-model`, and every request names it
+
+#### Scenario: LM Studio's loaded model
+- **WHEN** the provider is `lmstudio` and LM Studio has `prism-ml/bonsai-27b` loaded
+- **THEN** the session asks LM Studio's native models endpoint first, its model is `prism-ml/bonsai-27b`, and every request names it
+
+#### Scenario: No model to use
+- **WHEN** the provider is `lmstudio` and LM Studio has no model loaded
+- **THEN** `createSession` resolves to `ok: false` with a reason that suggests `lms load`, and no turn is sent
+
+#### Scenario: The client comes from the configuration
+- **WHEN** a session runs with a configuration whose base URL is `http://model.test/v1` and whose key is `test-key`
+- **THEN** every request goes to `http://model.test/v1/responses` with the bearer key `test-key`
+
+#### Scenario: The reasoning effort comes from the configuration
+- **WHEN** the configuration's reasoning effort is `low`
+- **THEN** every request carries `reasoning.effort` `low`, and with no effort configured no request carries `reasoning`
+
+#### Scenario: The starting history is copied
+- **WHEN** a session runs to its end
+- **THEN** the array passed as its starting history is unchanged
+
 ### Requirement: Alternate model turns and tool calls until the model answers
-The server SHALL provide an agent loop. It takes an `openai` client, a model name, optional reasoning settings, a list of tools each paired with a handler, and a starting history. On each turn it SHALL:
+On each turn, the session SHALL:
 1. send a request through `core`'s `runTurn` with:
    - the model;
-   - the reasoning settings, when given;
    - `input` from `toInput(history)`;
    - `tools` from `toFunctionTool` of every tool, identical on every turn;
 2. append every output item of the completed turn to the history, in order;
-3. classify the output with `classify`. When it is `final`, the loop SHALL yield an `answer` step with the answer's text, and end.
+3. classify the output with `classify`. When it is `final`, the session SHALL yield an `answer` step with the answer's text, and end.
 
 #### Scenario: Answer without tools
 - **WHEN** the first turn answers "42"
-- **THEN** the loop yields one `answer` step with the text "42" and ends, one request was sent, and the step's history ends with that turn's `message` item
+- **THEN** the session yields one `answer` step with the text "42" and ends, one request was sent, and its history ends with that turn's `message` item
 
 #### Scenario: One tool round trip
 - **WHEN** the first turn returns a `read_file` call, `call_1`, and the second turn answers
@@ -21,16 +56,16 @@ The server SHALL provide an agent loop. It takes an `openai` client, a model nam
   2. then the first turn's output items;
   3. then a `function_call_output` for `call_1` holding the handler's output.
 
-#### Scenario: Tools are frozen for the run
-- **WHEN** the loop sends more than one request
+#### Scenario: Tools are frozen for the session
+- **WHEN** the session sends more than one request
 - **THEN** every request carries the same `tools`
 
 ### Requirement: Run every call in order and answer each exactly once
-When a turn's output is `calls`, the loop SHALL handle the calls one at a time, in output order. Before it sends the next turn, it SHALL append exactly one `function_call_output` per call, carrying the call's `call_id`, built with `toOutputItem` from the call's outcome. The outcome SHALL be:
+When a turn's output is `calls`, the session SHALL handle the calls one at a time, in output order. Before it sends the next turn, it SHALL append exactly one `function_call_output` per call, carrying the call's `call_id`, built with `toOutputItem` from the call's outcome. The outcome SHALL be:
 - **known tool, valid arguments** (they pass `validateArgs`): the handler's outcome;
 - **invalid arguments:** a failure with the `validateArgs` error. The handler is not run;
 - **unknown tool** (no tool has the call's name): a failure saying so and listing the available tool names;
-- **the handler throws or rejects:** a failure containing the error's message. The loop SHALL continue.
+- **the handler throws or rejects:** a failure containing the error's message. The session SHALL continue.
 
 #### Scenario: Two calls in one turn
 - **WHEN** a turn returns the calls `call_a` then `call_b`
@@ -49,46 +84,46 @@ When a turn's output is `calls`, the loop SHALL handle the calls one at a time, 
 - **THEN** the call's output contains "disk on fire", and the next turn is sent
 
 ### Requirement: Stop at the turn limit
-The loop SHALL send at most 8 turns unless the caller sets another limit. When the last allowed turn still returns calls, the loop SHALL NOT run them. It SHALL append for each one a failed output saying it wasn't run because the turn limit was reached, then yield a `stop` step with the reason `turn_limit`, and end.
+The session SHALL send at most 8 turns unless the caller sets another limit. When the last allowed turn still returns calls, the session SHALL NOT run them. It SHALL append for each one a failed output saying it wasn't run because the turn limit was reached, then yield a `stop` step with the reason `turn_limit`, and end.
 
 #### Scenario: The model never stops calling tools
 - **WHEN** every turn returns a call
 - **THEN**:
   - exactly 8 requests are sent;
   - the handler runs 7 times;
-  - the loop yields 7 `calls` steps and then a `turn_limit` `stop` step;
-  - in that step's history, the 8th turn's call has an output saying it wasn't run.
+  - the session yields 7 `calls` steps and then a `turn_limit` `stop` step;
+  - in the session's history, the 8th turn's call has an output saying it wasn't run.
 
-### Requirement: End with a stop step, with the history so far
-The loop SHALL NOT throw for model or tool failures. It SHALL yield a `stop` step with a reason, and end, when:
+### Requirement: End with a stop step
+The session SHALL NOT throw for model or tool failures. It SHALL yield a `stop` step with a reason, and end, when:
 - a turn fails (`turn_failed`). The step carries the turn's error kind, detail and HTTP status;
 - a turn's output is `empty` (`empty`);
 - the history can't be turned into input (`history`).
 
 #### Scenario: A later turn fails
 - **WHEN** the first turn returns a call and the second turn fails with HTTP 500
-- **THEN** the last step is a `turn_failed` `stop` step with the error kind `server_error` and status 500. Its history holds the first turn's items and the call's output.
+- **THEN** the last step is a `turn_failed` `stop` step with the error kind `server_error` and status 500, and the session's history holds the first turn's items and the call's output
 
 #### Scenario: No answer
 - **WHEN** a turn's output holds only a `reasoning` item
-- **THEN** the loop yields an `empty` `stop` step, and no further turn is sent
+- **THEN** the session yields an `empty` `stop` step, and no further turn is sent
 
 ### Requirement: Yield the result of each turn as it completes
-The loop SHALL be an async generator that yields one step per model turn, as the turn completes and before the next turn starts:
+The session's `steps` SHALL yield one step per model turn, as the turn completes and before the next turn starts:
 - `calls`: the turn's calls, each with its outcome, after they have run;
 - `answer`: the model's answer. It is the last step;
-- `stop`: why the loop stopped. It is the last step.
+- `stop`: why the session stopped. It is the last step.
 
-Every step SHALL carry its own copy of the history so far. A step for a turn the model completed SHALL carry the turn's number, its usage and its elapsed time.
+A step for a turn the model completed SHALL carry the turn's number, its usage and its elapsed time. While the caller handles a step, the session SHALL be paused, so its history is the history as of that step.
 
 #### Scenario: A step comes before the next turn starts
 - **WHEN** the first turn returns a call and the second answers, and the consumer asks for one step at a time
-- **THEN** the first step is `calls`, and only one request has been sent when it arrives; the second step is `answer`; then the loop ends
+- **THEN**:
+  - the first step is `calls`;
+  - when it arrives, only one request has been sent, and the history ends with the call's output;
+  - the second step is `answer`, and the history then ends with the answer's `message` item;
+  - then the session ends.
 
 #### Scenario: Calls carry their outcomes
 - **WHEN** a turn makes a call that succeeds and one whose arguments fail validation
 - **THEN** its `calls` step lists both calls in order: the first with its output, the second with the validation error
-
-#### Scenario: Each step keeps its own history
-- **WHEN** the first turn returns a call and the second answers
-- **THEN** the `calls` step's history ends with the call's output, and the `answer` step's history adds the answer's `message` item

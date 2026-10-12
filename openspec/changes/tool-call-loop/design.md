@@ -90,11 +90,21 @@ The brief already sketches the rest of the loop:
 - **Result:** `{ ok: true, args }` with the schema's output type, or `{ ok: false, error }`.
 - **`error` is written for the model,** following Brief 4.5: "Output item with the validation error and the expected schema". It names the tool and says what was wrong: invalid JSON with the parser's message, not an object, or one line per schema issue as `path: message`. It ends with the tool's expected JSON Schema, so the model can correct itself on the next turn.
 
-**5. The loop lives in the server.**
-- **An async generator of turn results.** `runLoop(client, { model, reasoning?, tools, history, maxTurns = 8 })` yields one step per model turn, as the turn completes and before the next one starts:
+**5. The loop lives in the server, as a session.**
+- **`await createSession(config, { tools, history, maxTurns = 8 })`** does all the setup the config implies:
+  - it chooses the model: LM Studio's loaded one, or `MODEL` for another provider;
+  - it builds the `openai` client from the base URL and key;
+  - it takes the reasoning effort from the config.
+
+  The caller passes the config and never sees a client or a model lookup. Choosing the model can fail before any turn, for example when LM Studio has nothing loaded, so `createSession` is async. It resolves to `{ ok: false, reason }`, or to `{ ok: true }` with:
+  - `model`: the chosen model;
+  - `note`: set when the model was picked out of several;
+  - `steps`: an async generator that yields one step per model turn, as the turn completes and before the next one starts;
+  - `history`: the session's own history, which grows as it runs. Nothing reads it yet. It starts as a copy of the history the caller passed in.
+- **The steps:**
   - `calls`: the turn's calls, each with its outcome, after they ran;
   - `answer`: the answer's text. It is the last step;
-  - `stop`: the reason the loop stopped. It is the last step.
+  - `stop`: the reason the session stopped. It is the last step.
 
   A `stop` step's reason is one of:
   - `turn_failed`: carries `runTurn`'s error kind and HTTP status, so the hello keeps its provider-specific messages;
@@ -102,8 +112,8 @@ The brief already sketches the rest of the loop:
   - `turn_limit`;
   - `history`.
 
-  Each step carries its own copy of the history so far, so a future caller can persist a run, a stopped one included, turn by turn. A step for a turn the model completed also carries the turn's number, usage and seconds; the loop times turns with `performance.now()`.
-- **Why a generator:** the caller sees each turn as it completes, and acts on it between turns. That's the shape a later step needs: one that asks the user for input and takes the reply back before the loop goes on. It isn't built yet. The reply could come back through the generator's `next(reply)`, or through a function on the step, which keeps `for await` working.
+  A step for a turn the model completed carries the turn's number, usage and seconds; the session times turns with `performance.now()`. Steps don't carry the history. The session is paused while the caller handles a step, so `session.history` at that moment is the history as of that step. A future caller can persist a session turn by turn from it, a stopped one included.
+- **Why a generator:** the caller sees each turn as it completes, and acts on it between turns. That's the shape a later step needs: one that asks the user for input and takes the reply back before the session goes on. It isn't built yet. The reply could come back through the generator's `next(reply)`, or through a function on the step, which keeps `for await` working.
 - **Tools carry their handlers.** The server pairs each `Tool<Args>` with `run(args) => Promise<ToolOutcome>` through a small helper, which validates and then runs. The arguments stay typed from the zod schema to the handler, while the loop holds a plain list. `core` never sees handlers.
 - **Outcomes, not strings.** A `ToolOutcome` is `{ ok: true, output }` or `{ ok: false, error }`. `core`'s `toOutputItem(callId, outcome)` (Brief 4.3) renders a failure as `Error: <error>`, so that convention lives in one place. The loop also knows whether a call succeeded, for progress, without parsing its text.
 - **Each turn:**
@@ -120,8 +130,9 @@ The brief already sketches the rest of the loop:
 - **Calls run sequentially and in order** (Brief 4.5). `parallel_tool_calls` is left at its default.
 - **Progress:** the hello prints each step as it arrives: the turn's usage line, then its calls with their outcomes. A run takes a minute or more locally, so progress has to be live.
 - **Alternatives:**
-  - `runLoop` in `core`: the "engine object" the brief rules out.
+  - A session in `core`: the "engine object" the brief rules out.
   - A progress callback plus a single result at the end, which was the first version. It reports progress, but a callback can't pause the loop for the caller's reply.
+  - Passing in a client, which was the version before this one. Every caller would build the same client from the same config.
   - A pure `nextStep` now: with three outcomes it would be a switch statement in another file (see Non-Goals).
 
 **6. `read_file`: confined, refuses secrets and binary files, capped.**
@@ -149,13 +160,11 @@ The brief already sketches the rest of the loop:
 - **Starting history:**
   - a developer item: answer questions about files in the working directory, read the file with `read_file` before answering, and keep it brief;
   - a user item naming the file and the question.
-- **Output:**
-  - **stdout:** the trimmed answer and a newline.
-  - **stderr:** where the question went, each call and its result, a line per turn (input tokens with the cached count, output tokens with the reasoning count, seconds), and errors.
+- **Output:** everything goes through the structured logger to stdout (decision 10): the question, a record per turn with its token usage and seconds, each call and its result, the answer, and errors.
 - **Exit codes:**
   - 0 when there is an answer;
   - 1 on any failure: the turn-failure messages stay as they are, and new messages cover the turn limit and a missing answer.
-- **Wiring:** `main.ts` is the hello. It reads the process's globals directly: `process.env`, `process.argv`, `process.cwd()` and the global `fetch`. It prints the answer with `console.log`, logs everything else with `console.error`, and sets `process.exitCode` at top level. Nothing is injected, there is no `import.meta.main` guard, and nothing exports from it.
+- **Wiring:** `main.ts` is the hello. It reads the process's globals directly: `process.env`, `process.argv`, `process.cwd()` and the global `fetch`. It logs through the structured logger (decision 10), which writes with `console.log`, and sets `process.exitCode` at top level. Nothing is injected, there is no `import.meta.main` guard, and nothing exports from it.
 - **Alternative:** a `run(io)` that takes its I/O as parameters, with a `main.ts` that wires in the real process behind an `import.meta.main` guard. That was the first change's design. Vitest can fake every one of those globals, so the injection bought testability the tests get anyway, at the cost of an interface, a `fetch` parameter threaded through `resolveModel` and `fetchModels`, and a guard.
 - **Names:** `bun run hello` and the `model-hello` capability keep their names, as asked. Its Purpose line is updated when the specs are synced.
 
@@ -166,13 +175,22 @@ The brief already sketches the rest of the loop:
 - **Hello:** the tests fake the globals `main.ts` reads, then import it afresh with `vi.resetModules()`, so its top-level code runs as it would under `bun run hello`. That means:
   - `vi.stubEnv` for every `MODEL_*` setting, set or cleared, so the shell's own can't leak in;
   - `vi.stubGlobal` for `fetch`;
-  - `vi.spyOn` for `process.cwd`, `performance.now`, `console.log` and `console.error`. Vitest replaces `console` in its workers, so spying on the output streams wouldn't see the logs.
+  - `vi.spyOn` for `process.cwd`, `performance.now` and `console.log`. Vitest replaces `console` in its workers, so spying on stdout itself wouldn't see the log.
+
+  The tests read the log as JSON records (`LOG_FORMAT=json`), which pins every field; one test checks the formatted default end to end.
 
   Vitest undoes every fake after each test (`restoreMocks`, `unstubEnvs`, `unstubGlobals`). Because importing `main.ts` runs it, the test file never imports it statically, and it spells out the question texts itself. Stryker now mutates `main.ts` too.
 - **`read_file`:** real temporary directories, with files, nested paths, `..`, absolute paths, links that point inside and outside the root, `.env` files, a directory, a binary file, and a 3-byte character straddling the cap.
 - **Stryker** covers the new code like the old. The live round trip against LM Studio is a manual check, as before.
 
-**9. The server's code lives in folders by concern, without index files.** The folders are `main` (the entry point), `config`, `model` (model choice and LM Studio's API), `loop` and `tools`. Every import names the file it uses, and the tests mirror the folders.
+**9. The server's code lives in folders by concern, without index files.** The folders are `main` (the entry point), `config`, `model` (model choice and LM Studio's API), `session` (the agent loop), `tools` and `log`. Every import names the file it uses, and the tests mirror the folders.
+
+**10. A hand-rolled structured logger, on stdout.**
+- **Records:** `log.info`, `log.warn` and `log.error` take a message and fields typed as JSON values, so the logger only ever receives JSON. Data goes in fields (`turn`, `tool call`, `tool result`, `answer`); errors keep their sentences as messages.
+- **Everything goes to stdout,** the answer included. The earlier split of the answer on stdout and progress on stderr existed only for piping, which isn't a concern.
+- **Formatted by default:** a line per record (`HH:MM:SS LEVEL message key=value …`). A value is bare when it can't be misread and JSON otherwise. A multi-line string, such as an answer or a validation error, goes in an indented block under the line.
+- **`LOG_FORMAT=json`** writes one JSON object per record instead, with an ISO 8601 time, for machines and later the scheduler's logs. It is read before anything else, so even a configuration error is logged in the chosen format. An unknown value fails, in the formatted output.
+- **Alternatives:** a logging library such as pino. This one fits in sixty lines, and its formatting is what we want.
 
 ## Risks / Trade-offs
 
@@ -180,10 +198,10 @@ The brief already sketches the rest of the loop:
 - **LM Studio's intermittent HTTP 500 on multi-turn tool calls** (BT#2257, R5.7). → The failed turn is reported with its detail, and the history so far is kept. Retries come with C8.
 - **OpenAI's strict subset rejects a schema** (an optional field, or an open object) with HTTP 400. → Tools use `z.strictObject` with required fields; a `strict` option per tool can be added when a tool needs one. `read_file` qualifies.
 - **OpenAI replay with `store: false` isn't verified in this change.** That is S3's subject. → The `openai` provider works with the same code. A failure there comes back as `bad_request` with the API's detail.
-- **Prompt injection through file contents.** → The tool is read-only, confined to the working directory, refuses `.env` files, and prints only to stdout. Real isolation is the workspace container (C3, D3).
+- **Prompt injection through file contents.** → The tool is read-only, confined to the working directory, refuses `.env` files, and only logs what it read. Real isolation is the workspace container (C3, D3).
 - **The history grows with every turn, and each turn resends it all** (C8). → With 8 turns and 32 KiB outputs that's bounded. Budgets and the context check come in M2.
 - **`toResponseInputItems` lives under the SDK's `lib/` path.** → It is exported (`./lib/*`) and documented in the SDK's README, and the `^7.32` peer range pins its behaviour. `toInput` is the only caller.
-- **Slow local runs:** a question takes one to two minutes on bonsai-27b. → Per-turn progress on stderr shows it's alive. Reasoning stays off by default for LM Studio.
+- **Slow local runs:** a question takes one to two minutes on bonsai-27b. → A log record per turn shows it's alive. Reasoning stays off by default for LM Studio.
 
 ## Migration Plan
 

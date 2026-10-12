@@ -9,17 +9,16 @@ import {
     toInput,
     toOutputItem,
 } from "@mecha-gremlin/core";
-import type OpenAI from "openai";
+import OpenAI from "openai";
 import type { ResponseUsage } from "openai/resources/responses/responses";
-import type { Reasoning } from "openai/resources/shared";
+import type { Config } from "../config/config.ts";
+import { resolveModel } from "../model/model.ts";
 import type { ToolHandler } from "../tools/tool-handler.ts";
 
 /** The brief's hard cap on iterations; budgets and a context check come later (Brief C8). */
 export const MAX_TURNS = 8;
 
-export interface LoopOptions {
-    model: string;
-    reasoning?: Reasoning;
+export interface SessionOptions {
     tools: readonly ToolHandler[];
     history: readonly HistoryItem[];
     maxTurns?: number;
@@ -38,42 +37,66 @@ export interface CallResult {
 
 /**
  * The result of one turn. A step that asks the user for input, and takes the reply back before
- * the loop goes on, is meant to join these later.
+ * the session goes on, is meant to join these later.
  */
-export type LoopStep =
-    | { kind: "calls"; turn: TurnStats; calls: CallResult[]; history: HistoryItem[] }
-    | { kind: "answer"; turn: TurnStats; text: string; history: HistoryItem[] }
+export type SessionStep =
+    | { kind: "calls"; turn: TurnStats; calls: CallResult[] }
+    | { kind: "answer"; turn: TurnStats; text: string }
     | {
           kind: "stop";
           reason: "turn_failed" | "empty" | "turn_limit" | "history";
           detail: string;
-          /** Set when the model completed the turn that stopped the loop. */
+          /** Set when the model completed the turn that stopped the session. */
           turn?: TurnStats;
           /** Only for `turn_failed`. */
           error?: TurnErrorKind;
           status?: number;
-          /** So a stopped run can still be inspected or stored. */
-          history: HistoryItem[];
       };
+
+export interface Session {
+    model: string;
+    /** Set when the model was picked out of several loaded ones. */
+    note?: string;
+    steps: AsyncGenerator<SessionStep, void, undefined>;
+    /** Grows as the session runs. While the caller handles a step, the session is paused. */
+    history: readonly HistoryItem[];
+}
 
 const NOT_RUN: ToolOutcome = { ok: false, error: "not run: the turn limit was reached" };
 
-export async function* runLoop(
-    client: OpenAI,
-    options: LoopOptions,
-): AsyncGenerator<LoopStep, void, undefined> {
-    const { model, reasoning, tools, maxTurns = MAX_TURNS } = options;
+/** The model is chosen first, which can fail before any turn: LM Studio may have none loaded. */
+export async function createSession(
+    config: Config,
+    options: SessionOptions,
+): Promise<({ ok: true } & Session) | { ok: false; reason: string }> {
+    const choice = await resolveModel(config);
+    if (!choice.ok) {
+        return choice;
+    }
+
+    const client = new OpenAI({ baseURL: config.baseUrl, apiKey: config.apiKey, maxRetries: 0 });
     const history = [...options.history];
-    // Steps outlive the turn that made them, while the loop keeps appending to `history`.
-    const snapshot = (): HistoryItem[] => [...history];
-    // Once per run: changing the tools mid-run invalidates the prompt cache (Brief R3.4).
+    const steps = run(client, config, choice.model, options, history);
+    return { ok: true, model: choice.model, note: choice.note, steps, history };
+}
+
+async function* run(
+    client: OpenAI,
+    config: Config,
+    model: string,
+    { tools, maxTurns = MAX_TURNS }: SessionOptions,
+    history: HistoryItem[],
+): AsyncGenerator<SessionStep, void, undefined> {
+    const reasoning =
+        config.reasoningEffort === undefined ? undefined : { effort: config.reasoningEffort };
+    // Once per session: changing the tools mid-session invalidates the prompt cache (Brief R3.4).
     const functionTools = tools.map((handler) => toFunctionTool(handler.tool));
     const handlers = new Map(tools.map((handler) => [handler.tool.name, handler]));
 
     for (let number = 1; ; number++) {
         const input = toInput(history);
         if (!input.ok) {
-            yield { kind: "stop", reason: "history", detail: input.detail, history: snapshot() };
+            yield { kind: "stop", reason: "history", detail: input.detail };
             return;
         }
 
@@ -87,14 +110,7 @@ export async function* runLoop(
         });
         if (!result.ok) {
             const { error, detail, status } = result;
-            yield {
-                kind: "stop",
-                reason: "turn_failed",
-                error,
-                detail,
-                status,
-                history: snapshot(),
-            };
+            yield { kind: "stop", reason: "turn_failed", error, detail, status };
             return;
         }
 
@@ -104,13 +120,13 @@ export async function* runLoop(
 
         const next = classify(output);
         if (next.kind === "final") {
-            yield { kind: "answer", turn, text: next.text, history: snapshot() };
+            yield { kind: "answer", turn, text: next.text };
             return;
         }
 
         if (next.kind === "empty") {
             const detail = "the model's turn had neither tool calls nor text";
-            yield { kind: "stop", reason: "empty", detail, turn, history: snapshot() };
+            yield { kind: "stop", reason: "empty", detail, turn };
             return;
         }
 
@@ -121,7 +137,7 @@ export async function* runLoop(
             }
 
             const detail = `the model was still calling tools after ${number} turns`;
-            yield { kind: "stop", reason: "turn_limit", detail, turn, history: snapshot() };
+            yield { kind: "stop", reason: "turn_limit", detail, turn };
             return;
         }
 
@@ -132,7 +148,7 @@ export async function* runLoop(
             calls.push({ call, outcome });
         }
 
-        yield { kind: "calls", turn, calls, history: snapshot() };
+        yield { kind: "calls", turn, calls };
     }
 }
 

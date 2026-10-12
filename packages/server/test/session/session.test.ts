@@ -1,15 +1,16 @@
 import { type HistoryItem, type ToolOutcome, toFunctionTool } from "@mecha-gremlin/core";
-import OpenAI from "openai";
 import type { ResponseUsage } from "openai/resources/responses/responses";
 import { describe, expect, test, vi } from "vitest";
 import { z } from "zod";
+import type { Config } from "../../src/config/config.ts";
 import {
-    type LoopOptions,
-    type LoopStep,
     MAX_TURNS,
+    type Session,
+    type SessionOptions,
+    type SessionStep,
     type TurnStats,
-    runLoop,
-} from "../../src/loop/loop.ts";
+    createSession,
+} from "../../src/session/session.ts";
 import { defineTool } from "../../src/tools/tool-handler.ts";
 import {
     type FakeServer,
@@ -17,6 +18,7 @@ import {
     completed,
     fakeFetch,
     httpError,
+    loadedBonsai,
     message,
     reasoning,
     script,
@@ -27,6 +29,14 @@ const START: HistoryItem[] = [
     { role: "developer", content: "Read files before answering." },
     { role: "user", content: "What does the check script run?" },
 ];
+
+const CONFIG: Config = {
+    provider: "openai",
+    baseUrl: "http://model.test/v1",
+    apiKey: "test-key",
+    model: "test-model",
+    reasoningEffort: undefined,
+};
 
 function recordingTool(
     run: (path: string) => Promise<ToolOutcome> = async (path) => ({
@@ -54,40 +64,43 @@ function output(callId: string, text: string): HistoryItem {
     return { type: "function_call_output", call_id: callId, output: text };
 }
 
-function clientFor(fetch: ReturnType<typeof fakeFetch>["fetch"]): OpenAI {
-    return new OpenAI({
-        apiKey: "test-key",
-        baseURL: "http://model.test/v1",
-        maxRetries: 0,
-        fetch,
-    });
-}
-
 function stats(number: number, turnUsage: ResponseUsage = usage()): TurnStats {
     return { number, usage: turnUsage, seconds: 1.5 };
 }
 
-async function loop(server: FakeServer, options: Partial<LoopOptions> = {}) {
-    const { fetch, turnBodies } = fakeFetch(server);
+async function start(config: Config, options: SessionOptions): Promise<Session> {
+    const created = await createSession(config, options);
+    if (!created.ok) {
+        throw new Error(`the session didn't start: ${created.reason}`);
+    }
+
+    return created;
+}
+
+async function runSession(
+    server: FakeServer,
+    options: Partial<SessionOptions> = {},
+    config: Config = CONFIG,
+) {
+    const { fetch, requests, turnBodies } = fakeFetch(server);
+    vi.stubGlobal("fetch", fetch);
     const tool = recordingTool();
     // Every reading of the clock is 1.5 s after the last, so each turn takes 1.5 s.
     let clock = 0;
     vi.spyOn(performance, "now").mockImplementation(() => (clock += 1500));
 
-    const steps: LoopStep[] = [];
-    const run = runLoop(clientFor(fetch), {
-        model: "test-model",
-        tools: [tool.handler],
-        history: START,
-        ...options,
-    });
-    for await (const step of run) {
+    const session = await start(config, { tools: [tool.handler], history: START, ...options });
+    const steps: SessionStep[] = [];
+    for await (const step of session.steps) {
         steps.push(step);
     }
 
     return {
+        session,
         steps,
         last: steps.at(-1),
+        history: session.history,
+        requests,
         bodies: turnBodies(),
         paths: tool.paths,
         handler: tool.handler,
@@ -103,15 +116,68 @@ function readThenAnswer() {
     );
 }
 
+const LM_STUDIO: Config = {
+    ...CONFIG,
+    provider: "lmstudio",
+    baseUrl: "http://lmstudio.test:1234/v1",
+    model: undefined,
+};
+
+describe("Choose the model when the session starts", () => {
+    test("another provider uses the configured model", async () => {
+        const { session, bodies } = await runSession({ responses: readThenAnswer() });
+
+        expect(session.model).toBe("test-model");
+        expect(bodies.map((body) => body?.model)).toEqual(["test-model", "test-model"]);
+    });
+
+    test("with LM Studio, the session uses the loaded model", async () => {
+        const { session, requests, bodies } = await runSession(
+            { responses: readThenAnswer() },
+            {},
+            LM_STUDIO,
+        );
+
+        expect(requests[0]?.url).toBe("http://lmstudio.test:1234/api/v1/models");
+        expect(session).toMatchObject({ model: "prism-ml/bonsai-27b", note: undefined });
+        expect(bodies.map((body) => body?.model)).toEqual([
+            "prism-ml/bonsai-27b",
+            "prism-ml/bonsai-27b",
+        ]);
+    });
+
+    test("with several models loaded, a note says which one", async () => {
+        const second = { type: "llm", key: "qwen3", loaded_instances: [{ id: "qwen3" }] };
+        const { session } = await runSession(
+            {
+                models: () => Response.json({ models: [...loadedBonsai.models, second] }),
+                responses: readThenAnswer(),
+            },
+            {},
+            LM_STUDIO,
+        );
+
+        expect(session.note).toContain("Set MODEL to choose another.");
+    });
+
+    test("with no model to use, the session doesn't start", async () => {
+        const { fetch, turnBodies } = fakeFetch({ models: () => Response.json({ models: [] }) });
+        vi.stubGlobal("fetch", fetch);
+        const created = await createSession(LM_STUDIO, { tools: [], history: START });
+
+        expect(created).toEqual({ ok: false, reason: expect.stringContaining("lms load") });
+        expect(turnBodies()).toHaveLength(0);
+    });
+});
+
 describe("Alternate model turns and tool calls until the model answers", () => {
     test("an answer without tools", async () => {
-        const { steps, bodies } = await loop({
+        const { steps, history, bodies } = await runSession({
             responses: script(() => completed([message("42")])),
         });
 
-        expect(steps).toEqual([
-            { kind: "answer", turn: stats(1), text: "42", history: [...START, message("42")] },
-        ]);
+        expect(steps).toEqual([{ kind: "answer", turn: stats(1), text: "42" }]);
+        expect(history).toEqual([...START, message("42")]);
         expect(bodies).toHaveLength(1);
         expect(bodies[0]).toMatchObject({
             model: "test-model",
@@ -123,7 +189,7 @@ describe("Alternate model turns and tool calls until the model answers", () => {
 
     test("one tool round trip replays the whole history", async () => {
         const afterCall = [...START, ...roundTrip, output("call_1", "contents of package.json")];
-        const { steps, bodies } = await loop({
+        const { steps, history, bodies } = await runSession({
             responses: script(
                 () => completed(roundTrip, usage({ input_tokens: 100 })),
                 () => completed([message("\n\nIt runs the checks.")], usage({ input_tokens: 200 })),
@@ -142,38 +208,55 @@ describe("Alternate model turns and tool calls until the model answers", () => {
                         outcome: { ok: true, output: "contents of package.json" },
                     },
                 ],
-                history: afterCall,
             },
             {
                 kind: "answer",
                 turn: stats(2, usage({ input_tokens: 200 })),
                 text: "It runs the checks.",
-                history: [...afterCall, message("\n\nIt runs the checks.")],
             },
+        ]);
+        expect(history).toEqual([...afterCall, message("\n\nIt runs the checks.")]);
+    });
+
+    test("the client comes from the config", async () => {
+        const { requests } = await runSession({ responses: readThenAnswer() });
+
+        expect(requests.map((request) => [request.url, request.authorization])).toEqual([
+            ["http://model.test/v1/responses", "Bearer test-key"],
+            ["http://model.test/v1/responses", "Bearer test-key"],
         ]);
     });
 
-    test("tools are frozen for the run", async () => {
-        const { bodies, handler } = await loop({ responses: readThenAnswer() });
+    test("tools are frozen for the session", async () => {
+        const { bodies, handler } = await runSession({ responses: readThenAnswer() });
 
         expect(bodies[0]?.tools).toEqual([toFunctionTool(handler.tool)]);
         expect(bodies[1]?.tools).toEqual(bodies[0]?.tools);
     });
 
-    test("reasoning settings go with every turn, when given", async () => {
-        const withEffort = await loop(
+    test("the configured reasoning effort goes with every turn", async () => {
+        const low = await runSession(
             { responses: readThenAnswer() },
-            { reasoning: { effort: "low" } },
+            {},
+            { ...CONFIG, reasoningEffort: "low" },
         );
 
-        expect(withEffort.bodies.map((body) => body?.reasoning)).toEqual([
+        expect(low.bodies.map((body) => body?.reasoning)).toEqual([
             { effort: "low" },
             { effort: "low" },
         ]);
 
-        const without = await loop({ responses: readThenAnswer() });
+        const unset = await runSession({ responses: readThenAnswer() });
 
-        expect(without.bodies.map((body) => body && "reasoning" in body)).toEqual([false, false]);
+        expect(unset.bodies.map((body) => body && "reasoning" in body)).toEqual([false, false]);
+    });
+
+    test("the session starts from a copy of the history it was given", async () => {
+        const given = [...START];
+        const { history } = await runSession({ responses: readThenAnswer() }, { history: given });
+
+        expect(given).toEqual(START);
+        expect(history.length).toBeGreaterThan(START.length);
     });
 });
 
@@ -181,7 +264,7 @@ describe("Run every call in order and answer each exactly once", () => {
     test("two calls in one turn", async () => {
         const a = call("read_file", { path: "a.txt" }, "call_a");
         const b = call("read_file", { path: "b.txt" }, "call_b");
-        const { last, paths } = await loop({
+        const { history, paths } = await runSession({
             responses: script(
                 () => completed([a, b]),
                 () => completed([message("Done.")]),
@@ -189,7 +272,7 @@ describe("Run every call in order and answer each exactly once", () => {
         });
 
         expect(paths).toEqual(["a.txt", "b.txt"]);
-        expect(last?.history).toEqual([
+        expect(history).toEqual([
             ...START,
             a,
             b,
@@ -208,7 +291,7 @@ describe("Run every call in order and answer each exactly once", () => {
             },
             async () => ({ ok: true, output: "noted" }),
         );
-        const { bodies } = await loop(
+        const { bodies } = await runSession(
             {
                 responses: script(
                     () => completed([call("write_file", { path: "x.txt" })]),
@@ -228,7 +311,7 @@ describe("Run every call in order and answer each exactly once", () => {
     });
 
     test("invalid arguments", async () => {
-        const { bodies, paths } = await loop({
+        const { bodies, paths } = await runSession({
             responses: script(
                 () => completed([call("read_file", { file: "x.txt" })]),
                 () => completed([message("Done.")]),
@@ -253,7 +336,7 @@ describe("Run every call in order and answer each exactly once", () => {
         const failing = recordingTool(async () => {
             throw thrown;
         });
-        const { bodies } = await loop(
+        const { bodies } = await runSession(
             { responses: readThenAnswer() },
             { tools: [failing.handler] },
         );
@@ -270,7 +353,7 @@ describe("Stop at the turn limit", () => {
 
     test("the model never stops calling tools", async () => {
         expect(MAX_TURNS).toBe(8);
-        const { steps, last, bodies, paths } = await loop(endless);
+        const { steps, last, history, bodies, paths } = await runSession(endless);
 
         expect(bodies).toHaveLength(8);
         expect(paths).toEqual([
@@ -288,15 +371,14 @@ describe("Stop at the turn limit", () => {
             reason: "turn_limit",
             detail: "the model was still calling tools after 8 turns",
             turn: stats(8),
-            history: expect.any(Array),
         });
-        expect(last?.history.at(-1)).toEqual(
+        expect(history.at(-1)).toEqual(
             output("call_7", "Error: not run: the turn limit was reached"),
         );
     });
 
     test("the caller can set another limit", async () => {
-        const { last, bodies, paths } = await loop(endless, { maxTurns: 2 });
+        const { last, bodies, paths } = await runSession(endless, { maxTurns: 2 });
 
         expect(bodies).toHaveLength(2);
         expect(paths).toEqual(["f0.txt"]);
@@ -304,9 +386,9 @@ describe("Stop at the turn limit", () => {
     });
 });
 
-describe("End with a stop step, with the history so far", () => {
+describe("End with a stop step", () => {
     test("a later turn fails", async () => {
-        const { last } = await loop({
+        const { last, history } = await runSession({
             responses: script(
                 () => completed(roundTrip),
                 () => httpError(500, "the engine fell over"),
@@ -319,12 +401,16 @@ describe("End with a stop step, with the history so far", () => {
             error: "server_error",
             status: 500,
             detail: expect.stringContaining("the engine fell over"),
-            history: [...START, ...roundTrip, output("call_1", "contents of package.json")],
         });
+        expect(history).toEqual([
+            ...START,
+            ...roundTrip,
+            output("call_1", "contents of package.json"),
+        ]);
     });
 
     test("no answer", async () => {
-        const { steps, bodies } = await loop({
+        const { steps, history, bodies } = await runSession({
             responses: script(() => completed([reasoning()])),
         });
 
@@ -334,51 +420,49 @@ describe("End with a stop step, with the history so far", () => {
                 reason: "empty",
                 detail: "the model's turn had neither tool calls nor text",
                 turn: stats(1),
-                history: [...START, reasoning()],
             },
         ]);
+        expect(history).toEqual([...START, reasoning()]);
         expect(bodies).toHaveLength(1);
     });
 
     test("a history that can't be replayed", async () => {
         const broken = [...START, { type: "made_up" } as unknown as HistoryItem];
-        const { steps, bodies } = await loop({}, { history: broken });
+        const { steps, bodies } = await runSession({}, { history: broken });
 
         expect(steps).toEqual([
-            {
-                kind: "stop",
-                reason: "history",
-                detail: expect.stringContaining("made_up"),
-                history: broken,
-            },
+            { kind: "stop", reason: "history", detail: expect.stringContaining("made_up") },
         ]);
         expect(bodies).toHaveLength(0);
     });
 });
 
 describe("Yield the result of each turn as it completes", () => {
-    test("a turn's step comes before the next turn starts", async () => {
+    test("a turn's step comes before the next turn starts, with the history up to date", async () => {
         const { fetch, turnBodies } = fakeFetch({ responses: readThenAnswer() });
-        const steps = runLoop(clientFor(fetch), {
-            model: "test-model",
-            tools: [recordingTool().handler],
-            history: START,
-        });
+        vi.stubGlobal("fetch", fetch);
+        const session = await start(CONFIG, { tools: [recordingTool().handler], history: START });
 
-        expect((await steps.next()).value).toMatchObject({ kind: "calls" });
+        expect((await session.steps.next()).value).toMatchObject({ kind: "calls" });
         expect(turnBodies()).toHaveLength(1);
+        expect(session.history).toEqual([
+            ...START,
+            ...roundTrip,
+            output("call_1", "contents of package.json"),
+        ]);
 
-        expect((await steps.next()).value).toMatchObject({ kind: "answer" });
+        expect((await session.steps.next()).value).toMatchObject({ kind: "answer" });
         expect(turnBodies()).toHaveLength(2);
+        expect(session.history.at(-1)).toEqual(message("Done."));
 
-        expect(await steps.next()).toEqual({ done: true, value: undefined });
+        expect(await session.steps.next()).toEqual({ done: true, value: undefined });
     });
 
     test("a turn's calls carry their outcomes, failures included", async () => {
         const euro = recordingTool(async () => ({ ok: true, output: "€" }));
         const a = call("read_file", { path: "a" }, "call_a");
         const b = call("read_file", {}, "call_b");
-        const { steps } = await loop(
+        const { steps } = await runSession(
             {
                 responses: script(
                     () => completed([a, b]),

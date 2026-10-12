@@ -1,8 +1,7 @@
-import type { ToolOutcome } from "@mecha-gremlin/core";
-import OpenAI from "openai";
 import { type Config, loadConfig } from "../config/config.ts";
-import { type LoopStep, MAX_TURNS, type TurnStats, runLoop } from "../loop/loop.ts";
-import { keyRejected, resolveModel } from "../model/model.ts";
+import { type Fields, type Json, createLogger, logFormat } from "../log/log.ts";
+import { keyRejected } from "../model/model.ts";
+import { MAX_TURNS, type SessionStep, type TurnStats, createSession } from "../session/session.ts";
 import { readFileTool } from "../tools/read-file.ts";
 
 const DEFAULT_FILE = "package.json";
@@ -17,44 +16,50 @@ const INSTRUCTIONS =
 process.exitCode = await run(process.argv.slice(2));
 
 async function run(args: readonly string[]): Promise<number> {
+    const format = logFormat(process.env.LOG_FORMAT);
+    const log = createLogger(format ?? "pretty");
+    const fail = (message: string): number => {
+        log.error(message);
+        return 1;
+    };
+
+    if (format === undefined) {
+        return fail(
+            `LOG_FORMAT must be pretty or json; got ${JSON.stringify(process.env.LOG_FORMAT)}.`,
+        );
+    }
+
     const loaded = loadConfig(process.env);
     if (!loaded.ok) {
         for (const problem of loaded.problems) {
-            console.error(`✗ ${problem}`);
+            log.error(problem);
         }
 
         return 1;
     }
 
     const { config } = loaded;
-
-    const choice = await resolveModel(config);
-    if (!choice.ok) {
-        return fail(choice.reason);
-    }
-
-    if (choice.note) {
-        console.error(choice.note);
-    }
-
     const { file, question } = parseArgs(args);
-    console.error(`Asking ${choice.model} at ${config.baseUrl} about ${file}…`);
-    const client = new OpenAI({ baseURL: config.baseUrl, apiKey: config.apiKey, maxRetries: 0 });
-    const steps = runLoop(client, {
-        model: choice.model,
-        ...(config.reasoningEffort === undefined
-            ? {}
-            : { reasoning: { effort: config.reasoningEffort } }),
+
+    const session = await createSession(config, {
         tools: [readFileTool(process.cwd())],
         history: [
             { role: "developer", content: INSTRUCTIONS },
             { role: "user", content: `File: ${file}\nQuestion: ${question}` },
         ],
     });
+    if (!session.ok) {
+        return fail(session.reason);
+    }
 
-    for await (const step of steps) {
+    if (session.note) {
+        log.info(session.note);
+    }
+
+    log.info("asking", { model: session.model, baseUrl: config.baseUrl, file, question });
+    for await (const step of session.steps) {
         if (step.turn !== undefined) {
-            console.error(turnLine(step.turn));
+            log.info("turn", turnFields(step.turn));
         }
 
         if (step.kind === "stop") {
@@ -62,23 +67,22 @@ async function run(args: readonly string[]): Promise<number> {
         }
 
         if (step.kind === "answer") {
-            // stdout carries the answer alone, so it can be piped: `bun run hello | pbcopy`.
-            console.log(step.text);
+            log.info("answer", { text: step.text });
             return 0;
         }
 
         for (const { call, outcome } of step.calls) {
-            console.error(`→ ${call.name} ${call.arguments}`);
-            console.error(outcomeLine(outcome));
+            log.info("tool call", { tool: call.name, arguments: parsed(call.arguments) });
+            if (outcome.ok) {
+                const bytes = new TextEncoder().encode(outcome.output).byteLength;
+                log.info("tool result", { tool: call.name, bytes });
+            } else {
+                log.warn("tool failed", { tool: call.name, error: outcome.error });
+            }
         }
     }
 
     throw new Error("The agent loop ended without an answer or a stop step.");
-}
-
-function fail(message: string): number {
-    console.error(`✗ ${message}`);
-    return 1;
 }
 
 /** The question's words are joined, so it needn't be quoted. */
@@ -91,24 +95,27 @@ function parseArgs(args: readonly string[]): { file: string; question: string } 
     return { file, question: words.length > 0 ? words.join(" ") : FILE_QUESTION };
 }
 
-function turnLine({ number, usage, seconds }: TurnStats): string {
-    const elapsed = `${seconds.toFixed(1)} s`;
-    if (usage === undefined) {
-        return `Turn ${number}: ${elapsed}`;
+/** Arguments that parse are logged as data; the rest as the model sent them. */
+function parsed(raw: string): Json {
+    try {
+        return JSON.parse(raw) as Json;
+    } catch {
+        return raw;
     }
-
-    const cached = usage.input_tokens_details?.cached_tokens ?? 0;
-    const reasoning = usage.output_tokens_details?.reasoning_tokens ?? 0;
-    return `Turn ${number}: ${usage.input_tokens} input tokens (${cached} cached), ${usage.output_tokens} output (${reasoning} reasoning), ${elapsed}`;
 }
 
-function outcomeLine(outcome: ToolOutcome): string {
-    return outcome.ok
-        ? `← ${new TextEncoder().encode(outcome.output).byteLength} bytes`
-        : `← Error: ${outcome.error.replaceAll("\n", "\n  ")}`;
+function turnFields({ number, usage, seconds }: TurnStats): Fields {
+    return {
+        number,
+        inputTokens: usage?.input_tokens,
+        cachedTokens: usage?.input_tokens_details?.cached_tokens,
+        outputTokens: usage?.output_tokens,
+        reasoningTokens: usage?.output_tokens_details?.reasoning_tokens,
+        seconds: Math.round(seconds * 10) / 10,
+    };
 }
 
-function failure(step: Extract<LoopStep, { kind: "stop" }>, config: Config): string {
+function failure(step: Extract<SessionStep, { kind: "stop" }>, config: Config): string {
     switch (step.reason) {
         case "turn_failed": {
             if (step.error === "auth") {

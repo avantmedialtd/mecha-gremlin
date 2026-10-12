@@ -11,8 +11,9 @@ The hello proves that one model turn works, but an agent needs the loop the brie
   - **History.** `toOutputItem` builds a call's `function_call_output` item. `toInput` turns the chat history (Responses items, kept as received) into the next request's input, returning a value instead of throwing.
 - **`server`:**
   - **A `read_file` tool**, defined with zod 4 and confined to the working directory. It refuses paths outside that directory (symlinks included), `.env` files, directories and binary files, and caps what it returns, with a note when it truncates.
-  - **An agent loop**, in the server because "the caller orchestrates" (Brief, Layering). It runs at most 8 turns and executes each turn's calls in order. Tool failures go back to the model as outputs, and every call gets exactly one output. It returns the answer or a failure, always together with the history so far.
-  - **BREAKING: the hello asks a question about a file instead of saying hi.** The command becomes `bun run hello [file] [question]`; with no arguments it asks what the `check` script in `package.json` runs. The trimmed answer goes to stdout. Progress, each tool call and each turn's token usage, cached tokens included, go to stderr.
+  - **An agent loop**, in the server because "the caller orchestrates" (Brief, Layering). It is an async generator that yields each turn's result as the turn completes. It runs at most 8 turns and executes each turn's calls in order. Tool failures go back to the model as outputs, and every call gets exactly one output.
+  - **A hand-rolled structured logger.** Records are a message plus JSON fields, written to stdout. The output is formatted for reading by default, or one JSON object per line with `LOG_FORMAT=json`.
+  - **BREAKING: the hello asks a question about a file instead of saying hi.** The command becomes `bun run hello [file] [question]`; with no arguments it asks what the `check` script in `package.json` runs. The question, each turn's token usage (cached tokens included), each tool call and the answer are all logged to stdout.
 - **Not in this change** (later milestones in the brief):
   - detecting calls the model writes as text, and nudging it (C9);
   - budgets, the context check and the finalize turn (C8);
@@ -25,6 +26,7 @@ The hello proves that one model turn works, but an agent needs the loop the brie
 - `tool-calls`: `core`'s pure contract for tool calling over the Responses API: tool definitions and their `FunctionTool` form, classifying a turn's output, validating call arguments, building call outputs, and turning chat history into request input.
 - `agent-loop`: the server's loop that alternates model turns and tool calls until the model answers, with its turn cap, call ordering and failure handling.
 - `read-file-tool`: the server's `read_file` tool: what it may read, its limits, and how it reports what it can't do.
+- `structured-log`: the server's logger: records with a level, a message and JSON fields, written to stdout, formatted by default and as JSON lines on request.
 
 ### Modified Capabilities
 - `model-hello`: the hello asks a question about a file through the agent loop instead of saying hi. It takes an optional file and question, and reports each tool call and each turn's usage.

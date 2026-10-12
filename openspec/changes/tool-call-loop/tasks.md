@@ -102,3 +102,15 @@
 
 - [x] 8.1 The server's code moves into folders by concern: `main/main.ts`, `config/config.ts`, `model/model.ts` and `model/lmstudio.ts`, `loop/loop.ts`, and `tools/read-file.ts` and `tools/tool-handler.ts`. There are no index files: every import names the file it uses.
 - [x] 8.2 Tests mirror the folders, with the shared fake model server at `test/fake-model.ts`. The `hello` and `start` scripts point at `main/main.ts`.
+
+## 9. A structured logger
+
+- [x] 9.1 `log/log.ts`: a hand-rolled logger. `info`, `warn` and `error` take a message and JSON fields, and every record goes to stdout. The output is formatted by default; `LOG_FORMAT=json` gives one JSON object per line, and an unknown `LOG_FORMAT` fails first.
+- [x] 9.2 `main.ts` logs everything through it, the answer included, as records: `asking`, `turn`, `tool call`, `tool result` or `tool failed`, and `answer`. Errors keep their sentences as messages.
+- [x] 9.3 Logger unit tests: the expected local time is computed from a fixed instant rather than by pinning the time zone. The hello tests read the log as JSON records, and one test covers the formatted default.
+
+## 10. The loop as a session
+
+- [x] 10.1 `runLoop` becomes `createSession(config, { model, tools, history })` in `session/session.ts`. It builds its own client from the config and takes the reasoning effort from it too. It returns `{ steps, history }`: the generator of steps, and the session's own, growing history. Steps no longer carry history copies.
+- [x] 10.2 `main.ts` passes the config and iterates `session.steps`. The session tests fake the global `fetch`, check that the client comes from the config, and check that the history keeps up step by step.
+- [x] 10.3 `createSession` chooses the model too, so it's async. It resolves to `{ ok: false, reason }` when no model can be used, or to the session with its `model` and the note on how it was picked. `main.ts` no longer calls `resolveModel`.

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ResponseOutputItem, ResponseUsage } from "openai/resources/responses/responses";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
-import { MAX_TURNS } from "../../src/loop/loop.ts";
+import { MAX_TURNS } from "../../src/session/session.ts";
 import {
     type FakeServer,
     call,
@@ -23,6 +23,7 @@ const FILE_QUESTION = "What is this file for? Answer in two or three sentences."
 
 /** Each test sets or clears all of these, so settings in your shell can't leak in. */
 const SETTINGS = [
+    "LOG_FORMAT",
     "MODEL_PROVIDER",
     "MODEL_BASE_URL",
     "MODEL_API_KEY",
@@ -30,6 +31,13 @@ const SETTINGS = [
     "MODEL_REASONING_EFFORT",
 ] as const;
 type Settings = Partial<Record<(typeof SETTINGS)[number], string>>;
+
+interface LogRecord {
+    time: string;
+    level: string;
+    message: string;
+    [field: string]: unknown;
+}
 
 const PACKAGE_JSON = `${JSON.stringify({ scripts: { check: "bun run lint && bun run test" } }, null, 4)}\n`;
 const MENU = "Café crème: 3 €\n";
@@ -50,19 +58,14 @@ afterEach(() => {
     process.exitCode = undefined;
 });
 
-/** Vitest replaces `console` in its workers, so spying on the output streams wouldn't see it. */
-function capture(method: "log" | "error") {
-    let text = "";
-    const spy = vi.spyOn(console, method).mockImplementation((line: unknown) => {
-        text += `${String(line)}\n`;
-    });
-
-    return { text: () => text, restore: () => spy.mockRestore() };
-}
-
+/**
+ * The log is read as JSON records, which pins every field, unless a test asks for another format.
+ * The formatted output has its own tests.
+ */
 async function hello(env: Settings = {}, server: FakeServer = {}, args: string[] = []) {
+    const settings: Settings = { LOG_FORMAT: "json", ...env };
     for (const name of SETTINGS) {
-        vi.stubEnv(name, env[name]);
+        vi.stubEnv(name, settings[name]);
     }
 
     const { fetch, requests } = fakeFetch(server);
@@ -74,27 +77,37 @@ async function hello(env: Settings = {}, server: FakeServer = {}, args: string[]
 
     const argv = process.argv;
     process.argv = [...argv.slice(0, 1), "main.ts", ...args];
-    const stdout = capture("log");
-    const stderr = capture("error");
+    let output = "";
+    // Vitest replaces `console` in its workers, so spying on stdout itself wouldn't see the log.
+    const log = vi.spyOn(console, "log").mockImplementation((line: unknown) => {
+        output += `${String(line)}\n`;
+    });
     try {
         // A module runs only once until the registry is reset.
         vi.resetModules();
         await import("../../src/main/main.ts");
     } finally {
         process.argv = argv;
-        stdout.restore();
-        stderr.restore();
+        log.mockRestore();
     }
 
+    const records =
+        settings.LOG_FORMAT === "json"
+            ? output
+                  .trim()
+                  .split("\n")
+                  .map((line) => JSON.parse(line) as LogRecord)
+            : [];
     const turns = requests.filter((request) => request.url.endsWith("/v1/responses"));
-    return {
-        code: process.exitCode,
-        stdout: stdout.text(),
-        stderr: stderr.text(),
-        requests,
-        turns,
-        turn: turns[0],
-    };
+    return { code: process.exitCode, output, records, requests, turns, turn: turns[0] };
+}
+
+function find(records: LogRecord[], wanted: string): LogRecord | undefined {
+    return records.find((record) => record.message === wanted);
+}
+
+function errors(records: LogRecord[]): string[] {
+    return records.filter((record) => record.level === "error").map((record) => record.message);
 }
 
 const readThenAnswer: FakeServer = {
@@ -104,7 +117,7 @@ const readThenAnswer: FakeServer = {
     ),
 };
 
-describe("Ask the model a question about a file and print the answer", () => {
+describe("Ask the model a question about a file and log the answer", () => {
     test("the default question", async () => {
         const { turn } = await hello();
 
@@ -141,10 +154,13 @@ describe("Ask the model a question about a file and print the answer", () => {
     });
 
     test("the answer after reading the file", async () => {
-        const { code, stdout, turns } = await hello({}, readThenAnswer);
+        const { code, records, turns } = await hello({}, readThenAnswer);
 
         expect(code).toBe(0);
-        expect(stdout).toBe("It runs the checks.\n");
+        expect(find(records, "answer")).toMatchObject({
+            level: "info",
+            text: "It runs the checks.",
+        });
         expect(turns).toHaveLength(2);
         expect(turns[1]?.body?.input).toContainEqual({
             type: "function_call_output",
@@ -154,24 +170,49 @@ describe("Ask the model a question about a file and print the answer", () => {
     });
 });
 
-describe("Report each tool call and turn on stderr", () => {
-    test("the progress of a tool round trip", async () => {
-        const { stdout, stderr } = await hello({}, readThenAnswer);
+describe("Log each tool call and turn", () => {
+    test("the records of a tool round trip", async () => {
+        const { records } = await hello({}, readThenAnswer);
 
-        expect(stderr).toContain(
-            "Asking prism-ml/bonsai-27b at http://127.0.0.1:1234/v1 about package.json…\n",
-        );
-        expect(stderr).toContain('→ read_file {"path":"package.json"}\n');
-        expect(stderr).toContain(`← ${Buffer.byteLength(PACKAGE_JSON)} bytes\n`);
-        expect(stderr).toContain(
-            "Turn 1: 349 input tokens (256 cached), 26 output (12 reasoning), 1.5 s\n",
-        );
-        expect(stderr).toContain("Turn 2: ");
-        expect(stdout).toBe("It runs the checks.\n");
+        expect(records).toMatchObject([
+            {
+                level: "info",
+                message: "asking",
+                model: "prism-ml/bonsai-27b",
+                baseUrl: "http://127.0.0.1:1234/v1",
+                file: "package.json",
+                question: DEFAULT_QUESTION,
+            },
+            {
+                level: "info",
+                message: "turn",
+                number: 1,
+                inputTokens: 349,
+                cachedTokens: 256,
+                outputTokens: 26,
+                reasoningTokens: 12,
+                seconds: 1.5,
+            },
+            {
+                level: "info",
+                message: "tool call",
+                tool: "read_file",
+                arguments: { path: "package.json" },
+            },
+            {
+                level: "info",
+                message: "tool result",
+                tool: "read_file",
+                bytes: Buffer.byteLength(PACKAGE_JSON),
+            },
+            { level: "info", message: "turn", number: 2 },
+            { level: "info", message: "answer", text: "It runs the checks." },
+        ]);
+        expect(records.every((record) => !Number.isNaN(Date.parse(record.time)))).toBe(true);
     });
 
     test("sizes are in bytes, not characters", async () => {
-        const { stderr } = await hello(
+        const { records } = await hello(
             {},
             {
                 responses: script(
@@ -182,11 +223,11 @@ describe("Report each tool call and turn on stderr", () => {
         );
 
         expect(Buffer.byteLength(MENU)).toBeGreaterThan(MENU.length);
-        expect(stderr).toContain(`← ${Buffer.byteLength(MENU)} bytes\n`);
+        expect(find(records, "tool result")).toMatchObject({ bytes: Buffer.byteLength(MENU) });
     });
 
-    test("a failed call shows its error", async () => {
-        const { stderr } = await hello(
+    test("a failed call is a warning carrying its error", async () => {
+        const { records } = await hello(
             {},
             {
                 responses: script(
@@ -196,25 +237,25 @@ describe("Report each tool call and turn on stderr", () => {
             },
         );
 
-        expect(stderr).toContain(
-            '← Error: ".env" is an environment file. read_file doesn\'t read those: they hold secrets.\n',
-        );
+        expect(find(records, "tool failed")).toMatchObject({
+            level: "warn",
+            tool: "read_file",
+            error: '".env" is an environment file. read_file doesn\'t read those: they hold secrets.',
+        });
     });
 
-    test("a multi-line error stays indented under its call", async () => {
-        const { stderr } = await hello(
+    test("arguments that don't parse are logged as the model sent them", async () => {
+        const { records } = await hello(
             {},
             {
                 responses: script(
-                    () => completed([call("read_file", { file: "package.json" })]),
+                    () => completed([call("read_file", '{"path": "package.json"')]),
                     () => completed([message("Sorry.")]),
                 ),
             },
         );
 
-        expect(stderr).toContain(
-            "← Error: The arguments for read_file don't match its schema:\n  - ",
-        );
+        expect(find(records, "tool call")).toMatchObject({ arguments: '{"path": "package.json"' });
     });
 
     test("a turn without usage still reports its time", async () => {
@@ -230,28 +271,67 @@ describe("Report each tool call and turn on stderr", () => {
             })}\n\n`,
             { headers: { "content-type": "text/event-stream" } },
         );
-        const { stderr } = await hello({}, { responses: () => noUsage });
+        const { records } = await hello({}, { responses: () => noUsage });
 
-        expect(stderr).toContain("Turn 1: 1.5 s\n");
+        expect(find(records, "turn")).toEqual({
+            time: expect.any(String),
+            level: "info",
+            message: "turn",
+            number: 1,
+            seconds: 1.5,
+        });
     });
 
-    test("usage without token details counts those as zero", async () => {
+    test("usage without token details leaves those out", async () => {
         // Some OpenAI-compatible servers report only the totals.
         const totals = { input_tokens: 10, output_tokens: 5, total_tokens: 15 } as ResponseUsage;
-        const { stderr } = await hello(
+        const { records } = await hello(
             {},
             { responses: () => completed([message("Hi.")], totals) },
         );
 
-        expect(stderr).toContain(
-            "Turn 1: 10 input tokens (0 cached), 5 output (0 reasoning), 1.5 s\n",
+        expect(find(records, "turn")).toEqual({
+            time: expect.any(String),
+            level: "info",
+            message: "turn",
+            number: 1,
+            inputTokens: 10,
+            outputTokens: 5,
+            seconds: 1.5,
+        });
+    });
+});
+
+describe("Formatted output by default", () => {
+    test("without LOG_FORMAT, each record is a line to read", async () => {
+        const { output } = await hello({ LOG_FORMAT: undefined }, readThenAnswer);
+        const lines = output.trim().split("\n");
+
+        expect(lines.every((line) => /^\d\d:\d\d:\d\d (INFO |WARN |ERROR) /.test(line))).toBe(true);
+        expect(lines.map((line) => line.slice(9))).toEqual([
+            `INFO  asking model=prism-ml/bonsai-27b baseUrl=http://127.0.0.1:1234/v1 file=package.json question="${DEFAULT_QUESTION}"`,
+            "INFO  turn number=1 inputTokens=349 cachedTokens=256 outputTokens=26 reasoningTokens=12 seconds=1.5",
+            'INFO  tool call tool=read_file arguments={"path":"package.json"}',
+            `INFO  tool result tool=read_file bytes=${Buffer.byteLength(PACKAGE_JSON)}`,
+            "INFO  turn number=2 inputTokens=349 cachedTokens=256 outputTokens=26 reasoningTokens=12 seconds=1.5",
+            'INFO  answer text="It runs the checks."',
+        ]);
+    });
+
+    test("an unknown LOG_FORMAT fails before anything else", async () => {
+        const { code, output, requests } = await hello({ LOG_FORMAT: "xml" });
+
+        expect(code).toBe(1);
+        expect(output).toMatch(
+            /^\d\d:\d\d:\d\d ERROR LOG_FORMAT must be pretty or json; got "xml"\.\n$/,
         );
+        expect(requests).toHaveLength(0);
     });
 });
 
 describe("Actionable failures", () => {
     test("the turn limit", async () => {
-        const { code, stdout, stderr, turns } = await hello(
+        const { code, records, turns } = await hello(
             {},
             {
                 responses: (n) =>
@@ -260,25 +340,27 @@ describe("Actionable failures", () => {
         );
 
         expect(code).toBe(1);
-        expect(stdout).toBe("");
+        expect(find(records, "answer")).toBeUndefined();
         expect(turns).toHaveLength(MAX_TURNS);
-        expect(stderr).toContain(`The model didn't answer within ${MAX_TURNS} turns`);
+        expect(errors(records)).toEqual([
+            `The model didn't answer within ${MAX_TURNS} turns: it was still calling tools. Try a narrower question.`,
+        ]);
     });
 
     test("no answer", async () => {
-        const { code, stdout, stderr } = await hello(
+        const { code, records } = await hello(
             {},
             { responses: script(() => completed([reasoning()])) },
         );
 
         expect(code).toBe(1);
-        expect(stdout).toBe("");
-        expect(stderr).toContain("The model gave no answer");
+        expect(find(records, "answer")).toBeUndefined();
+        expect(errors(records)).toEqual([expect.stringContaining("The model gave no answer")]);
     });
 
     test("an item the SDK can't replay", async () => {
         const strange = { type: "made_up" } as unknown as ResponseOutputItem;
-        const { code, stdout, stderr } = await hello(
+        const { code, records } = await hello(
             {},
             {
                 responses: script(() =>
@@ -288,25 +370,26 @@ describe("Actionable failures", () => {
         );
 
         expect(code).toBe(1);
-        expect(stdout).toBe("");
-        expect(stderr).toContain("The conversation can't be continued");
-        expect(stderr).toContain("made_up");
+        expect(errors(records)).toEqual([
+            expect.stringMatching(/^The conversation can't be continued \(.*made_up/),
+        ]);
     });
 
-    test("a failed turn prints nothing on stdout and exits 1", async () => {
-        const { code, stdout, stderr } = await hello(
+    test("a failed turn", async () => {
+        const { code, records } = await hello(
             {},
             { responses: () => httpError(500, "model crashed") },
         );
 
         expect(code).toBe(1);
-        expect(stdout).toBe("");
-        expect(stderr).toContain("The turn failed (server_error, HTTP 500)");
-        expect(stderr).toContain("model crashed");
+        expect(find(records, "answer")).toBeUndefined();
+        expect(errors(records)).toEqual([
+            expect.stringMatching(/^The turn failed \(server_error, HTTP 500\): .*model crashed/),
+        ]);
     });
 
     test("a failed turn without a status", async () => {
-        const { code, stderr } = await hello(
+        const { code, records } = await hello(
             {},
             {
                 responses: () =>
@@ -327,11 +410,11 @@ describe("Actionable failures", () => {
         );
 
         expect(code).toBe(1);
-        expect(stderr).toContain("The turn failed (failed): server_error: it broke");
+        expect(errors(records)).toEqual(["The turn failed (failed): server_error: it broke"]);
     });
 
     test("an unreachable model server", async () => {
-        const { code, stderr } = await hello(
+        const { code, records } = await hello(
             {},
             {
                 responses: () => {
@@ -341,22 +424,22 @@ describe("Actionable failures", () => {
         );
 
         expect(code).toBe(1);
-        expect(stderr).toContain("Can't reach http://127.0.0.1:1234/v1");
-        expect(stderr).toContain("Check MODEL_BASE_URL.");
+        expect(errors(records)).toEqual([
+            expect.stringMatching(
+                /^Can't reach http:\/\/127\.0\.0\.1:1234\/v1 \(.*\)\. Check MODEL_BASE_URL\.$/,
+            ),
+        ]);
     });
 });
 
 describe("run with LM Studio (the default provider)", () => {
-    test("asks the loaded model and prints only the answer on stdout", async () => {
-        const { code, stdout, stderr, turn } = await hello();
+    test("asks the loaded model and logs its answer", async () => {
+        const { code, records, turn } = await hello();
 
         expect(code).toBe(0);
-        expect(stdout).toBe("Hi there!\n");
-        // With one model loaded there's no note about the choice: the first line is the question's.
-        expect(stderr.split("\n")[0]).toBe(
-            "Asking prism-ml/bonsai-27b at http://127.0.0.1:1234/v1 about package.json…",
-        );
-        expect(stderr).toContain("26 output (12 reasoning), 1.5 s");
+        expect(find(records, "answer")).toMatchObject({ text: "Hi there!" });
+        // With one model loaded there's no note about the choice: the first record is the question.
+        expect(records[0]).toMatchObject({ message: "asking", model: "prism-ml/bonsai-27b" });
         expect(turn?.url).toBe("http://127.0.0.1:1234/v1/responses");
         expect(turn?.body).toMatchObject({
             model: "prism-ml/bonsai-27b",
@@ -374,16 +457,15 @@ describe("run with LM Studio (the default provider)", () => {
     });
 
     test("invalid config fails before any network call", async () => {
-        const { code, stdout, stderr, requests } = await hello({ MODEL_BASE_URL: "lmstudio" });
+        const { code, records, requests } = await hello({ MODEL_BASE_URL: "lmstudio" });
 
         expect(code).toBe(1);
-        expect(stdout).toBe("");
-        expect(stderr).toContain("MODEL_BASE_URL");
+        expect(errors(records)).toEqual([expect.stringContaining("MODEL_BASE_URL")]);
         expect(requests).toHaveLength(0);
     });
 
     test("an unreachable LM Studio fails with a hint", async () => {
-        const { code, stdout, stderr } = await hello(
+        const { code, records } = await hello(
             {},
             {
                 models: () => {
@@ -393,26 +475,30 @@ describe("run with LM Studio (the default provider)", () => {
         );
 
         expect(code).toBe(1);
-        expect(stdout).toBe("");
-        expect(stderr).toContain("lms server start");
+        expect(errors(records)).toEqual([expect.stringContaining("lms server start")]);
     });
 
     test("a rejected key fails with LM Studio's hint", async () => {
-        const { code, stderr } = await hello(
+        const { code, records } = await hello(
             {},
             { models: () => new Response("denied", { status: 401 }) },
         );
 
         expect(code).toBe(1);
-        expect(stderr).toContain("Require Authentication");
-        expect(stderr).toContain("MODEL_API_KEY");
+        expect(errors(records)).toEqual([
+            expect.stringMatching(
+                /Require Authentication.*MODEL_API_KEY|MODEL_API_KEY.*Require Authentication/,
+            ),
+        ]);
     });
 
     test("a configured model that isn't loaded sends no turn", async () => {
-        const { code, stderr, turn } = await hello({ MODEL: "qwen2.5-0.5b-instruct-mlx" });
+        const { code, records, turn } = await hello({ MODEL: "qwen2.5-0.5b-instruct-mlx" });
 
         expect(code).toBe(1);
-        expect(stderr).toContain("lms load qwen2.5-0.5b-instruct-mlx");
+        expect(errors(records)).toEqual([
+            expect.stringContaining("lms load qwen2.5-0.5b-instruct-mlx"),
+        ]);
         expect(turn).toBeUndefined();
     });
 
@@ -431,12 +517,14 @@ describe("run with LM Studio (the default provider)", () => {
                 },
             ],
         };
-        const { code, stderr, turn } = await hello({}, { models: () => Response.json(twoLoaded) });
+        const { code, records, turn } = await hello({}, { models: () => Response.json(twoLoaded) });
 
         expect(code).toBe(0);
-        expect(stderr).toContain(
-            "Using prism-ml/bonsai-27b, the first of 2 loaded models (prism-ml/bonsai-27b, qwen2.5-0.5b-instruct-mlx). Set MODEL to choose another.\n",
-        );
+        expect(records[0]).toMatchObject({
+            level: "info",
+            message:
+                "Using prism-ml/bonsai-27b, the first of 2 loaded models (prism-ml/bonsai-27b, qwen2.5-0.5b-instruct-mlx). Set MODEL to choose another.",
+        });
         expect(turn?.body).toMatchObject({ model: "prism-ml/bonsai-27b" });
     });
 });
@@ -445,10 +533,10 @@ describe("run with another OpenAI-compatible provider", () => {
     const openai = { MODEL_PROVIDER: "openai", MODEL_API_KEY: "sk-test", MODEL: "gpt-test" };
 
     test("uses the named model without asking LM Studio, and the model's own reasoning default", async () => {
-        const { code, stdout, requests, turn } = await hello(openai);
+        const { code, records, requests, turn } = await hello(openai);
 
         expect(code).toBe(0);
-        expect(stdout).toBe("Hi there!\n");
+        expect(find(records, "answer")).toMatchObject({ text: "Hi there!" });
         expect(requests.some((request) => request.url.endsWith("/api/v1/models"))).toBe(false);
         expect(turn).toMatchObject({
             url: "https://api.openai.com/v1/responses",
@@ -459,30 +547,34 @@ describe("run with another OpenAI-compatible provider", () => {
     });
 
     test("needs MODEL and MODEL_API_KEY, and fails before any network call", async () => {
-        const { code, stderr, requests } = await hello({ MODEL_PROVIDER: "openai" });
+        const { code, records, requests } = await hello({ MODEL_PROVIDER: "openai" });
 
         expect(code).toBe(1);
-        expect(stderr).toContain("MODEL_API_KEY is required");
-        expect(stderr).toContain("MODEL is required");
+        expect(errors(records)).toEqual([
+            expect.stringContaining("MODEL_API_KEY is required"),
+            expect.stringContaining("MODEL is required"),
+        ]);
         expect(requests).toHaveLength(0);
     });
 
     test("a rejected key points at MODEL_API_KEY, not at LM Studio", async () => {
-        const { code, stderr } = await hello(openai, {
+        const { code, records } = await hello(openai, {
             responses: () => httpError(401, "bad key"),
         });
 
         expect(code).toBe(1);
-        expect(stderr).toContain("MODEL_API_KEY");
-        expect(stderr).not.toContain("LM Studio");
+        expect(errors(records)).toEqual([expect.stringContaining("MODEL_API_KEY")]);
+        expect(errors(records)[0]).not.toContain("LM Studio");
     });
 
     test("a forbidden key reports its own status", async () => {
-        const { code, stderr } = await hello(openai, {
+        const { code, records } = await hello(openai, {
             responses: () => httpError(403, "forbidden"),
         });
 
         expect(code).toBe(1);
-        expect(stderr).toContain("rejected the API key (HTTP 403)");
+        expect(errors(records)).toEqual([
+            expect.stringContaining("rejected the API key (HTTP 403)"),
+        ]);
     });
 });

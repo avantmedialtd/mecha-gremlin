@@ -13,8 +13,9 @@ Inside `packages/server/src`, the code is grouped by concern:
 - `main`: the entry point;
 - `config`;
 - `model`: model choice and LM Studio's API;
-- `loop`: the agent loop;
-- `tools`.
+- `session`: the agent loop, as a session that yields each turn's result;
+- `tools`;
+- `log`: the structured logger.
 
 There are no index files: every import names the file it uses. The tests mirror the folders.
 
@@ -34,7 +35,25 @@ bun run hello package.json which vitest version     # your own question; quotes 
 
 The command is `bun run hello [file] [question…]`. The model reads the file with the `read_file` tool, and the loop runs until it answers, for at most 8 turns. A question usually takes two turns: one to read the file and one to answer. On a local 27B model, turns took from 15 seconds to about 2 minutes in testing, growing with the size of the file.
 
-The answer goes to stdout. Progress, usage and errors go to stderr, so `bun run hello | pbcopy` copies just the answer. The progress shows each turn's token usage (including the input tokens served from the model server's cache) and each tool call with its result.
+Everything is logged to stdout as structured records, one per line:
+- the question;
+- each turn's token usage, including the input tokens served from the model server's cache;
+- each tool call and its result;
+- the answer;
+- errors.
+
+The default output is formatted for reading:
+
+```text
+08:12:01 INFO  asking model=prism-ml/bonsai-27b baseUrl=http://127.0.0.1:1234/v1 file=package.json question="What exact command does the check script run? Quote it."
+08:12:13 INFO  turn number=1 inputTokens=376 cachedTokens=256 outputTokens=26 reasoningTokens=0 seconds=11.3
+08:12:13 INFO  tool call tool=read_file arguments={"path":"package.json"}
+08:12:13 INFO  tool result tool=read_file bytes=814
+08:12:20 INFO  turn number=2 inputTokens=710 cachedTokens=512 outputTokens=21 reasoningTokens=0 seconds=6.7
+08:12:20 INFO  answer text="`bun run format:check && bun run lint && bun run typecheck && bun run test`"
+```
+
+`LOG_FORMAT=json` writes each record as a JSON object instead, with its time in ISO 8601.
 
 ### What `read_file` reads
 
@@ -57,6 +76,7 @@ Settings come from the environment. Bun also reads a local `.env` file, which is
 | `MODEL_API_KEY` | `lm-studio` | required | Bearer key. Any value works while LM Studio's "Require Authentication" is off |
 | `MODEL` | the first loaded model | required | The model to use. With `lmstudio` it must be loaded |
 | `MODEL_REASONING_EFFORT` | `none` | the model's default | Sent as `reasoning.effort`; `none` keeps local reasoning models quick |
+| `LOG_FORMAT` | `pretty` | `pretty` | `pretty` formats the log for reading; `json` writes one JSON object per record |
 
 For example, to ask OpenAI instead:
 
