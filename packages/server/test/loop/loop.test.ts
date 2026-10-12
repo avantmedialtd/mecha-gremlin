@@ -9,8 +9,8 @@ import {
     MAX_TURNS,
     type TurnStats,
     runLoop,
-} from "../src/loop.ts";
-import { defineTool } from "../src/tool-handler.ts";
+} from "../../src/loop/loop.ts";
+import { defineTool } from "../../src/tools/tool-handler.ts";
 import {
     type FakeServer,
     call,
@@ -21,7 +21,7 @@ import {
     reasoning,
     script,
     usage,
-} from "./fake-model.ts";
+} from "../fake-model.ts";
 
 const START: HistoryItem[] = [
     { role: "developer", content: "Read files before answering." },

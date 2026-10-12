@@ -9,6 +9,15 @@ A self-hosted, scheduled agent runner, in early development. The design and its 
 | [`packages/core`](packages/core) | `@mecha-gremlin/core`: stateless functions. `runTurn` runs one streamed model turn over the Responses API and returns the reply or a classified error. The tool-calling pieces are tools defined by any [Standard Schema](https://standardschema.dev) library, `classify` for a turn's output, `validateArgs`, `toOutputItem`, and `toInput`, which replays the chat history. |
 | [`packages/server`](packages/server) | `@mecha-gremlin/server`: the app. So far it asks the model a question about a file, which the model reads with the `read_file` tool in an agent loop. |
 
+Inside `packages/server/src`, the code is grouped by concern:
+- `main`: the entry point;
+- `config`;
+- `model`: model choice and LM Studio's API;
+- `loop`: the agent loop;
+- `tools`.
+
+There are no index files: every import names the file it uses. The tests mirror the folders.
+
 ## Prerequisites
 
 - [Bun](https://bun.com) 1.4 or later.

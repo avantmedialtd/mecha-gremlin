@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ResponseOutputItem, ResponseUsage } from "openai/resources/responses/responses";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
-import { MAX_TURNS } from "../src/loop.ts";
+import { MAX_TURNS } from "../../src/loop/loop.ts";
 import {
     type FakeServer,
     call,
@@ -13,7 +13,7 @@ import {
     message,
     reasoning,
     script,
-} from "./fake-model.ts";
+} from "../fake-model.ts";
 
 // main.ts runs as soon as it's imported, so it's never imported here at the top: `hello` fakes
 // the globals it reads, then imports it afresh. Its question texts are spelled out for the same
@@ -79,7 +79,7 @@ async function hello(env: Settings = {}, server: FakeServer = {}, args: string[]
     try {
         // A module runs only once until the registry is reset.
         vi.resetModules();
-        await import("../src/main.ts");
+        await import("../../src/main/main.ts");
     } finally {
         process.argv = argv;
         stdout.restore();

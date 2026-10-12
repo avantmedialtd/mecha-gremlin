@@ -1,4 +1,4 @@
-import type { Config } from "./config.ts";
+import type { Config } from "../config/config.ts";
 import { fetchModels, lmStudioKeyRejected, pickModel } from "./lmstudio.ts";
 
 export type ModelChoice =

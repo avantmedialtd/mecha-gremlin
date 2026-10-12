@@ -172,6 +172,8 @@ The brief already sketches the rest of the loop:
 - **`read_file`:** real temporary directories, with files, nested paths, `..`, absolute paths, links that point inside and outside the root, `.env` files, a directory, a binary file, and a 3-byte character straddling the cap.
 - **Stryker** covers the new code like the old. The live round trip against LM Studio is a manual check, as before.
 
+**9. The server's code lives in folders by concern, without index files.** The folders are `main` (the entry point), `config`, `model` (model choice and LM Studio's API), `loop` and `tools`. Every import names the file it uses, and the tests mirror the folders.
+
 ## Risks / Trade-offs
 
 - **A local model calls the wrong path, or answers without reading.** → The developer item tells it to read first. Errors such as "no such file" go back to it. The default question can't be answered without the file, and the cap stops a loop that never answers.

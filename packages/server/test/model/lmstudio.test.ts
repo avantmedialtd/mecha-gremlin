@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
-import type { Config } from "../src/config.ts";
-import { fetchModels, pickModel } from "../src/lmstudio.ts";
+import type { Config } from "../../src/config/config.ts";
+import { fetchModels, pickModel } from "../../src/model/lmstudio.ts";
 
 type Entry = { key: string; type?: string; instances?: string[] };
 

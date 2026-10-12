@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type ToolOutcome, toFunctionTool } from "@mecha-gremlin/core";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { READ_LIMIT, readFileTool } from "../src/read-file.ts";
+import { READ_LIMIT, readFileTool } from "../../src/tools/read-file.ts";
 
 let root: string;
 let outside: string;

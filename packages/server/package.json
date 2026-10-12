@@ -5,7 +5,7 @@
     "description": "The mecha-gremlin app: for now, asks the model a question about a file, which it reads with a tool",
     "type": "module",
     "scripts": {
-        "start": "bun src/main.ts"
+        "start": "bun src/main/main.ts"
     },
     "dependencies": {
         "@mecha-gremlin/core": "workspace:*",

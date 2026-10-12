@@ -1,5 +1,5 @@
 // LM Studio specifics: finding out which model is loaded, through LM Studio's native REST API.
-import type { Config } from "./config.ts";
+import type { Config } from "../config/config.ts";
 import type { ModelChoice } from "./model.ts";
 
 export type ModelsResult = { ok: true; payload: unknown } | { ok: false; reason: string };

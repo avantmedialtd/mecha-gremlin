@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { loadConfig } from "../src/config.ts";
+import { loadConfig } from "../../src/config/config.ts";
 
 describe("loadConfig", () => {
     test("defaults to a local LM Studio with nothing set", () => {

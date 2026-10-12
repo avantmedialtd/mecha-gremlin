@@ -22,7 +22,7 @@
 
 - [x] 2.1 Add `zod` 4 to `packages/server`'s dependencies, and check that `bun.lock` holds a single copy
 - [x] 2.2 A helper that pairs a `Tool<Args>` with its handler `run(args) => Promise<ToolOutcome>`, validating with `validateArgs` before running, so arguments stay typed from the schema to the handler
-- [x] 2.3 `packages/server/src/read-file.ts`: `readFileTool(root)`:
+- [x] 2.3 `packages/server/src/tools/read-file.ts`: `readFileTool(root)`:
   - **Schema:** a `z.strictObject({ path: z.string() })` with descriptions.
   - **Confinement:** the lexical check, then the real-path check.
   - **Refusals:** `.env*` names, checked on both the requested and the real name; directories; missing files; binary files (a NUL byte in the first 8 KiB).
@@ -36,7 +36,7 @@
 
 ## 3. Server: the agent loop (`agent-loop`)
 
-- [x] 3.1 `packages/server/src/loop.ts`: `runLoop(client, { model, reasoning?, tools, history, maxTurns = 8, onEvent? })`:
+- [x] 3.1 `packages/server/src/loop/loop.ts`: `runLoop(client, { model, reasoning?, tools, history, maxTurns = 8, onEvent? })`:
   - tools converted once, and `toInput` on every turn;
   - `runTurn`, then the output appended, then `classify`;
   - calls run in order, each answered exactly once: unknown tool, invalid arguments, and a handler that throws;
@@ -97,3 +97,8 @@
 - [x] 7.1 `runLoop` yields one step per turn as it completes: `calls` (each call with its outcome), `answer` or `stop`. Each step carries its own copy of the history, and the turn's stats when the model completed it. The `onEvent` callback and the single result type are gone.
 - [x] 7.2 `main.ts` prints each step as it arrives, through a `for await`. The byte count of an output moves to `main.ts`, with a test on a non-ASCII file.
 - [x] 7.3 Loop tests assert the steps, including that a step arrives before the next turn's request is sent
+
+## 8. Folders by concern
+
+- [x] 8.1 The server's code moves into folders by concern: `main/main.ts`, `config/config.ts`, `model/model.ts` and `model/lmstudio.ts`, `loop/loop.ts`, and `tools/read-file.ts` and `tools/tool-handler.ts`. There are no index files: every import names the file it uses.
+- [x] 8.2 Tests mirror the folders, with the shared fake model server at `test/fake-model.ts`. The `hello` and `start` scripts point at `main/main.ts`.

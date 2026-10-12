@@ -12,7 +12,7 @@ import {
 import type OpenAI from "openai";
 import type { ResponseUsage } from "openai/resources/responses/responses";
 import type { Reasoning } from "openai/resources/shared";
-import type { ToolHandler } from "./tool-handler.ts";
+import type { ToolHandler } from "../tools/tool-handler.ts";
 
 /** The brief's hard cap on iterations; budgets and a context check come later (Brief C8). */
 export const MAX_TURNS = 8;

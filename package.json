@@ -6,7 +6,7 @@
     ],
     "type": "module",
     "scripts": {
-        "hello": "bun packages/server/src/main.ts",
+        "hello": "bun packages/server/src/main/main.ts",
         "test": "vitest run",
         "test:watch": "vitest",
         "mutation": "stryker run",

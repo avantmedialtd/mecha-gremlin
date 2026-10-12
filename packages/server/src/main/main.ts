@@ -1,9 +1,9 @@
 import type { ToolOutcome } from "@mecha-gremlin/core";
 import OpenAI from "openai";
-import { type Config, loadConfig } from "./config.ts";
-import { type LoopStep, MAX_TURNS, type TurnStats, runLoop } from "./loop.ts";
-import { keyRejected, resolveModel } from "./model.ts";
-import { readFileTool } from "./read-file.ts";
+import { type Config, loadConfig } from "../config/config.ts";
+import { type LoopStep, MAX_TURNS, type TurnStats, runLoop } from "../loop/loop.ts";
+import { keyRejected, resolveModel } from "../model/model.ts";
+import { readFileTool } from "../tools/read-file.ts";
 
 const DEFAULT_FILE = "package.json";
 /** Unanswerable without reading the file, so it shows the tool loop at work. */
