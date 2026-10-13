@@ -61,6 +61,7 @@ const failure = (
             }
 
             const http = status === undefined ? "" : `, HTTP ${status}`;
+
             return `The turn failed (${error}${http}): ${detail}`;
         }
         case "turn_limit":
@@ -77,6 +78,7 @@ const run = async (args: readonly string[]): Promise<number> => {
     const log = createLogger(format ?? "pretty");
     const fail = (message: string): number => {
         log.error(message);
+
         return 1;
     };
 
@@ -124,6 +126,7 @@ const run = async (args: readonly string[]): Promise<number> => {
 
         if (step.kind === "final") {
             log.info("answer", { text: step.text });
+
             return 0;
         }
 

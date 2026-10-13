@@ -39,11 +39,13 @@ const fakeTool = (validate: Validate = (value) => ({ value: value as Args })) =>
                 vendor: "fake",
                 validate: (value) => {
                     validated.push(value);
+
                     return validate(value);
                 },
                 jsonSchema: {
                     input: (options) => {
                         targets.push(options.target);
+
                         return {
                             $schema: "http://json-schema.org/draft-07/schema#",
                             ...PARAMETERS,
@@ -60,6 +62,7 @@ const fakeTool = (validate: Validate = (value) => ({ value: value as Args })) =>
 
 const errorOf = (result: ArgsResult<Args>): string => {
     expect(result.ok).toBe(false);
+
     return (result as Extract<ArgsResult<Args>, { ok: false }>).error;
 };
 

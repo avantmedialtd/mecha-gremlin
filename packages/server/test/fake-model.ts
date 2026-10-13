@@ -64,6 +64,7 @@ export const completed = (
         usage: turnUsage,
     };
     const event = { type: "response.completed", response };
+
     return new Response(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`, {
         headers: { "content-type": "text/event-stream" },
     });
@@ -116,6 +117,7 @@ export const fakeFetch = (server: FakeServer = {}) => {
 
         if (url.endsWith("/v1/responses")) {
             const n = turns++;
+
             return server.responses?.(n) ?? completed([message("Hi there!")]);
         }
 

@@ -66,6 +66,7 @@ export const classify = (output: readonly ResponseOutputItem[]): Turn => {
     }
 
     text = text.trim();
+
     return text === "" ? { kind: "empty" } : { kind: "final", text };
 };
 
@@ -100,6 +101,7 @@ export const validateArgs = async <Args>(
         } catch (error) {
             // JSON.parse only throws SyntaxError.
             const reason = (error as SyntaxError).message;
+
             return fail(`The arguments for ${tool.name} are not valid JSON (${reason}).`);
         }
     }
@@ -115,5 +117,6 @@ export const validateArgs = async <Args>(
     }
 
     const issues = result.issues.map((issue) => `- ${issuePath(issue)}: ${issue.message}`);
+
     return fail(`The arguments for ${tool.name} don't match its schema:\n${issues.join("\n")}`);
 };

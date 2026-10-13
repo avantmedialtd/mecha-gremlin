@@ -57,6 +57,7 @@ const recordingTool = (
         },
         async ({ path }) => {
             paths.push(path);
+
             return run(path);
         },
     );

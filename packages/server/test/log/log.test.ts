@@ -16,6 +16,7 @@ const written = (format: LogFormat, log: (logger: Logger) => void): string[] => 
     });
 
     log(createLogger(format));
+
     return lines;
 };
 

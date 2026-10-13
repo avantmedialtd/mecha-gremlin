@@ -66,6 +66,7 @@ const runCall = async (
 
     if (handler === undefined) {
         const available = [...handlers.keys()].join(", ");
+
         return {
             ok: false,
             error: `unknown tool ${JSON.stringify(call.name)}; available tools: ${available}`,
@@ -76,6 +77,7 @@ const runCall = async (
         return await handler.invoke(call.arguments);
     } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
+
         return { ok: false, error: `${call.name} failed: ${reason}` };
     }
 };
@@ -98,6 +100,7 @@ const run = async function* (
 
         if (!input.ok) {
             yield { kind: "history", detail: input.detail };
+
             return;
         }
 
@@ -112,6 +115,7 @@ const run = async function* (
 
         if (!result.ok) {
             yield { kind: "turn_failed", failure: result };
+
             return;
         }
 
@@ -123,6 +127,7 @@ const run = async function* (
 
         if (next.kind !== "calls") {
             yield { ...next, turn };
+
             return;
         }
 
@@ -133,6 +138,7 @@ const run = async function* (
             }
 
             yield { kind: "turn_limit", turn };
+
             return;
         }
 
@@ -162,5 +168,6 @@ export const createSession = async (
     const client = new OpenAI({ baseURL: config.baseUrl, apiKey: config.apiKey, maxRetries: 0 });
     const history = [...options.history];
     const steps = run(client, config, choice.model, options, history);
+
     return { ok: true, model: choice.model, note: choice.note, steps, history };
 };

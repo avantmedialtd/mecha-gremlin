@@ -45,6 +45,7 @@ export type Env = Record<string, string | undefined>;
 /** A set variable's trimmed value; unset and blank are both undefined. */
 const read = (env: Env, name: string): string | undefined => {
     const value = env[name]?.trim();
+
     return value ? value : undefined;
 };
 

@@ -84,6 +84,7 @@ const describe = (error: unknown): string => {
     }
 
     const cause = error.cause instanceof Error ? error.cause.message : undefined;
+
     return cause && cause !== error.message ? `${error.message} (${cause})` : error.message;
 };
 
@@ -107,6 +108,7 @@ const classifyRequestError = (error: unknown, signal: AbortSignal | undefined): 
                   : status >= 500
                     ? "server_error"
                     : "bad_request";
+
         return { ok: false, error: kind, status, detail: describe(error) };
     }
 
@@ -156,6 +158,7 @@ export const runTurn = async (
                     };
                 case "response.incomplete": {
                     const reason = event.response.incomplete_details?.reason;
+
                     return {
                         ok: false,
                         error: "incomplete",
@@ -166,6 +169,7 @@ export const runTurn = async (
                 }
                 case "response.failed": {
                     const error = event.response.error;
+
                     return {
                         ok: false,
                         error: "failed",

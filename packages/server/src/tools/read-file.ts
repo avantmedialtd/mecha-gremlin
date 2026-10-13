@@ -21,6 +21,7 @@ const ReadFileArgs = z.strictObject({
 
 const isInside = (root: string, target: string): boolean => {
     const path = relative(root, target);
+
     return path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path);
 };
 
@@ -111,6 +112,7 @@ const readFile = async (root: string, path: string): Promise<ToolOutcome> => {
 
         const cut = characterBoundary(bytes, READ_LIMIT);
         const note = `[truncated: showing the first ${cut} of ${info.size} bytes]`;
+
         return { ok: true, output: `${decode(bytes.subarray(0, cut))}\n\n${note}` };
     } catch (error) {
         if (errorCode(error) === "ENOENT") {

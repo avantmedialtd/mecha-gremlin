@@ -110,6 +110,7 @@ const fetchModelsWith = (
     fake: (input: string | URL | Request, init?: RequestInit) => Promise<Response>,
 ) => {
     vi.stubGlobal("fetch", fake);
+
     return fetchModels(config);
 };
 

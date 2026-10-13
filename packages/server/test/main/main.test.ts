@@ -101,6 +101,7 @@ const hello = async (env: Settings = {}, server: FakeServer = {}, args: string[]
                   .map((line) => JSON.parse(line) as LogRecord)
             : [];
     const turns = requests.filter((request) => request.url.endsWith("/v1/responses"));
+
     return { code: process.exitCode, output, records, requests, turns, turn: turns[0] };
 };
 

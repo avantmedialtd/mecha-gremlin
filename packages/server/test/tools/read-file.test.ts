@@ -45,6 +45,7 @@ const read = (path: string): Promise<ToolOutcome> => {
 
 const errorOf = (outcome: ToolOutcome): string => {
     expect(outcome.ok).toBe(false);
+
     return (outcome as Extract<ToolOutcome, { ok: false }>).error;
 };
 

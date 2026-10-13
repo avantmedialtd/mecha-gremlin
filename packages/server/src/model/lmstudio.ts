@@ -31,6 +31,7 @@ export const fetchModels = async (config: Config): Promise<ModelsResult> => {
         });
     } catch (error) {
         const why = error instanceof Error ? error.message : String(error);
+
         return {
             ok: false,
             reason: `Can't reach LM Studio at ${config.baseUrl} (${why}). Is its server running? Start it with \`lms server start\`, or set MODEL_BASE_URL.`,
@@ -122,6 +123,7 @@ export const pickModel = (payload: unknown, configured?: string): ModelChoice =>
 
         const loadedList =
             instanceIds.length > 0 ? `Loaded: ${instanceIds.join(", ")}.` : "No model is loaded.";
+
         return {
             ok: false,
             reason: `MODEL is "${configured}", but that model isn't loaded in LM Studio. ${loadedList} Load it with \`lms load ${configured}\`.`,
