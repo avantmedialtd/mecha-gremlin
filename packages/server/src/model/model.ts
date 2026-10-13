@@ -1,9 +1,8 @@
+import { type Result, err, ok } from "@mecha-gremlin/core";
 import type { Config } from "../config/config.ts";
 import { fetchModels, lmStudioKeyRejected, pickModel } from "./lmstudio.ts";
 
-export type ModelChoice =
-    | { ok: true; model: string; note?: string }
-    | { ok: false; reason: string };
+export type ModelChoice = Result<{ model: string; note?: string }, string>;
 
 /**
  * Decides which model to talk to. LM Studio is asked which model is loaded, so the app never
@@ -17,13 +16,13 @@ export const resolveModel = async (config: Config): Promise<ModelChoice> => {
             return models;
         }
 
-        return pickModel(models.payload, config.model);
+        return pickModel(models.value, config.model);
     }
 
     // loadConfig requires MODEL for every provider except lmstudio.
     return config.model === undefined
-        ? { ok: false, reason: `MODEL is required with MODEL_PROVIDER=${config.provider}.` }
-        : { ok: true, model: config.model };
+        ? err(`MODEL is required with MODEL_PROVIDER=${config.provider}.`)
+        : ok({ model: config.model });
 };
 
 /** The message for a rejected API key, with the provider's own fix where there is one. */

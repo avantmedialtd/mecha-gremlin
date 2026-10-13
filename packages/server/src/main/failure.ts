@@ -8,25 +8,25 @@ export const failure = (
 ): string => {
     switch (step.kind) {
         case "turn_failed": {
-            const { error, detail, status } = step.failure;
+            const { kind, detail, status } = step.error;
 
-            if (error === "auth") {
+            if (kind === "auth") {
                 return keyRejected(config, status ?? 401);
             }
 
-            if (error === "unreachable") {
+            if (kind === "unreachable") {
                 return `Can't reach ${config.baseUrl} (${detail}). Check MODEL_BASE_URL.`;
             }
 
             const http = status === undefined ? "" : `, HTTP ${status}`;
 
-            return `The turn failed (${error}${http}): ${detail}`;
+            return `The turn failed (${kind}${http}): ${detail}`;
         }
         case "turn_limit":
             return `The model didn't answer within ${MAX_TURNS} turns: it was still calling tools. Try a narrower question.`;
         case "empty":
             return "The model gave no answer: its turn had neither text nor tool calls. Try again, or rephrase the question.";
         case "history":
-            return `The conversation can't be continued (${step.detail}). The model sent something the openai SDK can't replay; try updating it.`;
+            return `The conversation can't be continued (${step.error}). The model sent something the openai SDK can't replay; try updating it.`;
     }
 };

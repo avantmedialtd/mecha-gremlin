@@ -5,7 +5,7 @@ describe("loadConfig", () => {
     test("defaults to a local LM Studio with nothing set", () => {
         expect(loadConfig({})).toEqual({
             ok: true,
-            config: {
+            value: {
                 provider: "lmstudio",
                 baseUrl: "http://127.0.0.1:1234/v1",
                 apiKey: "lm-studio",
@@ -18,14 +18,14 @@ describe("loadConfig", () => {
     test("blank values count as unset", () => {
         expect(loadConfig({ MODEL: "  ", MODEL_API_KEY: "" })).toMatchObject({
             ok: true,
-            config: { model: undefined, apiKey: "lm-studio" },
+            value: { model: undefined, apiKey: "lm-studio" },
         });
     });
 
     test("a trailing slash on the base URL is removed", () => {
         expect(loadConfig({ MODEL_BASE_URL: "http://studio.local:1234/v1/" })).toMatchObject({
             ok: true,
-            config: { baseUrl: "http://studio.local:1234/v1" },
+            value: { baseUrl: "http://studio.local:1234/v1" },
         });
     });
 
@@ -38,7 +38,7 @@ describe("loadConfig", () => {
             }),
         ).toMatchObject({
             ok: true,
-            config: {
+            value: {
                 model: "prism-ml/bonsai-27b",
                 apiKey: "sk-lm-secret",
                 reasoningEffort: "low",
@@ -51,7 +51,7 @@ describe("loadConfig", () => {
             loadConfig({ MODEL_PROVIDER: "openai", MODEL_API_KEY: "sk-test", MODEL: "gpt-test" }),
         ).toEqual({
             ok: true,
-            config: {
+            value: {
                 provider: "openai",
                 baseUrl: "https://api.openai.com/v1",
                 apiKey: "sk-test",
@@ -64,7 +64,7 @@ describe("loadConfig", () => {
     test("the openai provider needs MODEL_API_KEY and MODEL", () => {
         expect(loadConfig({ MODEL_PROVIDER: "openai" })).toEqual({
             ok: false,
-            problems: [
+            error: [
                 expect.stringContaining("MODEL_API_KEY is required"),
                 expect.stringContaining("MODEL is required"),
             ],
@@ -74,7 +74,7 @@ describe("loadConfig", () => {
     test("rejects an unknown provider", () => {
         expect(loadConfig({ MODEL_PROVIDER: "anthropic" })).toEqual({
             ok: false,
-            problems: [expect.stringContaining("MODEL_PROVIDER")],
+            error: [expect.stringContaining("MODEL_PROVIDER")],
         });
     });
 
@@ -83,7 +83,7 @@ describe("loadConfig", () => {
         (value) => {
             expect(loadConfig({ MODEL_BASE_URL: value })).toEqual({
                 ok: false,
-                problems: [expect.stringContaining("MODEL_BASE_URL")],
+                error: [expect.stringContaining("MODEL_BASE_URL")],
             });
         },
     );
@@ -91,21 +91,21 @@ describe("loadConfig", () => {
     test("explains that LM Studio's base URL ends in /v1", () => {
         expect(loadConfig({ MODEL_BASE_URL: "http://127.0.0.1:1234" })).toEqual({
             ok: false,
-            problems: [expect.stringContaining("ends in /v1")],
+            error: [expect.stringContaining("ends in /v1")],
         });
     });
 
     test("rejects an unknown reasoning effort", () => {
         expect(loadConfig({ MODEL_REASONING_EFFORT: "extreme" })).toEqual({
             ok: false,
-            problems: [expect.stringContaining("MODEL_REASONING_EFFORT")],
+            error: [expect.stringContaining("MODEL_REASONING_EFFORT")],
         });
     });
 
     test("reports every invalid variable at once", () => {
         expect(loadConfig({ MODEL_BASE_URL: "nope", MODEL_REASONING_EFFORT: "extreme" })).toEqual({
             ok: false,
-            problems: [
+            error: [
                 expect.stringContaining("MODEL_BASE_URL"),
                 expect.stringContaining("MODEL_REASONING_EFFORT"),
             ],

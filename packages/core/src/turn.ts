@@ -5,6 +5,7 @@ import type {
     ResponseStreamEvent,
     ResponseUsage,
 } from "openai/resources/responses/responses";
+import { type Err, type Result, err, ok } from "./result.ts";
 
 /** A Responses API request. `runTurn` always streams it, so `stream` is not part of it. */
 export type TurnRequest = Omit<ResponseCreateParamsStreaming, "stream">;
@@ -21,15 +22,20 @@ export type TurnErrorKind =
     | "aborted"
     | "fatal";
 
-export type TurnResult =
-    | { ok: true; text: string; response: Response; usage: ResponseUsage | undefined }
-    | { ok: false; error: TurnErrorKind; detail: string; status?: number };
+export interface TurnError {
+    kind: TurnErrorKind;
+    detail: string;
+    status?: number;
+}
+
+export type TurnResult = Result<
+    { text: string; response: Response; usage: ResponseUsage | undefined },
+    TurnError
+>;
 
 export interface TurnOptions {
     signal?: AbortSignal;
 }
-
-export type TurnFailure = Extract<TurnResult, { ok: false }>;
 
 /** Concatenates the `output_text` parts of every message item, in order. */
 const outputText = (response: Response): string => {
@@ -50,8 +56,8 @@ const outputText = (response: Response): string => {
     return text;
 };
 
-const aborted = (): TurnFailure => {
-    return { ok: false, error: "aborted", detail: "the turn was aborted" };
+const aborted = (): Err<TurnError> => {
+    return err({ kind: "aborted", detail: "the turn was aborted" });
 };
 
 const statusOf = (error: unknown): number | undefined => {
@@ -92,7 +98,7 @@ const describe = (error: unknown): string => {
  * Classifies a failure to start the turn. Uses the HTTP status and the error's class name
  * rather than `instanceof`, so it still works if the caller's `openai` is a different copy.
  */
-const classifyRequestError = (error: unknown, signal: AbortSignal | undefined): TurnFailure => {
+const classifyRequestError = (error: unknown, signal: AbortSignal | undefined): Err<TurnError> => {
     if (signal?.aborted || hasClassName(error, "APIUserAbortError")) {
         return aborted();
     }
@@ -109,24 +115,24 @@ const classifyRequestError = (error: unknown, signal: AbortSignal | undefined): 
                     ? "server_error"
                     : "bad_request";
 
-        return { ok: false, error: kind, status, detail: describe(error) };
+        return err({ kind, status, detail: describe(error) });
     }
 
     if (hasClassName(error, "APIConnectionTimeoutError")) {
-        return { ok: false, error: "timeout", detail: describe(error) };
+        return err({ kind: "timeout", detail: describe(error) });
     }
 
     if (hasClassName(error, "APIConnectionError")) {
-        return { ok: false, error: "unreachable", detail: describe(error) };
+        return err({ kind: "unreachable", detail: describe(error) });
     }
 
-    return { ok: false, error: "fatal", detail: describe(error) };
+    return err({ kind: "fatal", detail: describe(error) });
 };
 
 /**
  * Runs one model turn over the Responses API. The request is always streamed, and stored
  * only if the caller sets `store: true`. Model, HTTP and transport failures come back as
- * `{ ok: false }` values; this function does not throw for them.
+ * `err` values; this function does not throw for them.
  */
 export const runTurn = async (
     client: OpenAI,
@@ -150,34 +156,31 @@ export const runTurn = async (
         for await (const event of stream) {
             switch (event.type) {
                 case "response.completed":
-                    return {
-                        ok: true,
+                    return ok({
                         text: outputText(event.response),
                         response: event.response,
                         usage: event.response.usage,
-                    };
+                    });
                 case "response.incomplete": {
                     const reason = event.response.incomplete_details?.reason;
 
-                    return {
-                        ok: false,
-                        error: "incomplete",
+                    return err({
+                        kind: "incomplete",
                         detail: reason
                             ? `the response is incomplete: ${reason}`
                             : "the response is incomplete",
-                    };
+                    });
                 }
                 case "response.failed": {
                     const error = event.response.error;
 
-                    return {
-                        ok: false,
-                        error: "failed",
+                    return err({
+                        kind: "failed",
                         detail: error ? `${error.code}: ${error.message}` : "the response failed",
-                    };
+                    });
                 }
                 case "error":
-                    return { ok: false, error: "failed", detail: event.message };
+                    return err({ kind: "failed", detail: event.message });
             }
         }
     } catch (error) {
@@ -186,7 +189,7 @@ export const runTurn = async (
         }
 
         // The stream had started, so the endpoint was reachable: whatever broke it is a failed turn.
-        return { ok: false, error: "failed", detail: describe(error) };
+        return err({ kind: "failed", detail: describe(error) });
     }
 
     // The SDK ends iteration quietly when the request is aborted mid-stream.
@@ -194,5 +197,5 @@ export const runTurn = async (
         return aborted();
     }
 
-    return { ok: false, error: "failed", detail: "the stream ended without a terminal event" };
+    return err({ kind: "failed", detail: "the stream ended without a terminal event" });
 };

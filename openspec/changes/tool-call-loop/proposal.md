@@ -9,6 +9,7 @@ The hello proves that one model turn works, but an agent needs the loop the brie
   - **Classifying a turn.** `classify` reads a completed turn's output as tool calls, a final answer, or nothing. Any function call wins over text, and whitespace-only text counts as nothing.
   - **Validating calls.** `validateArgs` parses a call's JSON arguments and checks them against the tool's schema. It returns the typed arguments, or an error text the model can act on.
   - **History.** `toOutputItem` builds a call's `function_call_output` item. `toInput` turns the chat history (Responses items, kept as received) into the next request's input, returning a value instead of throwing.
+  - **Results.** `Result<T, E>`, built with `ok` and `err`. Every function that reports failures as values returns one, in `core` and the server, `runTurn` included.
 - **`server`:**
   - **A `read_file` tool**, defined with zod 4 and confined to the working directory. It refuses paths outside that directory (symlinks included), `.env` files, directories and binary files, and caps what it returns, with a note when it truncates.
   - **An agent loop**, in the server because "the caller orchestrates" (Brief, Layering). It is an async generator that yields each turn's result as the turn completes. It runs at most 8 turns and executes each turn's calls in order. Tool failures go back to the model as outputs, and every call gets exactly one output.
@@ -27,14 +28,16 @@ The hello proves that one model turn works, but an agent needs the loop the brie
 - `agent-loop`: the server's loop that alternates model turns and tool calls until the model answers, with its turn cap, call ordering and failure handling.
 - `read-file-tool`: the server's `read_file` tool: what it may read, its limits, and how it reports what it can't do.
 - `structured-log`: the server's logger: records with a level, a message and JSON fields, written to stdout, formatted by default and as JSON lines on request.
+- `result`: `core`'s `Result` type and its `ok` and `err` constructors, which every function that reports failures as values returns.
 
 ### Modified Capabilities
+- `model-turn`: `runTurn` returns a `Result`. The reply text, response and usage move under `value`, and a failure's kind, detail and status under `error`.
 - `model-hello`: the hello asks a question about a file through the agent loop instead of saying hi. It takes an optional file and question, and reports each tool call and each turn's usage.
 
 ## Impact
 
 - **Code:**
-  - `packages/core/src`: new tool-calling module(s) and exports; `runTurn` is unchanged.
+  - `packages/core/src`: new tool-calling and result modules and exports; `runTurn` behaves as before but returns a `Result`.
   - `packages/server/src`: new `read_file` tool and loop. `hello.ts` merges into `main.ts`, which reads its I/O from the process's globals instead of having it injected.
   - Tests for all of it, and the README.
 - **Dependencies:**

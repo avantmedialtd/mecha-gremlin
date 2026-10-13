@@ -53,7 +53,7 @@ The `core` package SHALL provide a `Tool<Args>` type made of a `name`, a `descri
 - **THEN** the result is `empty`
 
 ### Requirement: Validate a call's arguments
-`validateArgs(tool, raw)` SHALL resolve, without throwing, to either `{ ok: true, args }`, holding the schema's validated output, or `{ ok: false, error }`, holding a message written for the model. It SHALL:
+`validateArgs(tool, raw)` SHALL resolve, without throwing, to a `Result`: `ok(args)`, holding the schema's validated output, or `err(error)`, holding a message written for the model. It SHALL:
 1. treat empty or whitespace-only `raw` as `{}`;
 2. parse `raw` as JSON;
 3. require the parsed value to be a JSON object, not an array, `null`, string, number or boolean;
@@ -63,7 +63,7 @@ Every `error` SHALL name the tool, say what was wrong, and end with the tool's e
 
 #### Scenario: Valid arguments
 - **WHEN** `raw` is `{"path":"package.json"}` and the schema accepts it
-- **THEN** the result is `ok: true` with `args` equal to `{ path: "package.json" }`
+- **THEN** the result is `ok: true` with `value` equal to `{ path: "package.json" }`
 
 #### Scenario: Empty arguments mean an empty object
 - **WHEN** `raw` is "" or "  "
@@ -90,16 +90,16 @@ Every `error` SHALL name the tool, say what was wrong, and end with the tool's e
 - **THEN** `validateArgs` resolves with that promise's outcome
 
 ### Requirement: Build call outputs and the next request's input from the history
-A tool call's outcome SHALL be either a success, `{ ok: true, output }`, or a failure, `{ ok: false, error }`. `toOutputItem(callId, outcome)` SHALL return a `function_call_output` item with that `call_id`. Its `output` SHALL be the success's output, or `Error: ` followed by the failure's error.
+A tool call's outcome SHALL be a `Result` holding text either way: a success, `ok(output)`, or a failure, `err(error)`. `toOutputItem(callId, outcome)` SHALL return a `function_call_output` item with that `call_id`. Its `output` SHALL be the success's value, or `Error: ` followed by the failure's error.
 
-`toInput(history)` SHALL turn a history of Responses items, kept as received, into the input for the next request. That is every replayable item, in order, with SDK-only fields removed, as the `openai` SDK's `toResponseInputItems` does. It SHALL return `{ ok: true, input }`. When the history holds an item the SDK can't replay, it SHALL return `{ ok: false, detail }` naming the item's type, and SHALL NOT throw.
+`toInput(history)` SHALL turn a history of Responses items, kept as received, into the input for the next request. That is every replayable item, in order, with SDK-only fields removed, as the `openai` SDK's `toResponseInputItems` does. It SHALL return `ok(input)`. When the history holds an item the SDK can't replay, it SHALL return `err(message)` naming the item's type, and SHALL NOT throw.
 
 #### Scenario: Successful call
-- **WHEN** `toOutputItem("call_1", { ok: true, output: "file contents" })` is called
+- **WHEN** `toOutputItem("call_1", ok("file contents"))` is called
 - **THEN** it returns `{ type: "function_call_output", call_id: "call_1", output: "file contents" }`
 
 #### Scenario: Failed call
-- **WHEN** `toOutputItem("call_1", { ok: false, error: "no such file: x.txt" })` is called
+- **WHEN** `toOutputItem("call_1", err("no such file: x.txt"))` is called
 - **THEN** the item's `output` is "Error: no such file: x.txt"
 
 #### Scenario: History round trip
@@ -108,4 +108,4 @@ A tool call's outcome SHALL be either a success, `{ ok: true, output }`, or a fa
 
 #### Scenario: Unknown item type
 - **WHEN** the history holds an item of type `made_up`
-- **THEN** `toInput` returns `ok: false` with a detail naming `made_up`, and doesn't throw
+- **THEN** `toInput` returns `ok: false` with an error naming `made_up`, and doesn't throw

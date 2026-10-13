@@ -1,4 +1,5 @@
 import type { FunctionTool, ResponseOutputItem } from "openai/resources/responses/responses";
+import { type Err, type Result, err, ok } from "./result.ts";
 import type { StandardJSONSchemaV1, StandardSchemaV1 } from "./standard-schema.ts";
 
 export type ToolSchema<Args> = StandardSchemaV1<unknown, Args> &
@@ -12,7 +13,7 @@ export interface Tool<Args = unknown> {
 }
 
 /** A failure's error is shown to the model, so write it for the model to act on. */
-export type ToolOutcome = { ok: true; output: string } | { ok: false; error: string };
+export type ToolOutcome = Result<string, string>;
 
 export type ToolCall = Extract<ResponseOutputItem, { type: "function_call" }>;
 
@@ -20,8 +21,6 @@ export type Turn =
     | { kind: "calls"; calls: ToolCall[] }
     | { kind: "final"; text: string }
     | { kind: "empty" };
-
-export type ArgsResult<Args> = { ok: true; args: Args } | { ok: false; error: string };
 
 /**
  * Draft-07 is the dialect the `openai` SDK's own helpers request, and `$schema` constrains
@@ -86,11 +85,11 @@ const issuePath = (issue: StandardSchemaV1.Issue): string => {
 export const validateArgs = async <Args>(
     tool: Tool<Args>,
     raw: string,
-): Promise<ArgsResult<Args>> => {
-    const fail = (problem: string): ArgsResult<Args> => ({
-        ok: false,
-        error: `${problem}\nThe arguments must match this JSON Schema: ${JSON.stringify(toFunctionTool(tool).parameters)}`,
-    });
+): Promise<Result<Args, string>> => {
+    const fail = (problem: string): Err<string> =>
+        err(
+            `${problem}\nThe arguments must match this JSON Schema: ${JSON.stringify(toFunctionTool(tool).parameters)}`,
+        );
 
     // Some models send no arguments at all to a tool that takes none.
     let value: unknown = {};
@@ -113,7 +112,7 @@ export const validateArgs = async <Args>(
     const result = await tool.schema["~standard"].validate(value);
 
     if (result.issues === undefined) {
-        return { ok: true, args: result.value };
+        return ok(result.value);
     }
 
     const issues = result.issues.map((issue) => `- ${issuePath(issue)}: ${issue.message}`);

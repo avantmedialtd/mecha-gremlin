@@ -123,3 +123,10 @@
 ## 12. `main.ts` keeps only the program
 
 - [x] 12.1 Its helpers move beside it in `main/`: `args.ts` (`parseArgs` and the default file and questions), `fields.ts` (`parsed` and `turnFields`, for the log) and `failure.ts` (the message for a session that ends without an answer). `main.ts` keeps the developer prompt, `run` and the entry line; the hello tests still cover the helpers through it.
+
+## 13. One `Result` type
+
+- [x] 13.1 `packages/core/src/result.ts`: `Result<T, E>`, its halves `Ok<T>` and `Err<E>`, and the constructors `ok` and `err`, which return exactly `Ok<T>` and `Err<E>`. Exported from `core`, with a unit test.
+- [x] 13.2 `core` returns it from `validateArgs`, `toInput` and `runTurn`. `ToolOutcome` and `TurnResult` are defined with it; `runTurn`'s error becomes `TurnError`, `{ kind, detail, status? }`. `ArgsResult`, `InputResult` and `TurnFailure` are gone.
+- [x] 13.3 The server returns it from `loadConfig`, `fetchModels`, `pickModel`, `resolveModel`, `createSession` and `read_file`, and the steps for a failed turn or history carry the original error as `error`. `ConfigResult` and `ModelsResult` are gone, and `read_file`'s own `failure` helper gives way to `err`.
+- [x] 13.4 Tests assert the new shapes, and the specs follow: a new `result` capability, and a `model-turn` delta for `runTurn`'s result.

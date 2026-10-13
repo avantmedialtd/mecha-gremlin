@@ -27,17 +27,17 @@ const run = async (args: readonly string[]): Promise<number> => {
     const loaded = loadConfig(process.env);
 
     if (!loaded.ok) {
-        for (const problem of loaded.problems) {
+        for (const problem of loaded.error) {
             log.error(problem);
         }
 
         return 1;
     }
 
-    const { config } = loaded;
+    const config = loaded.value;
     const { file, question } = parseArgs(args);
 
-    const session = await createSession(config, {
+    const created = await createSession(config, {
         tools: [readFileTool(process.cwd())],
         history: [
             { role: "developer", content: INSTRUCTIONS },
@@ -45,9 +45,11 @@ const run = async (args: readonly string[]): Promise<number> => {
         ],
     });
 
-    if (!session.ok) {
-        return fail(session.reason);
+    if (!created.ok) {
+        return fail(created.error);
     }
+
+    const session = created.value;
 
     if (session.note) {
         log.info(session.note);
@@ -66,7 +68,7 @@ const run = async (args: readonly string[]): Promise<number> => {
                     log.info("tool call", { tool: call.name, arguments: parsed(call.arguments) });
 
                     if (outcome.ok) {
-                        const bytes = new TextEncoder().encode(outcome.output).byteLength;
+                        const bytes = new TextEncoder().encode(outcome.value).byteLength;
                         log.info("tool result", { tool: call.name, bytes });
                     } else {
                         log.warn("tool failed", { tool: call.name, error: outcome.error });

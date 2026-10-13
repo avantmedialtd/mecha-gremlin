@@ -3,6 +3,7 @@ import {
     toResponseInputItems,
 } from "openai/lib/responses/ResponseInputItems";
 import type { ResponseInputItem } from "openai/resources/responses/responses";
+import { type Result, err, ok } from "./result.ts";
 import type { ToolOutcome } from "./tools.ts";
 
 /**
@@ -12,8 +13,6 @@ import type { ToolOutcome } from "./tools.ts";
  */
 export type HistoryItem = ResponseInputItemLike;
 
-export type InputResult = { ok: true; input: ResponseInputItem[] } | { ok: false; detail: string };
-
 /** A call's output has no error flag in the Responses API, so a failure is marked in its text. */
 export const toOutputItem = (
     callId: string,
@@ -22,7 +21,7 @@ export const toOutputItem = (
     return {
         type: "function_call_output",
         call_id: callId,
-        output: outcome.ok ? outcome.output : `Error: ${outcome.error}`,
+        output: outcome.ok ? outcome.value : `Error: ${outcome.error}`,
     };
 };
 
@@ -30,10 +29,10 @@ export const toOutputItem = (
  * `toResponseInputItems` strips the fields the SDK adds, such as `parsed_arguments`, and throws on
  * item types it doesn't know.
  */
-export const toInput = (history: readonly HistoryItem[]): InputResult => {
+export const toInput = (history: readonly HistoryItem[]): Result<ResponseInputItem[], string> => {
     try {
-        return { ok: true, input: toResponseInputItems(history) };
+        return ok(toResponseInputItems(history));
     } catch (error) {
-        return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+        return err(error instanceof Error ? error.message : String(error));
     }
 };

@@ -51,20 +51,20 @@ const errorOf = (outcome: ToolOutcome): string => {
 
 describe("Read a UTF-8 text file under a root directory", () => {
     test("reads a file", async () => {
-        expect(await read("notes.txt")).toEqual({ ok: true, output: "hello" });
+        expect(await read("notes.txt")).toEqual({ ok: true, value: "hello" });
     });
 
     test("reads a nested file", async () => {
-        expect(await read("docs/guide.md")).toEqual({ ok: true, output: "# Guide\n" });
+        expect(await read("docs/guide.md")).toEqual({ ok: true, value: "# Guide\n" });
     });
 
     test("replaces invalid UTF-8 with U+FFFD", async () => {
         // "café!" in Latin-1: the lone 0xE9 isn't valid UTF-8.
-        expect(await read("latin1.txt")).toEqual({ ok: true, output: "caf�!" });
+        expect(await read("latin1.txt")).toEqual({ ok: true, value: "caf�!" });
     });
 
     test("reads an absolute path inside the root", async () => {
-        expect(await read(join(root, "notes.txt"))).toEqual({ ok: true, output: "hello" });
+        expect(await read(join(root, "notes.txt"))).toEqual({ ok: true, value: "hello" });
     });
 
     test("the model sees a closed schema", () => {
@@ -118,7 +118,7 @@ describe("Never read outside the root", () => {
     });
 
     test("a symbolic link pointing inside", async () => {
-        expect(await read("alias.txt")).toEqual({ ok: true, output: "hello" });
+        expect(await read("alias.txt")).toEqual({ ok: true, value: "hello" });
     });
 
     test("a name that only starts with two dots is inside", async () => {
@@ -153,7 +153,7 @@ describe("Refuse secrets, directories and binary files", () => {
     test("a NUL byte after the first 8 KiB doesn't make a file binary", async () => {
         expect(await read("late-nul.txt")).toEqual({
             ok: true,
-            output: `${"a".repeat(8 * 1024)}\0tail`,
+            value: `${"a".repeat(8 * 1024)}\0tail`,
         });
     });
 
@@ -168,17 +168,17 @@ describe("Refuse secrets, directories and binary files", () => {
 
 describe("Cap what it returns", () => {
     test("a small file is returned whole", async () => {
-        expect(await read("small.txt")).toEqual({ ok: true, output: "s".repeat(1000) });
+        expect(await read("small.txt")).toEqual({ ok: true, value: "s".repeat(1000) });
     });
 
     test("a file of exactly the limit is returned whole", async () => {
-        expect(await read("exact.txt")).toEqual({ ok: true, output: "e".repeat(READ_LIMIT) });
+        expect(await read("exact.txt")).toEqual({ ok: true, value: "e".repeat(READ_LIMIT) });
     });
 
     test("a large file is cut, with a note", async () => {
         expect(await read("big.txt")).toEqual({
             ok: true,
-            output: `${"b".repeat(32_768)}\n\n[truncated: showing the first 32768 of 40000 bytes]`,
+            value: `${"b".repeat(32_768)}\n\n[truncated: showing the first 32768 of 40000 bytes]`,
         });
     });
 
@@ -186,7 +186,7 @@ describe("Cap what it returns", () => {
         // Nothing but UTF-8 continuation bytes: no character starts anywhere before the limit.
         expect(await read("continuations.txt")).toEqual({
             ok: true,
-            output: "\n\n[truncated: showing the first 0 of 40000 bytes]",
+            value: "\n\n[truncated: showing the first 0 of 40000 bytes]",
         });
     });
 
@@ -195,7 +195,7 @@ describe("Cap what it returns", () => {
 
         expect(outcome).toEqual({
             ok: true,
-            output: `${"€".repeat(10_922)}\n\n[truncated: showing the first 32766 of 60000 bytes]`,
+            value: `${"€".repeat(10_922)}\n\n[truncated: showing the first 32766 of 60000 bytes]`,
         });
     });
 });

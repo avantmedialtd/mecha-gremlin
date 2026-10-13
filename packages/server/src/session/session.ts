@@ -1,10 +1,13 @@
 import {
     type HistoryItem,
+    type Result,
     type ToolCall,
     type ToolOutcome,
     type Turn,
-    type TurnFailure,
+    type TurnError,
     classify,
+    err,
+    ok,
     runTurn,
     toFunctionTool,
     toInput,
@@ -44,8 +47,8 @@ export type SessionStep =
     | { kind: "calls"; turn: TurnStats; calls: CallResult[] }
     | (Exclude<Turn, { kind: "calls" }> & { turn: TurnStats })
     | { kind: "turn_limit"; turn: TurnStats }
-    | { kind: "turn_failed"; failure: TurnFailure }
-    | { kind: "history"; detail: string };
+    | { kind: "turn_failed"; error: TurnError }
+    | { kind: "history"; error: string };
 
 export interface Session {
     model: string;
@@ -56,7 +59,7 @@ export interface Session {
     history: readonly HistoryItem[];
 }
 
-const NOT_RUN: ToolOutcome = { ok: false, error: "not run: the turn limit was reached" };
+const NOT_RUN: ToolOutcome = err("not run: the turn limit was reached");
 
 const runCall = async (
     call: ToolCall,
@@ -67,10 +70,7 @@ const runCall = async (
     if (handler === undefined) {
         const available = [...handlers.keys()].join(", ");
 
-        return {
-            ok: false,
-            error: `unknown tool ${JSON.stringify(call.name)}; available tools: ${available}`,
-        };
+        return err(`unknown tool ${JSON.stringify(call.name)}; available tools: ${available}`);
     }
 
     try {
@@ -78,7 +78,7 @@ const runCall = async (
     } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
 
-        return { ok: false, error: `${call.name} failed: ${reason}` };
+        return err(`${call.name} failed: ${reason}`);
     }
 };
 
@@ -99,7 +99,7 @@ const run = async function* (
         const input = toInput(history);
 
         if (!input.ok) {
-            yield { kind: "history", detail: input.detail };
+            yield { kind: "history", error: input.error };
             return;
         }
 
@@ -107,21 +107,21 @@ const run = async function* (
         // An unset `reasoning` drops out of the JSON body.
         const result = await runTurn(client, {
             model,
-            input: input.input,
+            input: input.value,
             tools: functionTools,
             reasoning,
         });
 
         if (!result.ok) {
-            yield { kind: "turn_failed", failure: result };
+            yield { kind: "turn_failed", error: result.error };
             return;
         }
 
-        const { output } = result.response;
-        history.push(...output);
-        const turn = { number, usage: result.usage, seconds: (performance.now() - started) / 1000 };
+        const { response, usage } = result.value;
+        history.push(...response.output);
+        const turn = { number, usage, seconds: (performance.now() - started) / 1000 };
 
-        const next = classify(output);
+        const next = classify(response.output);
 
         if (next.kind !== "calls") {
             yield { ...next, turn };
@@ -154,16 +154,17 @@ const run = async function* (
 export const createSession = async (
     config: Config,
     options: SessionOptions,
-): Promise<({ ok: true } & Session) | { ok: false; reason: string }> => {
+): Promise<Result<Session, string>> => {
     const choice = await resolveModel(config);
 
     if (!choice.ok) {
         return choice;
     }
 
+    const { model, note } = choice.value;
     const client = new OpenAI({ baseURL: config.baseUrl, apiKey: config.apiKey, maxRetries: 0 });
     const history = [...options.history];
-    const steps = run(client, config, choice.model, options, history);
+    const steps = run(client, config, model, options, history);
 
-    return { ok: true, model: choice.model, note: choice.note, steps, history };
+    return ok({ model, note, steps, history });
 };

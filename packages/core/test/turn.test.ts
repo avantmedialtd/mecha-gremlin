@@ -92,9 +92,11 @@ describe("runTurn", () => {
 
         expect(result).toMatchObject({
             ok: true,
-            text: "Hello there!",
-            usage: { output_tokens: 12 },
-            response: { id: "resp_1" },
+            value: {
+                text: "Hello there!",
+                usage: { output_tokens: 12 },
+                response: { id: "resp_1" },
+            },
         });
     });
 
@@ -114,7 +116,7 @@ describe("runTurn", () => {
 
         const result = await runTurn(client, request);
 
-        expect(result).toMatchObject({ ok: true, text: "Hi!" });
+        expect(result).toMatchObject({ ok: true, value: { text: "Hi!" } });
     });
 
     test("the request is streamed and not stored by default", async () => {
@@ -153,7 +155,7 @@ describe("runTurn", () => {
 
         const result = await runTurn(client, request);
 
-        expect(result).toMatchObject({ ok: false, error: "auth", status: 401 });
+        expect(result).toMatchObject({ ok: false, error: { kind: "auth", status: 401 } });
     });
 
     test("HTTP 500 is a server error", async () => {
@@ -161,7 +163,7 @@ describe("runTurn", () => {
 
         const result = await runTurn(client, request);
 
-        expect(result).toMatchObject({ ok: false, error: "server_error", status: 500 });
+        expect(result).toMatchObject({ ok: false, error: { kind: "server_error", status: 500 } });
     });
 
     test("a connection failure is unreachable", async () => {
@@ -171,7 +173,7 @@ describe("runTurn", () => {
 
         const result = await runTurn(client, request);
 
-        expect(result).toMatchObject({ ok: false, error: "unreachable" });
+        expect(result).toMatchObject({ ok: false, error: { kind: "unreachable" } });
     });
 
     test("response.incomplete is incomplete, with the reason", async () => {
@@ -189,8 +191,7 @@ describe("runTurn", () => {
 
         expect(result).toMatchObject({
             ok: false,
-            error: "incomplete",
-            detail: expect.stringContaining("max_output_tokens"),
+            error: { kind: "incomplete", detail: expect.stringContaining("max_output_tokens") },
         });
     });
 
@@ -209,8 +210,7 @@ describe("runTurn", () => {
 
         expect(result).toMatchObject({
             ok: false,
-            error: "failed",
-            detail: expect.stringContaining("model crashed"),
+            error: { kind: "failed", detail: expect.stringContaining("model crashed") },
         });
     });
 
@@ -228,8 +228,7 @@ describe("runTurn", () => {
 
         expect(result).toMatchObject({
             ok: false,
-            error: "failed",
-            detail: expect.stringContaining("Failed to parse tool call"),
+            error: { kind: "failed", detail: expect.stringContaining("Failed to parse tool call") },
         });
     });
 
@@ -240,7 +239,7 @@ describe("runTurn", () => {
 
         const result = await runTurn(client, request);
 
-        expect(result).toMatchObject({ ok: false, error: "failed" });
+        expect(result).toMatchObject({ ok: false, error: { kind: "failed" } });
     });
 
     test("aborting before the request starts is aborted", async () => {
@@ -250,7 +249,7 @@ describe("runTurn", () => {
 
         const result = await runTurn(client, request, { signal: controller.signal });
 
-        expect(result).toMatchObject({ ok: false, error: "aborted" });
+        expect(result).toMatchObject({ ok: false, error: { kind: "aborted" } });
     });
 
     test("aborting mid-stream is aborted", async () => {
@@ -277,7 +276,7 @@ describe("runTurn", () => {
         const pending = runTurn(client, request, { signal: controller.signal });
         setTimeout(() => controller.abort(), 20);
 
-        expect(await pending).toMatchObject({ ok: false, error: "aborted" });
+        expect(await pending).toMatchObject({ ok: false, error: { kind: "aborted" } });
     });
 });
 

@@ -6,7 +6,7 @@ The server SHALL provide an async `createSession(config, options)`. It takes the
 - build its own `openai` client from the configuration's base URL and API key;
 - send the configured reasoning effort, when there is one, with every turn.
 
-When no model can be chosen, it SHALL resolve to `{ ok: false, reason }`, and no turn is sent. Otherwise it SHALL resolve to `{ ok: true }` with:
+When no model can be chosen, it SHALL resolve to `err(reason)`, and no turn is sent. Otherwise it SHALL resolve to `ok(session)`, where the session has:
 - `model`: the chosen model;
 - `note`: when the model was picked out of several, which one, and how to pick another;
 - `steps`: an async generator of the session's steps;
@@ -22,7 +22,7 @@ When no model can be chosen, it SHALL resolve to `{ ok: false, reason }`, and no
 
 #### Scenario: No model to use
 - **WHEN** the provider is `lmstudio` and LM Studio has no model loaded
-- **THEN** `createSession` resolves to `ok: false` with a reason that suggests `lms load`, and no turn is sent
+- **THEN** `createSession` resolves to `ok: false` with an error that suggests `lms load`, and no turn is sent
 
 #### Scenario: The client comes from the configuration
 - **WHEN** a session runs with a configuration whose base URL is `http://model.test/v1` and whose key is `test-key`
@@ -96,13 +96,13 @@ The session SHALL send at most 8 turns unless the caller sets another limit. Whe
 
 ### Requirement: End with a step, not a throw
 The session SHALL NOT throw for model or tool failures. It SHALL yield a last step, and end, when:
-- a turn fails: a `turn_failed` step carrying `runTurn`'s failure as it is, with the error kind, detail and HTTP status;
+- a turn fails: a `turn_failed` step carrying `runTurn`'s error as it is: its kind, detail and HTTP status;
 - a turn's output is `empty`: `classify`'s `empty` result;
-- the history can't be turned into input: a `history` step with `toInput`'s detail.
+- the history can't be turned into input: a `history` step carrying `toInput`'s error.
 
 #### Scenario: A later turn fails
 - **WHEN** the first turn returns a call and the second turn fails with HTTP 500
-- **THEN** the last step is `turn_failed`, its failure has the error kind `server_error` and status 500, and the session's history holds the first turn's items and the call's output
+- **THEN** the last step is `turn_failed`, its error has the kind `server_error` and status 500, and the session's history holds the first turn's items and the call's output
 
 #### Scenario: No answer
 - **WHEN** a turn's output holds only a `reasoning` item

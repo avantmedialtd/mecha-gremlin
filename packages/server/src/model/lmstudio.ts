@@ -1,8 +1,7 @@
 // LM Studio specifics: finding out which model is loaded, through LM Studio's native REST API.
+import { type Result, err, ok } from "@mecha-gremlin/core";
 import type { Config } from "../config/config.ts";
 import type { ModelChoice } from "./model.ts";
-
-export type ModelsResult = { ok: true; payload: unknown } | { ok: false; reason: string };
 
 interface LoadedModel {
     key: string;
@@ -19,7 +18,7 @@ export const lmStudioKeyRejected = (status: number): string => {
  * loaded makes LM Studio JIT-load it with its default context, which this app never relies on
  * (Brief 4.9).
  */
-export const fetchModels = async (config: Config): Promise<ModelsResult> => {
+export const fetchModels = async (config: Config): Promise<Result<unknown, string>> => {
     const url = `${new URL(config.baseUrl).origin}/api/v1/models`;
 
     let response: Response;
@@ -32,27 +31,25 @@ export const fetchModels = async (config: Config): Promise<ModelsResult> => {
     } catch (error) {
         const why = error instanceof Error ? error.message : String(error);
 
-        return {
-            ok: false,
-            reason: `Can't reach LM Studio at ${config.baseUrl} (${why}). Is its server running? Start it with \`lms server start\`, or set MODEL_BASE_URL.`,
-        };
+        return err(
+            `Can't reach LM Studio at ${config.baseUrl} (${why}). Is its server running? Start it with \`lms server start\`, or set MODEL_BASE_URL.`,
+        );
     }
 
     if (response.status === 401 || response.status === 403) {
-        return { ok: false, reason: lmStudioKeyRejected(response.status) };
+        return err(lmStudioKeyRejected(response.status));
     }
 
     if (!response.ok) {
-        return { ok: false, reason: `LM Studio answered HTTP ${response.status} for ${url}.` };
+        return err(`LM Studio answered HTTP ${response.status} for ${url}.`);
     }
 
     try {
-        return { ok: true, payload: await response.json() };
+        return ok(await response.json());
     } catch {
-        return {
-            ok: false,
-            reason: `${url} didn't return JSON. Is ${config.baseUrl} an LM Studio server, version 0.4 or later?`,
-        };
+        return err(
+            `${url} didn't return JSON. Is ${config.baseUrl} an LM Studio server, version 0.4 or later?`,
+        );
     }
 };
 
@@ -104,10 +101,9 @@ export const pickModel = (payload: unknown, configured?: string): ModelChoice =>
     const loaded = loadedModels(payload);
 
     if (loaded === undefined) {
-        return {
-            ok: false,
-            reason: "LM Studio's /api/v1/models response has an unexpected shape. Is this LM Studio 0.4 or later?",
-        };
+        return err(
+            "LM Studio's /api/v1/models response has an unexpected shape. Is this LM Studio 0.4 or later?",
+        );
     }
 
     const instanceIds = loaded.flatMap((model) => model.instanceIds);
@@ -118,34 +114,31 @@ export const pickModel = (payload: unknown, configured?: string): ModelChoice =>
                 (model) => model.key === configured || model.instanceIds.includes(configured),
             )
         ) {
-            return { ok: true, model: configured };
+            return ok({ model: configured });
         }
 
         const loadedList =
             instanceIds.length > 0 ? `Loaded: ${instanceIds.join(", ")}.` : "No model is loaded.";
 
-        return {
-            ok: false,
-            reason: `MODEL is "${configured}", but that model isn't loaded in LM Studio. ${loadedList} Load it with \`lms load ${configured}\`.`,
-        };
+        return err(
+            `MODEL is "${configured}", but that model isn't loaded in LM Studio. ${loadedList} Load it with \`lms load ${configured}\`.`,
+        );
     }
 
     const [first] = instanceIds;
 
     if (first === undefined) {
-        return {
-            ok: false,
-            reason: "No model is loaded in LM Studio. Load one with `lms load <model>` or in the LM Studio app; models are never loaded on demand.",
-        };
+        return err(
+            "No model is loaded in LM Studio. Load one with `lms load <model>` or in the LM Studio app; models are never loaded on demand.",
+        );
     }
 
     if (instanceIds.length > 1) {
-        return {
-            ok: true,
+        return ok({
             model: first,
             note: `Using ${first}, the first of ${instanceIds.length} loaded models (${instanceIds.join(", ")}). Set MODEL to choose another.`,
-        };
+        });
     }
 
-    return { ok: true, model: first };
+    return ok({ model: first });
 };

@@ -6,7 +6,8 @@ import type {
 } from "openai/resources/responses/responses";
 import { describe, expect, test } from "vitest";
 import {
-    type ArgsResult,
+    type Err,
+    type Result,
     type StandardSchemaV1,
     type Tool,
     classify,
@@ -60,10 +61,10 @@ const fakeTool = (validate: Validate = (value) => ({ value: value as Args })) =>
     return { tool, validated, targets };
 };
 
-const errorOf = (result: ArgsResult<Args>): string => {
+const errorOf = (result: Result<Args, string>): string => {
     expect(result.ok).toBe(false);
 
-    return (result as Extract<ArgsResult<Args>, { ok: false }>).error;
+    return (result as Err<string>).error;
 };
 
 const message = (...texts: string[]): ResponseOutputMessage => {
@@ -188,7 +189,7 @@ describe("validateArgs", () => {
 
         expect(await validateArgs(tool, '{"path":"package.json"}')).toEqual({
             ok: true,
-            args: { path: "package.json" },
+            value: { path: "package.json" },
         });
         expect(validated).toEqual([{ path: "package.json" }]);
     });
@@ -196,7 +197,7 @@ describe("validateArgs", () => {
     test.each(["", "  \n"])("empty arguments %j mean an empty object", async (raw) => {
         const { tool, validated } = fakeTool();
 
-        expect(await validateArgs(tool, raw)).toEqual({ ok: true, args: {} });
+        expect(await validateArgs(tool, raw)).toEqual({ ok: true, value: {} });
         expect(validated).toEqual([{}]);
     });
 
@@ -263,7 +264,7 @@ describe("validateArgs", () => {
 
         expect(await validateArgs(accepting.tool, '{"path":"a"}')).toEqual({
             ok: true,
-            args: { path: "a" },
+            value: { path: "a" },
         });
 
         const rejecting = fakeTool(async () => ({ issues: [{ message: "Nope", path: ["path"] }] }));

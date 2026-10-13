@@ -1,9 +1,9 @@
 import { describe, expect, test } from "vitest";
-import { type HistoryItem, toInput, toOutputItem } from "../src/index.ts";
+import { type HistoryItem, err, ok, toInput, toOutputItem } from "../src/index.ts";
 
 describe("toOutputItem", () => {
     test("a successful call's output is its text", () => {
-        expect(toOutputItem("call_1", { ok: true, output: "file contents" })).toEqual({
+        expect(toOutputItem("call_1", ok("file contents"))).toEqual({
             type: "function_call_output",
             call_id: "call_1",
             output: "file contents",
@@ -11,7 +11,7 @@ describe("toOutputItem", () => {
     });
 
     test("a failed call's output is its error, marked as one", () => {
-        expect(toOutputItem("call_1", { ok: false, error: "no such file: x.txt" })).toEqual({
+        expect(toOutputItem("call_1", err("no such file: x.txt"))).toEqual({
             type: "function_call_output",
             call_id: "call_1",
             output: "Error: no such file: x.txt",
@@ -54,7 +54,7 @@ describe("toInput", () => {
 
         expect(toInput([developer, user, reasoning, message, call, output])).toEqual({
             ok: true,
-            input: [developer, user, reasoning, message, callFields, output],
+            value: [developer, user, reasoning, message, callFields, output],
         });
     });
 
@@ -63,7 +63,7 @@ describe("toInput", () => {
 
         expect(toInput([user, unknown])).toEqual({
             ok: false,
-            detail: "Unsupported response item type: made_up",
+            error: "Unsupported response item type: made_up",
         });
     });
 });

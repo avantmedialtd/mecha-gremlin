@@ -18,7 +18,7 @@ export const defineTool = <Args>(
         async invoke(rawArgs) {
             const validated = await validateArgs(tool, rawArgs);
 
-            return validated.ok ? run(validated.args) : { ok: false, error: validated.error };
+            return validated.ok ? run(validated.value) : validated;
         },
     };
 };

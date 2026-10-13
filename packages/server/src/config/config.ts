@@ -1,3 +1,4 @@
+import { type Result, err, ok } from "@mecha-gremlin/core";
 import type { ReasoningEffort } from "openai/resources/shared";
 
 type Effort = Exclude<ReasoningEffort, null>;
@@ -38,8 +39,6 @@ export interface Config {
     reasoningEffort: Effort | undefined;
 }
 
-export type ConfigResult = { ok: true; config: Config } | { ok: false; problems: string[] };
-
 export type Env = Record<string, string | undefined>;
 
 /** A set variable's trimmed value; unset and blank are both undefined. */
@@ -77,16 +76,13 @@ const isEffort = (value: string): value is Effort => {
 };
 
 /** Reads and validates the server's settings. Pure: it touches nothing but `env`. */
-export const loadConfig = (env: Env): ConfigResult => {
+export const loadConfig = (env: Env): Result<Config, string[]> => {
     const rawProvider = read(env, "MODEL_PROVIDER") ?? "lmstudio";
 
     if (!isProvider(rawProvider)) {
-        return {
-            ok: false,
-            problems: [
-                `MODEL_PROVIDER must be one of ${PROVIDERS.join(", ")}; got "${rawProvider}".`,
-            ],
-        };
+        return err([
+            `MODEL_PROVIDER must be one of ${PROVIDERS.join(", ")}; got "${rawProvider}".`,
+        ]);
     }
 
     const provider = rawProvider;
@@ -129,17 +125,14 @@ export const loadConfig = (env: Env): ConfigResult => {
     }
 
     if (problems.length > 0 || baseUrl === undefined || apiKey === undefined) {
-        return { ok: false, problems };
+        return err(problems);
     }
 
-    return {
-        ok: true,
-        config: {
-            provider,
-            baseUrl,
-            apiKey,
-            model,
-            reasoningEffort: rawEffort !== undefined && isEffort(rawEffort) ? rawEffort : undefined,
-        },
-    };
+    return ok({
+        provider,
+        baseUrl,
+        apiKey,
+        model,
+        reasoningEffort: rawEffort !== undefined && isEffort(rawEffort) ? rawEffort : undefined,
+    });
 };

@@ -1,7 +1,7 @@
 import { createReadStream } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
-import type { ToolOutcome } from "@mecha-gremlin/core";
+import { type ToolOutcome, err, ok } from "@mecha-gremlin/core";
 import { z } from "zod";
 import { type ToolHandler, defineTool } from "./tool-handler.ts";
 
@@ -56,20 +56,15 @@ const decode = (bytes: Uint8Array): string => {
     return new TextDecoder().decode(bytes);
 };
 
-const failure = (error: string): ToolOutcome => {
-    return { ok: false, error };
-};
-
 const errorCode = (error: unknown): unknown => {
     return typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
 };
 
 const readFile = async (root: string, path: string): Promise<ToolOutcome> => {
     const name = JSON.stringify(path);
-    const outside = (): ToolOutcome =>
-        failure(`${name} is outside the directory read_file may read.`);
+    const outside = (): ToolOutcome => err(`${name} is outside the directory read_file may read.`);
     const secret = (): ToolOutcome =>
-        failure(`${name} is an environment file. read_file doesn't read those: they hold secrets.`);
+        err(`${name} is an environment file. read_file doesn't read those: they hold secrets.`);
 
     // A path that's outside lexically is refused without touching the disk at all.
     const target = resolve(root, path);
@@ -97,31 +92,29 @@ const readFile = async (root: string, path: string): Promise<ToolOutcome> => {
         const info = await stat(real);
 
         if (info.isDirectory()) {
-            return failure(`${name} is a directory.`);
+            return err(`${name} is a directory.`);
         }
 
         const bytes = await readHead(real, READ_LIMIT + 1);
 
         if (bytes.subarray(0, BINARY_PROBE).includes(0)) {
-            return failure(`${name} is a binary file.`);
+            return err(`${name} is a binary file.`);
         }
 
         if (bytes.length <= READ_LIMIT) {
-            return { ok: true, output: decode(bytes) };
+            return ok(decode(bytes));
         }
 
         const cut = characterBoundary(bytes, READ_LIMIT);
         const note = `[truncated: showing the first ${cut} of ${info.size} bytes]`;
 
-        return { ok: true, output: `${decode(bytes.subarray(0, cut))}\n\n${note}` };
+        return ok(`${decode(bytes.subarray(0, cut))}\n\n${note}`);
     } catch (error) {
         if (errorCode(error) === "ENOENT") {
-            return failure(`No such file: ${name}.`);
+            return err(`No such file: ${name}.`);
         }
 
-        return failure(
-            `Can't read ${name}: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        return err(`Can't read ${name}: ${error instanceof Error ? error.message : String(error)}`);
     }
 };
 

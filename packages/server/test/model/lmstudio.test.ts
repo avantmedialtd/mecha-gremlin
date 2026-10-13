@@ -34,7 +34,7 @@ describe("pickModel", () => {
             { key: "prism-ml/bonsai-27b", instances: ["prism-ml/bonsai-27b"] },
         );
 
-        expect(pickModel(payload)).toEqual({ ok: true, model: "prism-ml/bonsai-27b" });
+        expect(pickModel(payload)).toEqual({ ok: true, value: { model: "prism-ml/bonsai-27b" } });
     });
 
     test("uses the first of several and says so", () => {
@@ -46,25 +46,24 @@ describe("pickModel", () => {
 
         expect(choice).toMatchObject({
             ok: true,
-            model: "a",
-            note: expect.stringContaining("first of 2"),
+            value: { model: "a", note: expect.stringContaining("first of 2") },
         });
-        expect(choice).toMatchObject({ note: expect.stringContaining("Set MODEL") });
+        expect(choice).toMatchObject({ value: { note: expect.stringContaining("Set MODEL") } });
     });
 
     test("accepts a configured instance id or model key that is loaded", () => {
         const payload = modelsPayload({ key: "qwen3", instances: ["qwen3", "qwen3:2"] });
 
-        expect(pickModel(payload, "qwen3:2")).toEqual({ ok: true, model: "qwen3:2" });
-        expect(pickModel(payload, "qwen3")).toEqual({ ok: true, model: "qwen3" });
+        expect(pickModel(payload, "qwen3:2")).toEqual({ ok: true, value: { model: "qwen3:2" } });
+        expect(pickModel(payload, "qwen3")).toEqual({ ok: true, value: { model: "qwen3" } });
     });
 
     test("rejects a configured model that is not loaded, listing what is", () => {
         const payload = modelsPayload({ key: "a", instances: ["a"] }, { key: "b" });
         const choice = pickModel(payload, "b");
 
-        expect(choice).toMatchObject({ ok: false, reason: expect.stringContaining("Loaded: a.") });
-        expect(choice).toMatchObject({ reason: expect.stringContaining("lms load b") });
+        expect(choice).toMatchObject({ ok: false, error: expect.stringContaining("Loaded: a.") });
+        expect(choice).toMatchObject({ error: expect.stringContaining("lms load b") });
     });
 
     test("fails when no model is loaded", () => {
@@ -72,7 +71,7 @@ describe("pickModel", () => {
 
         expect(choice).toMatchObject({
             ok: false,
-            reason: expect.stringContaining("lms load <model>"),
+            error: expect.stringContaining("lms load <model>"),
         });
     });
 
@@ -86,7 +85,7 @@ describe("pickModel", () => {
 
         expect(choice).toMatchObject({
             ok: false,
-            reason: expect.stringContaining("No model is loaded"),
+            error: expect.stringContaining("No model is loaded"),
         });
     });
 
@@ -100,7 +99,7 @@ describe("pickModel", () => {
     ])("reports an unexpected payload shape: %j", (payload: unknown) => {
         expect(pickModel(payload)).toMatchObject({
             ok: false,
-            reason: expect.stringContaining("unexpected shape"),
+            error: expect.stringContaining("unexpected shape"),
         });
     });
 });
@@ -139,9 +138,9 @@ describe("fetchModels", () => {
 
         expect(result).toMatchObject({
             ok: false,
-            reason: expect.stringContaining("http://lmstudio.test:1234"),
+            error: expect.stringContaining("http://lmstudio.test:1234"),
         });
-        expect(result).toMatchObject({ reason: expect.stringContaining("lms server start") });
+        expect(result).toMatchObject({ error: expect.stringContaining("lms server start") });
     });
 
     test.each([401, 403])("explains a rejected token (HTTP %d)", async (status) => {
@@ -149,7 +148,7 @@ describe("fetchModels", () => {
 
         expect(result).toMatchObject({
             ok: false,
-            reason: expect.stringContaining("MODEL_API_KEY"),
+            error: expect.stringContaining("MODEL_API_KEY"),
         });
     });
 
@@ -160,7 +159,7 @@ describe("fetchModels", () => {
         const html = await fetchModelsWith(async () => new Response("<html>", { status: 200 }));
         expect(html).toMatchObject({
             ok: false,
-            reason: expect.stringContaining("didn't return JSON"),
+            error: expect.stringContaining("didn't return JSON"),
         });
     });
 });

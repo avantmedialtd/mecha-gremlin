@@ -49,7 +49,7 @@ The brief already sketches the rest of the loop:
   - every item of each turn's `response.output`, in order: reasoning, message and calls alike, as the SDK's README says;
   - one `function_call_output` per call.
 - **`toInput(history)`** wraps the SDK's `toResponseInputItems`, which the SDK's README recommends for manually managed history. It removes SDK-only fields such as `parsed_arguments` and `created_by`.
-  - The SDK throws `TypeError` on an item type it doesn't know, so `toInput` returns `{ ok: false, detail }` instead, keeping `core`'s errors-as-values contract.
+  - The SDK throws `TypeError` on an item type it doesn't know, so `toInput` returns `err(message)` instead, keeping `core`'s errors-as-values contract.
   - It is imported from `openai/lib/responses/ResponseInputItems`, which the SDK exports under `./lib/*`.
 - **Why not our own message model:** it would mean translation code, and it would lose reasoning content, encrypted reasoning and item IDs. C1 and C11 already chose verbatim items, stored one row per item later.
 - **Alternatives:**
@@ -87,7 +87,7 @@ The brief already sketches the rest of the loop:
   2. `JSON.parse`.
   3. The value must be a plain object: not an array, `null` or a primitive.
   4. `~standard.validate`, which is awaited because Standard Schema allows async validators.
-- **Result:** `{ ok: true, args }` with the schema's output type, or `{ ok: false, error }`.
+- **Result:** `ok(args)` with the schema's output type, or `err(error)`.
 - **`error` is written for the model,** following Brief 4.5: "Output item with the validation error and the expected schema". It names the tool and says what was wrong: invalid JSON with the parser's message, not an object, or one line per schema issue as `path: message`. It ends with the tool's expected JSON Schema, so the model can correct itself on the next turn.
 
 **5. The loop lives in the server, as a session.**
@@ -96,7 +96,7 @@ The brief already sketches the rest of the loop:
   - it builds the `openai` client from the base URL and key;
   - it takes the reasoning effort from the config.
 
-  The caller passes the config and never sees a client or a model lookup. Choosing the model can fail before any turn, for example when LM Studio has nothing loaded, so `createSession` is async. It resolves to `{ ok: false, reason }`, or to `{ ok: true }` with:
+  The caller passes the config and never sees a client or a model lookup. Choosing the model can fail before any turn, for example when LM Studio has nothing loaded, so `createSession` is async. It resolves to `err(reason)`, or to `ok(session)`, where the session has:
   - `model`: the chosen model;
   - `note`: set when the model was picked out of several;
   - `steps`: an async generator that yields one step per model turn, as the turn completes and before the next one starts;
@@ -104,14 +104,14 @@ The brief already sketches the rest of the loop:
 - **The steps are `core`'s results, as they are,** plus what only the session knows:
   - `calls`: the turn's calls, each with its outcome, after they ran;
   - `final` or `empty`: `classify`'s result. It is the last step;
-  - `turn_failed`: `runTurn`'s failure, whole, so the hello keeps its provider-specific messages. It is the last step;
+  - `turn_failed`: `runTurn`'s error, whole, so the hello keeps its provider-specific messages. It is the last step;
   - `turn_limit`: the session's own. It is the last step;
-  - `history`: `toInput`'s detail, when the history can't be replayed. It is the last step.
+  - `history`: `toInput`'s error, when the history can't be replayed. It is the last step.
 
   A step for a turn the model completed carries the turn's number, usage and seconds; the session times turns with `performance.now()`. Steps don't carry the history. The session is paused while the caller handles a step, so `session.history` at that moment is the history as of that step. A future caller can persist a session turn by turn from it, a stopped one included.
 - **Why a generator:** the caller sees each turn as it completes, and acts on it between turns. That's the shape a later step needs: one that asks the user for input and takes the reply back before the session goes on. It isn't built yet. The reply could come back through the generator's `next(reply)`, or through a function on the step, which keeps `for await` working.
 - **Tools carry their handlers.** The server pairs each `Tool<Args>` with `run(args) => Promise<ToolOutcome>` through a small helper, which validates and then runs. The arguments stay typed from the zod schema to the handler, while the loop holds a plain list. `core` never sees handlers.
-- **Outcomes, not strings.** A `ToolOutcome` is `{ ok: true, output }` or `{ ok: false, error }`. `core`'s `toOutputItem(callId, outcome)` (Brief 4.3) renders a failure as `Error: <error>`, so that convention lives in one place. The loop also knows whether a call succeeded, for progress, without parsing its text.
+- **Outcomes, not strings.** A `ToolOutcome` is a `Result` holding text: `ok(output)` or `err(error)`. `core`'s `toOutputItem(callId, outcome)` (Brief 4.3) renders a failure as `Error: <error>`, so that convention lives in one place. The loop also knows whether a call succeeded, for progress, without parsing its text.
 - **Each turn:**
   1. Build the input with `toInput(history)`.
   2. Run `runTurn({ model, input, tools, reasoning })`.
@@ -188,6 +188,12 @@ The brief already sketches the rest of the loop:
 - **Formatted by default:** a line per record (`HH:MM:SS LEVEL message key=value …`). A value is bare when it can't be misread and JSON otherwise. A multi-line string, such as an answer or a validation error, goes in an indented block under the line.
 - **`LOG_FORMAT=json`** writes one JSON object per record instead, with an ISO 8601 time, for machines and later the scheduler's logs. It is read before anything else, so even a configuration error is logged in the chosen format. An unknown value fails, in the formatted output.
 - **Alternatives:** a logging library such as pino. This one fits in sixty lines, and its formatting is what we want.
+
+**11. One `Result` type, in `core`.**
+- **Shape:** `Result<T, E>` is `Ok<T>`, `{ ok: true, value }`, or `Err<E>`, `{ ok: false, error }`. `ok(value)` and `err(error)` build them. Every function that reports failures as values returns one: `validateArgs`, `toInput`, `runTurn`, `loadConfig`, `fetchModels`, `pickModel`, `resolveModel`, `createSession` and every tool handler. Each used to declare its own pair of shapes, with its own names for the same two things (`args`, `input`, `output`, `config`, `payload`; `reason`, `detail`, `problems`).
+- **`ok` returns an `Ok<T>`, not a `Result<T, never>`:** a union with an impossible failure half would still need a check before `.value` could be read. The named halves also let a helper say it always fails, such as `runTurn`'s `aborted(): Err<TurnError>`.
+- **`runTurn`'s error is an object,** `{ kind, detail, status? }`, as `TurnError`. Its kind is `error.kind`, where it used to be a field named `error`.
+- **Names kept only where they say more than `Result` does:** `ToolOutcome` (what a handler returns, written for the model), `TurnResult` and `ModelChoice`. The aliases that only renamed a `Result` are gone: `ArgsResult`, `InputResult`, `ConfigResult`, `ModelsResult` and `TurnFailure`.
 
 ## Risks / Trade-offs
 

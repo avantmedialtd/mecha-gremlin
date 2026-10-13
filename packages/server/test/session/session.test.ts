@@ -1,4 +1,4 @@
-import { type HistoryItem, type ToolOutcome, toFunctionTool } from "@mecha-gremlin/core";
+import { type HistoryItem, type ToolOutcome, ok, toFunctionTool } from "@mecha-gremlin/core";
 import type { ResponseUsage } from "openai/resources/responses/responses";
 import { describe, expect, test, vi } from "vitest";
 import { z } from "zod";
@@ -43,10 +43,7 @@ const output = (callId: string, text: string): HistoryItem => {
 };
 
 const recordingTool = (
-    run: (path: string) => Promise<ToolOutcome> = async (path) => ({
-        ok: true,
-        output: `contents of ${path}`,
-    }),
+    run: (path: string) => Promise<ToolOutcome> = async (path) => ok(`contents of ${path}`),
 ) => {
     const paths: string[] = [];
     const handler = defineTool(
@@ -73,10 +70,10 @@ const start = async (config: Config, options: SessionOptions): Promise<Session> 
     const created = await createSession(config, options);
 
     if (!created.ok) {
-        throw new Error(`the session didn't start: ${created.reason}`);
+        throw new Error(`the session didn't start: ${created.error}`);
     }
 
-    return created;
+    return created.value;
 };
 
 const runSession = async (
@@ -168,7 +165,7 @@ describe("Choose the model when the session starts", () => {
         vi.stubGlobal("fetch", fetch);
         const created = await createSession(LM_STUDIO, { tools: [], history: START });
 
-        expect(created).toEqual({ ok: false, reason: expect.stringContaining("lms load") });
+        expect(created).toEqual({ ok: false, error: expect.stringContaining("lms load") });
         expect(turnBodies()).toHaveLength(0);
     });
 });
@@ -208,7 +205,7 @@ describe("Alternate model turns and tool calls until the model answers", () => {
                 calls: [
                     {
                         call: roundTrip[1],
-                        outcome: { ok: true, output: "contents of package.json" },
+                        outcome: { ok: true, value: "contents of package.json" },
                     },
                 ],
             },
@@ -292,7 +289,7 @@ describe("Run every call in order and answer each exactly once", () => {
                 description: "Take a note",
                 schema: z.strictObject({ text: z.string() }),
             },
-            async () => ({ ok: true, output: "noted" }),
+            async () => ok("noted"),
         );
         const { bodies } = await runSession(
             {
@@ -395,9 +392,8 @@ describe("End with a step, not a throw", () => {
 
         expect(last).toEqual({
             kind: "turn_failed",
-            failure: {
-                ok: false,
-                error: "server_error",
+            error: {
+                kind: "server_error",
                 status: 500,
                 detail: expect.stringContaining("the engine fell over"),
             },
@@ -423,7 +419,7 @@ describe("End with a step, not a throw", () => {
         const broken = [...START, { type: "made_up" } as unknown as HistoryItem];
         const { steps, bodies } = await runSession({}, { history: broken });
 
-        expect(steps).toEqual([{ kind: "history", detail: expect.stringContaining("made_up") }]);
+        expect(steps).toEqual([{ kind: "history", error: expect.stringContaining("made_up") }]);
         expect(bodies).toHaveLength(0);
     });
 });
@@ -450,7 +446,7 @@ describe("Yield the result of each turn as it completes", () => {
     });
 
     test("a turn's calls carry their outcomes, failures included", async () => {
-        const euro = recordingTool(async () => ({ ok: true, output: "€" }));
+        const euro = recordingTool(async () => ok("€"));
         const a = call("read_file", { path: "a" }, "call_a");
         const b = call("read_file", {}, "call_b");
         const { steps } = await runSession(
@@ -466,7 +462,7 @@ describe("Yield the result of each turn as it completes", () => {
         expect(steps[0]).toMatchObject({
             kind: "calls",
             calls: [
-                { call: a, outcome: { ok: true, output: "€" } },
+                { call: a, outcome: { ok: true, value: "€" } },
                 {
                     call: b,
                     outcome: {
