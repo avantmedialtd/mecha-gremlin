@@ -1,6 +1,6 @@
-import { type Result, err, ok } from "@mecha-gremlin/core";
-import type { Config } from "../config/config.ts";
-import { fetchModels, lmStudioKeyRejected, pickModel } from "./lmstudio.ts";
+import { type Result, err, ok } from '@mecha-gremlin/core';
+import type { Config } from '../config/config.ts';
+import { fetchModels, lmStudioKeyRejected, pickModel } from './lmstudio.ts';
 
 export type ModelChoice = Result<{ model: string; note?: string }, string>;
 
@@ -9,7 +9,7 @@ export type ModelChoice = Result<{ model: string; note?: string }, string>;
  * makes it load one on demand (Brief 4.9); every other provider names the model in MODEL.
  */
 export const resolveModel = async (config: Config): Promise<ModelChoice> => {
-    if (config.provider === "lmstudio") {
+    if (config.provider === 'lmstudio') {
         const models = await fetchModels(config);
 
         if (!models.ok) {
@@ -27,7 +27,7 @@ export const resolveModel = async (config: Config): Promise<ModelChoice> => {
 
 /** The message for a rejected API key, with the provider's own fix where there is one. */
 export const keyRejected = (config: Config, status: number): string => {
-    if (config.provider === "lmstudio") {
+    if (config.provider === 'lmstudio') {
         return lmStudioKeyRejected(status);
     }
 

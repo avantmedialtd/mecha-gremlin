@@ -1,18 +1,18 @@
-import { loadConfig } from "../config/config.ts";
-import { createLogger, logFormat } from "../log/log.ts";
-import { createSession } from "../session/session.ts";
-import { readFileTool } from "../tools/read-file.ts";
-import { parseArgs } from "./args.ts";
-import { failure } from "./failure.ts";
-import { parsed, turnFields } from "./fields.ts";
+import { loadConfig } from '../config/config.ts';
+import { createLogger, logFormat } from '../log/log.ts';
+import { createSession } from '../session/session.ts';
+import { readFileTool } from '../tools/read-file.ts';
+import { parseArgs } from './args.ts';
+import { failure } from './failure.ts';
+import { parsed, turnFields } from './fields.ts';
 
 /** Sent as a developer item, not as `instructions`, which LM Studio reportedly ignores (Brief C1). */
 const INSTRUCTIONS =
-    "You answer questions about files in the working directory. Before answering a question about a file, read it with the read_file tool. Keep your answers brief.";
+    'You answer questions about files in the working directory. Before answering a question about a file, read it with the read_file tool. Keep your answers brief.';
 
 const run = async (args: readonly string[]): Promise<number> => {
     const format = logFormat(process.env.LOG_FORMAT);
-    const log = createLogger(format ?? "pretty");
+    const log = createLogger(format ?? 'pretty');
     const fail = (message: string): number => {
         log.error(message);
         return 1;
@@ -40,8 +40,8 @@ const run = async (args: readonly string[]): Promise<number> => {
     const created = await createSession(config, {
         tools: [readFileTool(process.cwd())],
         history: [
-            { role: "developer", content: INSTRUCTIONS },
-            { role: "user", content: `File: ${file}\nQuestion: ${question}` },
+            { role: 'developer', content: INSTRUCTIONS },
+            { role: 'user', content: `File: ${file}\nQuestion: ${question}` },
         ],
     });
 
@@ -55,29 +55,29 @@ const run = async (args: readonly string[]): Promise<number> => {
         log.info(session.note);
     }
 
-    log.info("asking", { model: session.model, baseUrl: config.baseUrl, file, question });
+    log.info('asking', { model: session.model, baseUrl: config.baseUrl, file, question });
 
     for await (const step of session.steps) {
-        if ("turn" in step) {
-            log.info("turn", turnFields(step.turn));
+        if ('turn' in step) {
+            log.info('turn', turnFields(step.turn));
         }
 
         switch (step.kind) {
-            case "calls":
+            case 'calls':
                 for (const { call, outcome } of step.calls) {
-                    log.info("tool call", { tool: call.name, arguments: parsed(call.arguments) });
+                    log.info('tool call', { tool: call.name, arguments: parsed(call.arguments) });
 
                     if (outcome.ok) {
                         const bytes = new TextEncoder().encode(outcome.value).byteLength;
-                        log.info("tool result", { tool: call.name, bytes });
+                        log.info('tool result', { tool: call.name, bytes });
                     } else {
-                        log.warn("tool failed", { tool: call.name, error: outcome.error });
+                        log.warn('tool failed', { tool: call.name, error: outcome.error });
                     }
                 }
 
                 break;
-            case "final":
-                log.info("answer", { text: step.text });
+            case 'final':
+                log.info('answer', { text: step.text });
                 return 0;
             default:
                 return fail(failure(step, config));

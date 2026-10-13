@@ -1,5 +1,5 @@
-import type { Fields, Json } from "../log/log.ts";
-import type { TurnStats } from "../session/session.ts";
+import type { Fields, Json } from '../log/log.ts';
+import type { TurnStats } from '../session/session.ts';
 
 /** Arguments that parse are logged as data; the rest as the model sent them. */
 export const parsed = (raw: string): Json => {

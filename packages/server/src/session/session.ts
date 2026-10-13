@@ -12,54 +12,54 @@ import {
     toFunctionTool,
     toInput,
     toOutputItem,
-} from "@mecha-gremlin/core";
-import OpenAI from "openai";
-import type { ResponseUsage } from "openai/resources/responses/responses";
-import type { Config } from "../config/config.ts";
-import { resolveModel } from "../model/model.ts";
-import type { ToolHandler } from "../tools/tool-handler.ts";
+} from '@mecha-gremlin/core';
+import OpenAI from 'openai';
+import type { ResponseUsage } from 'openai/resources/responses/responses';
+import type { Config } from '../config/config.ts';
+import { resolveModel } from '../model/model.ts';
+import type { ToolHandler } from '../tools/tool-handler.ts';
 
 /** The brief's hard cap on iterations; budgets and a context check come later (Brief C8). */
 export const MAX_TURNS = 8;
 
-export interface SessionOptions {
+export type SessionOptions = {
     tools: readonly ToolHandler[];
     history: readonly HistoryItem[];
     maxTurns?: number;
-}
+};
 
-export interface TurnStats {
+export type TurnStats = {
     number: number;
     usage: ResponseUsage | undefined;
     seconds: number;
-}
+};
 
-export interface CallResult {
+export type CallResult = {
     call: ToolCall;
     outcome: ToolOutcome;
-}
+};
 
 /**
  * The result of one turn. A step that asks the user for input, and takes the reply back before
  * the session goes on, is meant to join these later.
  */
 export type SessionStep =
-    | { kind: "calls"; turn: TurnStats; calls: CallResult[] }
-    | (Exclude<Turn, { kind: "calls" }> & { turn: TurnStats })
-    | { kind: "turn_limit"; turn: TurnStats }
-    | { kind: "turn_failed"; error: TurnError }
-    | { kind: "history"; error: string };
+    | { kind: 'calls'; turn: TurnStats; calls: CallResult[] }
+    | (Exclude<Turn, { kind: 'calls' }> & { turn: TurnStats })
+    | { kind: 'turn_limit'; turn: TurnStats }
+    | { kind: 'turn_failed'; error: TurnError }
+    | { kind: 'history'; error: string };
 
-export interface Session {
+export type Session = {
     model: string;
     /** Set when the model was picked out of several loaded ones. */
     note?: string;
     steps: AsyncGenerator<SessionStep, void, undefined>;
     /** Grows as the session runs. While the caller handles a step, the session is paused. */
     history: readonly HistoryItem[];
-}
+};
 
-const NOT_RUN: ToolOutcome = err("not run: the turn limit was reached");
+const NOT_RUN: ToolOutcome = err('not run: the turn limit was reached');
 
 const runCall = async (
     call: ToolCall,
@@ -68,7 +68,7 @@ const runCall = async (
     const handler = handlers.get(call.name);
 
     if (handler === undefined) {
-        const available = [...handlers.keys()].join(", ");
+        const available = [...handlers.keys()].join(', ');
 
         return err(`unknown tool ${JSON.stringify(call.name)}; available tools: ${available}`);
     }
@@ -99,7 +99,7 @@ const run = async function* (
         const input = toInput(history);
 
         if (!input.ok) {
-            yield { kind: "history", error: input.error };
+            yield { kind: 'history', error: input.error };
             return;
         }
 
@@ -113,7 +113,7 @@ const run = async function* (
         });
 
         if (!result.ok) {
-            yield { kind: "turn_failed", error: result.error };
+            yield { kind: 'turn_failed', error: result.error };
             return;
         }
 
@@ -123,7 +123,7 @@ const run = async function* (
 
         const next = classify(response.output);
 
-        if (next.kind !== "calls") {
+        if (next.kind !== 'calls') {
             yield { ...next, turn };
             return;
         }
@@ -134,7 +134,7 @@ const run = async function* (
                 history.push(toOutputItem(call.call_id, NOT_RUN));
             }
 
-            yield { kind: "turn_limit", turn };
+            yield { kind: 'turn_limit', turn };
             return;
         }
 
@@ -146,7 +146,7 @@ const run = async function* (
             calls.push({ call, outcome });
         }
 
-        yield { kind: "calls", turn, calls };
+        yield { kind: 'calls', turn, calls };
     }
 };
 

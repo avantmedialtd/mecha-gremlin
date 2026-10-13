@@ -10,7 +10,8 @@
         "prefer-const": "error",
         "prefer-arrow-callback": "error",
         "func-style": ["error", "expression"],
-        "no-use-before-define": "error"
+        "no-use-before-define": "error",
+        "typescript/consistent-type-definitions": ["error", "type"]
     },
     "env": {
         "builtin": true

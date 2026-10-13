@@ -1,9 +1,9 @@
-import { type Tool, type ToolOutcome, validateArgs } from "@mecha-gremlin/core";
+import { type Tool, type ToolOutcome, validateArgs } from '@mecha-gremlin/core';
 
-export interface ToolHandler {
+export type ToolHandler = {
     readonly tool: Tool;
     invoke(rawArgs: string): Promise<ToolOutcome>;
-}
+};
 
 /**
  * The loop holds tools with different argument types in one list. Validating inside this closure

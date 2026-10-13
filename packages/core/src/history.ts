@@ -1,10 +1,10 @@
 import {
     type ResponseInputItemLike,
     toResponseInputItems,
-} from "openai/lib/responses/ResponseInputItems";
-import type { ResponseInputItem } from "openai/resources/responses/responses";
-import { type Result, err, ok } from "./result.ts";
-import type { ToolOutcome } from "./tools.ts";
+} from 'openai/lib/responses/ResponseInputItems';
+import type { ResponseInputItem } from 'openai/resources/responses/responses';
+import { type Result, err, ok } from './result.ts';
+import type { ToolOutcome } from './tools.ts';
 
 /**
  * Keep every item exactly as received, reasoning and calls included. With `store: false` the
@@ -19,7 +19,7 @@ export const toOutputItem = (
     outcome: ToolOutcome,
 ): ResponseInputItem.FunctionCallOutput => {
     return {
-        type: "function_call_output",
+        type: 'function_call_output',
         call_id: callId,
         output: outcome.ok ? outcome.value : `Error: ${outcome.error}`,
     };

@@ -1,19 +1,19 @@
-import { type Result, err, ok } from "@mecha-gremlin/core";
-import type { ReasoningEffort } from "openai/resources/shared";
+import { type Result, err, ok } from '@mecha-gremlin/core';
+import type { ReasoningEffort } from 'openai/resources/shared';
 
 type Effort = Exclude<ReasoningEffort, null>;
 
 const REASONING_EFFORTS = [
-    "none",
-    "minimal",
-    "low",
-    "medium",
-    "high",
-    "xhigh",
-    "max",
+    'none',
+    'minimal',
+    'low',
+    'medium',
+    'high',
+    'xhigh',
+    'max',
 ] as const satisfies readonly Effort[];
 
-const PROVIDERS = ["lmstudio", "openai"] as const;
+const PROVIDERS = ['lmstudio', 'openai'] as const;
 
 /**
  * Which kind of OpenAI-compatible service serves the model. It only changes how the model is
@@ -24,11 +24,11 @@ export type Provider = (typeof PROVIDERS)[number];
 /** Per-provider defaults. A local LM Studio needs no settings at all. */
 const DEFAULTS: Record<Provider, { baseUrl: string; apiKey?: string; reasoningEffort?: Effort }> = {
     // Any API key works while LM Studio's "Require Authentication" is off.
-    lmstudio: { baseUrl: "http://127.0.0.1:1234/v1", apiKey: "lm-studio", reasoningEffort: "none" },
-    openai: { baseUrl: "https://api.openai.com/v1" },
+    lmstudio: { baseUrl: 'http://127.0.0.1:1234/v1', apiKey: 'lm-studio', reasoningEffort: 'none' },
+    openai: { baseUrl: 'https://api.openai.com/v1' },
 };
 
-export interface Config {
+export type Config = {
     provider: Provider;
     /** The OpenAI-compatible API's base URL, such as `http://127.0.0.1:1234/v1`, with no trailing slash. */
     baseUrl: string;
@@ -37,7 +37,7 @@ export interface Config {
     model: string | undefined;
     /** Sent as `reasoning.effort`. Undefined leaves the model's own default. */
     reasoningEffort: Effort | undefined;
-}
+};
 
 export type Env = Record<string, string | undefined>;
 
@@ -58,13 +58,13 @@ const parseBaseUrl = (value: string): string | undefined => {
         return undefined;
     }
 
-    const isHttp = url.protocol === "http:" || url.protocol === "https:";
+    const isHttp = url.protocol === 'http:' || url.protocol === 'https:';
 
-    if (!isHttp || url.search !== "" || url.hash !== "") {
+    if (!isHttp || url.search !== '' || url.hash !== '') {
         return undefined;
     }
 
-    return url.href.replace(/\/+$/, "");
+    return url.href.replace(/\/+$/, '');
 };
 
 const isProvider = (value: string): value is Provider => {
@@ -77,11 +77,11 @@ const isEffort = (value: string): value is Effort => {
 
 /** Reads and validates the server's settings. Pure: it touches nothing but `env`. */
 export const loadConfig = (env: Env): Result<Config, string[]> => {
-    const rawProvider = read(env, "MODEL_PROVIDER") ?? "lmstudio";
+    const rawProvider = read(env, 'MODEL_PROVIDER') ?? 'lmstudio';
 
     if (!isProvider(rawProvider)) {
         return err([
-            `MODEL_PROVIDER must be one of ${PROVIDERS.join(", ")}; got "${rawProvider}".`,
+            `MODEL_PROVIDER must be one of ${PROVIDERS.join(', ')}; got "${rawProvider}".`,
         ]);
     }
 
@@ -89,38 +89,38 @@ export const loadConfig = (env: Env): Result<Config, string[]> => {
     const defaults = DEFAULTS[provider];
     const problems: string[] = [];
 
-    const rawBaseUrl = read(env, "MODEL_BASE_URL") ?? defaults.baseUrl;
+    const rawBaseUrl = read(env, 'MODEL_BASE_URL') ?? defaults.baseUrl;
     const baseUrl = parseBaseUrl(rawBaseUrl);
 
     if (baseUrl === undefined) {
         problems.push(
             `MODEL_BASE_URL must be an http(s) URL such as ${defaults.baseUrl}; got "${rawBaseUrl}".`,
         );
-    } else if (provider === "lmstudio" && new URL(baseUrl).pathname === "/") {
+    } else if (provider === 'lmstudio' && new URL(baseUrl).pathname === '/') {
         problems.push(
             `MODEL_BASE_URL is LM Studio's OpenAI-compatible base URL, which ends in /v1, such as ${defaults.baseUrl}; got "${rawBaseUrl}".`,
         );
     }
 
-    const apiKey = read(env, "MODEL_API_KEY") ?? defaults.apiKey;
+    const apiKey = read(env, 'MODEL_API_KEY') ?? defaults.apiKey;
 
     if (apiKey === undefined) {
         problems.push(`MODEL_API_KEY is required with MODEL_PROVIDER=${provider}.`);
     }
 
-    const model = read(env, "MODEL");
+    const model = read(env, 'MODEL');
 
-    if (model === undefined && provider !== "lmstudio") {
+    if (model === undefined && provider !== 'lmstudio') {
         problems.push(
             `MODEL is required with MODEL_PROVIDER=${provider}; only lmstudio can pick the loaded model itself.`,
         );
     }
 
-    const rawEffort = read(env, "MODEL_REASONING_EFFORT") ?? defaults.reasoningEffort;
+    const rawEffort = read(env, 'MODEL_REASONING_EFFORT') ?? defaults.reasoningEffort;
 
     if (rawEffort !== undefined && !isEffort(rawEffort)) {
         problems.push(
-            `MODEL_REASONING_EFFORT must be one of ${REASONING_EFFORTS.join(", ")}; got "${rawEffort}".`,
+            `MODEL_REASONING_EFFORT must be one of ${REASONING_EFFORTS.join(', ')}; got "${rawEffort}".`,
         );
     }
 

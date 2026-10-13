@@ -1,9 +1,9 @@
-import { createReadStream } from "node:fs";
-import { realpath, stat } from "node:fs/promises";
-import { basename, isAbsolute, relative, resolve, sep } from "node:path";
-import { type ToolOutcome, err, ok } from "@mecha-gremlin/core";
-import { z } from "zod";
-import { type ToolHandler, defineTool } from "./tool-handler.ts";
+import { createReadStream } from 'node:fs';
+import { realpath, stat } from 'node:fs/promises';
+import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
+import { type ToolOutcome, err, ok } from '@mecha-gremlin/core';
+import { z } from 'zod';
+import { type ToolHandler, defineTool } from './tool-handler.ts';
 
 /** About 8k tokens, so a capped file still fits LM Studio's default 8k context (Brief R5.5). */
 export const READ_LIMIT = 32 * 1024;
@@ -22,12 +22,12 @@ const ReadFileArgs = z.strictObject({
 const isInside = (root: string, target: string): boolean => {
     const path = relative(root, target);
 
-    return path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path);
+    return path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path);
 };
 
 /** Files named `.env*` hold secrets by convention; direnv's `.envrc` is meant to match too. */
 const isEnvFile = (path: string): boolean => {
-    return basename(path).startsWith(".env");
+    return basename(path).startsWith('.env');
 };
 
 const readHead = async (file: string, length: number): Promise<Uint8Array> => {
@@ -57,7 +57,7 @@ const decode = (bytes: Uint8Array): string => {
 };
 
 const errorCode = (error: unknown): unknown => {
-    return typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
+    return typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
 };
 
 const readFile = async (root: string, path: string): Promise<ToolOutcome> => {
@@ -110,7 +110,7 @@ const readFile = async (root: string, path: string): Promise<ToolOutcome> => {
 
         return ok(`${decode(bytes.subarray(0, cut))}\n\n${note}`);
     } catch (error) {
-        if (errorCode(error) === "ENOENT") {
+        if (errorCode(error) === 'ENOENT') {
             return err(`No such file: ${name}.`);
         }
 
@@ -121,9 +121,9 @@ const readFile = async (root: string, path: string): Promise<ToolOutcome> => {
 export const readFileTool = (root: string): ToolHandler => {
     return defineTool(
         {
-            name: "read_file",
+            name: 'read_file',
             description:
-                "Read a UTF-8 text file in the working directory and return its contents. Files over 32 KiB are cut short, with a note saying so.",
+                'Read a UTF-8 text file in the working directory and return its contents. Files over 32 KiB are cut short, with a note saying so.',
             schema: ReadFileArgs,
         },
         ({ path }) => readFile(root, path),

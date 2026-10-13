@@ -1,53 +1,53 @@
-import type OpenAI from "openai";
+import type OpenAI from 'openai';
 import type {
     Response,
     ResponseCreateParamsStreaming,
     ResponseStreamEvent,
     ResponseUsage,
-} from "openai/resources/responses/responses";
-import { type Err, type Result, err, ok } from "./result.ts";
+} from 'openai/resources/responses/responses';
+import { type Err, type Result, err, ok } from './result.ts';
 
 /** A Responses API request. `runTurn` always streams it, so `stream` is not part of it. */
-export type TurnRequest = Omit<ResponseCreateParamsStreaming, "stream">;
+export type TurnRequest = Omit<ResponseCreateParamsStreaming, 'stream'>;
 
 export type TurnErrorKind =
-    | "unreachable"
-    | "timeout"
-    | "auth"
-    | "rate_limit"
-    | "bad_request"
-    | "server_error"
-    | "incomplete"
-    | "failed"
-    | "aborted"
-    | "fatal";
+    | 'unreachable'
+    | 'timeout'
+    | 'auth'
+    | 'rate_limit'
+    | 'bad_request'
+    | 'server_error'
+    | 'incomplete'
+    | 'failed'
+    | 'aborted'
+    | 'fatal';
 
-export interface TurnError {
+export type TurnError = {
     kind: TurnErrorKind;
     detail: string;
     status?: number;
-}
+};
 
 export type TurnResult = Result<
     { text: string; response: Response; usage: ResponseUsage | undefined },
     TurnError
 >;
 
-export interface TurnOptions {
+export type TurnOptions = {
     signal?: AbortSignal;
-}
+};
 
 /** Concatenates the `output_text` parts of every message item, in order. */
 const outputText = (response: Response): string => {
-    let text = "";
+    let text = '';
 
     for (const item of response.output) {
-        if (item.type !== "message") {
+        if (item.type !== 'message') {
             continue;
         }
 
         for (const part of item.content) {
-            if (part.type === "output_text") {
+            if (part.type === 'output_text') {
                 text += part.text;
             }
         }
@@ -57,23 +57,23 @@ const outputText = (response: Response): string => {
 };
 
 const aborted = (): Err<TurnError> => {
-    return err({ kind: "aborted", detail: "the turn was aborted" });
+    return err({ kind: 'aborted', detail: 'the turn was aborted' });
 };
 
 const statusOf = (error: unknown): number | undefined => {
-    if (typeof error !== "object" || error === null || !("status" in error)) {
+    if (typeof error !== 'object' || error === null || !('status' in error)) {
         return undefined;
     }
 
-    return typeof error.status === "number" ? error.status : undefined;
+    return typeof error.status === 'number' ? error.status : undefined;
 };
 
 /** True if `value`'s class, or any class it extends, has the given name. */
 const hasClassName = (value: unknown, name: string): boolean => {
     let proto: unknown =
-        typeof value === "object" && value !== null ? Object.getPrototypeOf(value) : null;
+        typeof value === 'object' && value !== null ? Object.getPrototypeOf(value) : null;
 
-    while (typeof proto === "object" && proto !== null) {
+    while (typeof proto === 'object' && proto !== null) {
         if (proto.constructor.name === name) {
             return true;
         }
@@ -99,7 +99,7 @@ const describe = (error: unknown): string => {
  * rather than `instanceof`, so it still works if the caller's `openai` is a different copy.
  */
 const classifyRequestError = (error: unknown, signal: AbortSignal | undefined): Err<TurnError> => {
-    if (signal?.aborted || hasClassName(error, "APIUserAbortError")) {
+    if (signal?.aborted || hasClassName(error, 'APIUserAbortError')) {
         return aborted();
     }
 
@@ -108,25 +108,25 @@ const classifyRequestError = (error: unknown, signal: AbortSignal | undefined): 
     if (status !== undefined) {
         const kind: TurnErrorKind =
             status === 401 || status === 403
-                ? "auth"
+                ? 'auth'
                 : status === 429
-                  ? "rate_limit"
+                  ? 'rate_limit'
                   : status >= 500
-                    ? "server_error"
-                    : "bad_request";
+                    ? 'server_error'
+                    : 'bad_request';
 
         return err({ kind, status, detail: describe(error) });
     }
 
-    if (hasClassName(error, "APIConnectionTimeoutError")) {
-        return err({ kind: "timeout", detail: describe(error) });
+    if (hasClassName(error, 'APIConnectionTimeoutError')) {
+        return err({ kind: 'timeout', detail: describe(error) });
     }
 
-    if (hasClassName(error, "APIConnectionError")) {
-        return err({ kind: "unreachable", detail: describe(error) });
+    if (hasClassName(error, 'APIConnectionError')) {
+        return err({ kind: 'unreachable', detail: describe(error) });
     }
 
-    return err({ kind: "fatal", detail: describe(error) });
+    return err({ kind: 'fatal', detail: describe(error) });
 };
 
 /**
@@ -155,32 +155,32 @@ export const runTurn = async (
     try {
         for await (const event of stream) {
             switch (event.type) {
-                case "response.completed":
+                case 'response.completed':
                     return ok({
                         text: outputText(event.response),
                         response: event.response,
                         usage: event.response.usage,
                     });
-                case "response.incomplete": {
+                case 'response.incomplete': {
                     const reason = event.response.incomplete_details?.reason;
 
                     return err({
-                        kind: "incomplete",
+                        kind: 'incomplete',
                         detail: reason
                             ? `the response is incomplete: ${reason}`
-                            : "the response is incomplete",
+                            : 'the response is incomplete',
                     });
                 }
-                case "response.failed": {
+                case 'response.failed': {
                     const error = event.response.error;
 
                     return err({
-                        kind: "failed",
-                        detail: error ? `${error.code}: ${error.message}` : "the response failed",
+                        kind: 'failed',
+                        detail: error ? `${error.code}: ${error.message}` : 'the response failed',
                     });
                 }
-                case "error":
-                    return err({ kind: "failed", detail: event.message });
+                case 'error':
+                    return err({ kind: 'failed', detail: event.message });
             }
         }
     } catch (error) {
@@ -189,7 +189,7 @@ export const runTurn = async (
         }
 
         // The stream had started, so the endpoint was reachable: whatever broke it is a failed turn.
-        return err({ kind: "failed", detail: describe(error) });
+        return err({ kind: 'failed', detail: describe(error) });
     }
 
     // The SDK ends iteration quietly when the request is aborted mid-stream.
@@ -197,5 +197,5 @@ export const runTurn = async (
         return aborted();
     }
 
-    return err({ kind: "failed", detail: "the stream ended without a terminal event" });
+    return err({ kind: 'failed', detail: 'the stream ended without a terminal event' });
 };

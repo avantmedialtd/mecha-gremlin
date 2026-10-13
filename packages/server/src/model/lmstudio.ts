@@ -1,12 +1,12 @@
 // LM Studio specifics: finding out which model is loaded, through LM Studio's native REST API.
-import { type Result, err, ok } from "@mecha-gremlin/core";
-import type { Config } from "../config/config.ts";
-import type { ModelChoice } from "./model.ts";
+import { type Result, err, ok } from '@mecha-gremlin/core';
+import type { Config } from '../config/config.ts';
+import type { ModelChoice } from './model.ts';
 
-interface LoadedModel {
+type LoadedModel = {
     key: string;
     instanceIds: string[];
-}
+};
 
 export const lmStudioKeyRejected = (status: number): string => {
     return `LM Studio rejected the API key (HTTP ${status}). Its "Require Authentication" setting is on, so set MODEL_API_KEY to one of its tokens.`;
@@ -54,7 +54,7 @@ export const fetchModels = async (config: Config): Promise<Result<unknown, strin
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
 };
 
 /** The loaded LLMs in a `/api/v1/models` payload, or undefined if its shape is unexpected. */
@@ -66,11 +66,11 @@ const loadedModels = (payload: unknown): LoadedModel[] | undefined => {
     const loaded: LoadedModel[] = [];
 
     for (const entry of payload.models) {
-        if (!isRecord(entry) || typeof entry.key !== "string" || typeof entry.type !== "string") {
+        if (!isRecord(entry) || typeof entry.key !== 'string' || typeof entry.type !== 'string') {
             return undefined;
         }
 
-        if (entry.type !== "llm") {
+        if (entry.type !== 'llm') {
             continue;
         }
 
@@ -81,7 +81,7 @@ const loadedModels = (payload: unknown): LoadedModel[] | undefined => {
         }
 
         const instanceIds = instances.flatMap((instance) =>
-            isRecord(instance) && typeof instance.id === "string" ? [instance.id] : [],
+            isRecord(instance) && typeof instance.id === 'string' ? [instance.id] : [],
         );
 
         if (instanceIds.length > 0) {
@@ -118,7 +118,7 @@ export const pickModel = (payload: unknown, configured?: string): ModelChoice =>
         }
 
         const loadedList =
-            instanceIds.length > 0 ? `Loaded: ${instanceIds.join(", ")}.` : "No model is loaded.";
+            instanceIds.length > 0 ? `Loaded: ${instanceIds.join(', ')}.` : 'No model is loaded.';
 
         return err(
             `MODEL is "${configured}", but that model isn't loaded in LM Studio. ${loadedList} Load it with \`lms load ${configured}\`.`,
@@ -129,14 +129,14 @@ export const pickModel = (payload: unknown, configured?: string): ModelChoice =>
 
     if (first === undefined) {
         return err(
-            "No model is loaded in LM Studio. Load one with `lms load <model>` or in the LM Studio app; models are never loaded on demand.",
+            'No model is loaded in LM Studio. Load one with `lms load <model>` or in the LM Studio app; models are never loaded on demand.',
         );
     }
 
     if (instanceIds.length > 1) {
         return ok({
             model: first,
-            note: `Using ${first}, the first of ${instanceIds.length} loaded models (${instanceIds.join(", ")}). Set MODEL to choose another.`,
+            note: `Using ${first}, the first of ${instanceIds.length} loaded models (${instanceIds.join(', ')}). Set MODEL to choose another.`,
         });
     }
 
