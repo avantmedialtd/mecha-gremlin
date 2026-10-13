@@ -2,32 +2,68 @@
 
 ## Purpose
 
-The server entry point that chooses a model by provider (the model loaded in LM Studio by default, or a named model from any OpenAI-compatible service), says hi to it, and prints the reply, with its configuration and failure behaviour.
+The server entry point that chooses a model by provider (the model loaded in LM Studio by default, or a named model from any OpenAI-compatible service), asks it a question about a file through the agent loop, and logs the answer, with its configuration and failure behaviour.
 
 ## Requirements
 
-### Requirement: Say hi to the configured model and print the reply
-Running the server entry point (`bun run hello` from the repository root) SHALL:
+### Requirement: Ask the model a question about a file and log the answer
+Running the server entry point, `bun run hello [file] [question…]` from the repository root, SHALL:
 1. choose the model to use;
-2. send the input "Hi!" through `core`'s `runTurn` to the OpenAI-compatible Responses endpoint at `{MODEL_BASE_URL}/responses`;
-3. print the reply text to stdout, followed by a newline;
-4. exit with code 0.
+2. take the file and the question from the arguments:
+   - the file is the first argument, defaulting to `package.json`;
+   - the question is the remaining arguments, joined with spaces;
+   - with no arguments, the question SHALL be "What exact command does the check script run? Quote it.";
+   - with only a file, the question SHALL be "What is this file for? Answer in two or three sentences.";
+3. run the agent loop with:
+   - the `read_file` tool, rooted at the working directory;
+   - a starting `developer` item telling the model to read files with `read_file` before answering questions about them;
+   - a `user` item naming the file and the question;
+4. log the trimmed answer as an `info` record `answer` with the field `text`;
+5. exit with code 0.
 
-Progress and usage information SHALL go to stderr, not stdout.
+Every turn SHALL go to the OpenAI-compatible Responses endpoint at `{MODEL_BASE_URL}/responses` with the chosen model and, when one is configured, `reasoning.effort`.
 
-#### Scenario: Successful hello
-- **WHEN** the model server is reachable, a model is chosen, and the turn answers "Hi there!"
-- **THEN** stdout is exactly "Hi there!" followed by a newline, stderr names the model used, and the exit code is 0
+#### Scenario: Default question
+- **WHEN** the hello runs with no arguments
+- **THEN** the first request's `user` item names `package.json` and asks what the check script runs
 
-#### Scenario: Usage is reported on stderr
-- **WHEN** the turn completes with usage information
-- **THEN** stderr includes the output token count and the elapsed time, and stdout contains only the reply
+#### Scenario: File and question from the arguments
+- **WHEN** the hello runs with the arguments `README.md`, `Which` and `runtime?`
+- **THEN** the first request's `user` item names `README.md` and asks "Which runtime?"
+
+#### Scenario: File only
+- **WHEN** the hello runs with the single argument `README.md`
+- **THEN** the first request's `user` item names `README.md` and asks what the file is for
+
+#### Scenario: Answer after reading the file
+- **WHEN** the working directory holds `package.json`, the first turn calls `read_file` for it, and the second turn answers "\n\nIt runs the checks."
+- **THEN** the second request carries the file's contents in a `function_call_output`, the `answer` record's `text` is "It runs the checks.", and the exit code is 0
+
+### Requirement: Log each tool call and turn
+The hello SHALL log, through the structured logger:
+- before the first turn, an `info` record `asking` with the fields `model`, `baseUrl`, `file` and `question`;
+- as each turn completes, an `info` record `turn`. Its fields are `number`, `seconds` (rounded to a tenth) and, when the server reports them, `inputTokens`, `cachedTokens`, `outputTokens` and `reasoningTokens`;
+- then, for each of the turn's tool calls:
+  - an `info` record `tool call` with the fields `tool` and `arguments`. The arguments are logged as JSON when they parse, and as the model sent them otherwise;
+  - then an `info` record `tool result` with the fields `tool` and `bytes`, or a `warn` record `tool failed` with the fields `tool` and `error`.
+
+#### Scenario: Records of a tool round trip
+- **WHEN** the first turn calls `read_file` for `package.json` and the second turn answers
+- **THEN** the records are, in order: `asking`, `turn` 1 with its token counts, `tool call` with `arguments` `{ "path": "package.json" }`, `tool result` with the output's size in bytes, `turn` 2, and `answer`
+
+#### Scenario: Sizes are in bytes
+- **WHEN** a tool's output holds characters that take more than one byte in UTF-8
+- **THEN** the `tool result` record's `bytes` counts bytes, not characters
+
+#### Scenario: A failed call
+- **WHEN** `read_file` refuses `.env`
+- **THEN** a `warn` record `tool failed` carries the tool's error
 
 ### Requirement: Choose the model according to the provider
 The server SHALL choose the model according to `MODEL_PROVIDER`.
 - With `lmstudio`, the default, it SHALL ask LM Studio's native `GET {origin of MODEL_BASE_URL}/api/v1/models` which models are loaded, and SHALL NOT request a model that isn't currently loaded. A loaded model is an entry of type `llm` with at least one loaded instance.
   - When `MODEL` is set, it SHALL match a loaded instance id or a loaded model key.
-  - When it isn't set, the server SHALL use the first loaded instance. If more than one LLM instance is loaded, it SHALL say on stderr which one it chose.
+  - When it isn't set, the server SHALL use the first loaded instance. If more than one LLM instance is loaded, it SHALL say which one it chose in an `info` record.
 - With any other provider, it SHALL use `MODEL` and SHALL NOT call LM Studio's native API.
 
 #### Scenario: No model configured, one loaded
@@ -36,7 +72,7 @@ The server SHALL choose the model according to `MODEL_PROVIDER`.
 
 #### Scenario: Several models loaded
 - **WHEN** `MODEL_PROVIDER` is `lmstudio`, `MODEL` is unset, and two LLM instances are loaded
-- **THEN** the first instance is used, and stderr says it was chosen out of two, and how to pick another
+- **THEN** the first instance is used, and an `info` record says it was chosen out of two, and how to pick another
 
 #### Scenario: Configured model is loaded
 - **WHEN** `MODEL_PROVIDER` is `lmstudio` and `MODEL` names a loaded instance id or a loaded model key
@@ -44,11 +80,11 @@ The server SHALL choose the model according to `MODEL_PROVIDER`.
 
 #### Scenario: Configured model is not loaded
 - **WHEN** `MODEL_PROVIDER` is `lmstudio` and `MODEL` names a model that has no loaded instance
-- **THEN** no turn is sent, stderr lists the loaded models and suggests `lms load <model>`, and the exit code is 1
+- **THEN** no turn is sent, an `error` record lists the loaded models and suggests `lms load <model>`, and the exit code is 1
 
 #### Scenario: No model loaded
 - **WHEN** `MODEL_PROVIDER` is `lmstudio` and no LLM instance is loaded
-- **THEN** no turn is sent, stderr explains that a model must be loaded (suggesting `lms load <model>`), and the exit code is 1
+- **THEN** no turn is sent, an `error` record explains that a model must be loaded (suggesting `lms load <model>`), and the exit code is 1
 
 #### Scenario: Embedding models are ignored
 - **WHEN** `MODEL_PROVIDER` is `lmstudio` and only an embedding model is loaded
@@ -70,7 +106,7 @@ The server SHALL read `MODEL_PROVIDER` (`lmstudio` or `openai`; default `lmstudi
 
 - A trailing slash on `MODEL_BASE_URL` SHALL be removed.
 - The API key SHALL be sent as a bearer token to every endpoint the server calls.
-- The server SHALL validate all settings before any network call. If any is invalid or missing, it SHALL exit with code 1 and a message naming each invalid or missing variable.
+- The server SHALL validate all settings before any network call. If any is invalid or missing, it SHALL exit with code 1 and log an `error` record for each invalid or missing variable, naming it.
 
 #### Scenario: Defaults apply
 - **WHEN** none of the variables is set
@@ -82,43 +118,55 @@ The server SHALL read `MODEL_PROVIDER` (`lmstudio` or `openai`; default `lmstudi
 
 #### Scenario: Required settings are missing
 - **WHEN** `MODEL_PROVIDER` is `openai` and neither `MODEL_API_KEY` nor `MODEL` is set
-- **THEN** no network call is made, stderr names both variables, and the exit code is 1
+- **THEN** no network call is made, one `error` record names `MODEL_API_KEY` and another names `MODEL`, and the exit code is 1
 
 #### Scenario: Invalid base URL
 - **WHEN** `MODEL_BASE_URL` is set to a value that isn't an http or https URL
-- **THEN** no network call is made, stderr names `MODEL_BASE_URL`, and the exit code is 1
+- **THEN** no network call is made, an `error` record names `MODEL_BASE_URL`, and the exit code is 1
 
 #### Scenario: LM Studio's base URL lacks /v1
 - **WHEN** `MODEL_PROVIDER` is `lmstudio` and `MODEL_BASE_URL` has no path, such as `http://127.0.0.1:1234`
-- **THEN** no network call is made, stderr explains that LM Studio's base URL ends in `/v1`, and the exit code is 1
+- **THEN** no network call is made, an `error` record explains that LM Studio's base URL ends in `/v1`, and the exit code is 1
 
 #### Scenario: Unknown provider
 - **WHEN** `MODEL_PROVIDER` is neither `lmstudio` nor `openai`
-- **THEN** no network call is made, stderr names `MODEL_PROVIDER`, and the exit code is 1
+- **THEN** no network call is made, an `error` record names `MODEL_PROVIDER`, and the exit code is 1
 
 #### Scenario: Reasoning effort is passed through
 - **WHEN** `MODEL_REASONING_EFFORT` is `low`
 - **THEN** the turn is sent with `reasoning.effort` equal to `low`
 
 ### Requirement: Actionable failures
-The server SHALL exit with code 1 and a message on stderr that names the cause and a next step, in each of these cases:
+The server SHALL exit with code 1 and log an `error` record whose message names the cause and a next step, in each of these cases:
 - the model server is unreachable;
 - the server rejects the API key;
 - LM Studio's models endpoint returns an unexpected shape;
-- the turn fails.
+- a turn fails;
+- the model is still calling tools when the turn limit is reached;
+- the model gives no answer.
+
+No `answer` record SHALL be logged in these cases.
 
 #### Scenario: LM Studio not running
 - **WHEN** `MODEL_PROVIDER` is `lmstudio` and the connection to LM Studio is refused
-- **THEN** stderr says LM Studio isn't reachable at the base URL and suggests starting its server (for example `lms server start`), and the exit code is 1
+- **THEN** the error says LM Studio isn't reachable at the base URL and suggests starting its server (for example `lms server start`), and the exit code is 1
 
 #### Scenario: Key rejected by LM Studio
 - **WHEN** `MODEL_PROVIDER` is `lmstudio` and LM Studio answers HTTP 401 or 403
-- **THEN** stderr says LM Studio requires a valid API key and names `MODEL_API_KEY`, and the exit code is 1
+- **THEN** the error says LM Studio requires a valid API key and names `MODEL_API_KEY`, and the exit code is 1
 
 #### Scenario: Key rejected by another provider
 - **WHEN** `MODEL_PROVIDER` is `openai` and the Responses endpoint answers HTTP 401
-- **THEN** stderr names `MODEL_API_KEY` without mentioning LM Studio, and the exit code is 1
+- **THEN** the error names `MODEL_API_KEY` without mentioning LM Studio, and the exit code is 1
 
 #### Scenario: Turn fails
-- **WHEN** `runTurn` resolves to `ok: false`
-- **THEN** stderr reports the error kind and detail, nothing is printed to stdout, and the exit code is 1
+- **WHEN** a turn of the agent loop fails
+- **THEN** the error reports the error kind and detail, no `answer` record is logged, and the exit code is 1
+
+#### Scenario: Turn limit reached
+- **WHEN** the model is still calling tools after the loop's last allowed turn
+- **THEN** the error says the model didn't answer within the turn limit, no `answer` record is logged, and the exit code is 1
+
+#### Scenario: No answer
+- **WHEN** a turn returns neither tool calls nor text
+- **THEN** the error says the model gave no answer, no `answer` record is logged, and the exit code is 1
