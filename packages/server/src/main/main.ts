@@ -1,5 +1,5 @@
-import { loadConfig } from '../config/config.ts';
-import { createLogger, logFormat } from '../log/log.ts';
+import { loadConfig, loadLogFormat } from '../config/config.ts';
+import { createLogger } from '../log/log.ts';
 import { createSession } from '../session/session.ts';
 import { readFileTool } from '../tools/read-file.ts';
 import { parseArgs } from './args.ts';
@@ -11,17 +11,15 @@ const INSTRUCTIONS =
     'You answer questions about files in the working directory. Before answering a question about a file, read it with the read_file tool. Keep your answers brief.';
 
 const run = async (args: readonly string[]): Promise<number> => {
-    const format = logFormat(process.env.LOG_FORMAT);
-    const log = createLogger(format ?? 'pretty');
+    const format = loadLogFormat(process.env);
+    const log = createLogger(format.ok ? format.value : 'pretty');
     const fail = (message: string): number => {
         log.error(message);
         return 1;
     };
 
-    if (format === undefined) {
-        return fail(
-            `LOG_FORMAT must be pretty or json; got ${JSON.stringify(process.env.LOG_FORMAT)}.`,
-        );
+    if (!format.ok) {
+        return fail(format.error);
     }
 
     const loaded = loadConfig(process.env);

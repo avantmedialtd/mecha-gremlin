@@ -39,11 +39,14 @@ const readHead = async (file: string, length: number): Promise<Uint8Array> => {
     return Buffer.concat(chunks);
 };
 
-/** UTF-8 continuation bytes are 10xxxxxx; cutting just before one would split a character. */
+/**
+ * UTF-8 continuation bytes are 10xxxxxx; cutting just before one would split a character. A
+ * character has at most 3 of them, so in invalid UTF-8 the cut stops 3 bytes back.
+ */
 const characterBoundary = (bytes: Uint8Array, cut: number): number => {
     let boundary = cut;
 
-    while (boundary > 0 && ((bytes[boundary] ?? 0) & 0xc0) === 0x80) {
+    while (boundary > cut - 3 && ((bytes[boundary] ?? 0) & 0xc0) === 0x80) {
         boundary--;
     }
 

@@ -1,6 +1,6 @@
 import { type Result, err, ok } from '@mecha-gremlin/core/result';
 import type { Config } from '../config/config.ts';
-import { fetchModels, lmStudioKeyRejected, pickModel } from './lmstudio.ts';
+import { fetchModels, lmStudioKeyRejected, lmStudioUnreachable, pickModel } from './lmstudio.ts';
 
 export type ModelChoice = Result<{ readonly model: string; readonly note?: string }, string>;
 
@@ -32,4 +32,12 @@ export const keyRejected = (config: Config, status: number): string => {
     }
 
     return `${config.baseUrl} rejected the API key (HTTP ${status}). Check MODEL_API_KEY.`;
+};
+
+export const unreachable = (config: Config, detail: string): string => {
+    if (config.provider === 'lmstudio') {
+        return lmStudioUnreachable(config.baseUrl, detail);
+    }
+
+    return `Can't reach ${config.baseUrl} (${detail}). Check MODEL_BASE_URL.`;
 };

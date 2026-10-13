@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import type { Config } from '../../src/config/config.ts';
-import { keyRejected, resolveModel } from '../../src/model/model.ts';
+import { keyRejected, resolveModel, unreachable } from '../../src/model/model.ts';
 
 const OPENAI: Config = {
     provider: 'openai',
@@ -34,6 +34,20 @@ describe('keyRejected', () => {
     test('names the base URL with any other provider', () => {
         expect(keyRejected(OPENAI, 403)).toBe(
             'https://api.example.com/v1 rejected the API key (HTTP 403). Check MODEL_API_KEY.',
+        );
+    });
+});
+
+describe('unreachable', () => {
+    test("suggests starting LM Studio's server", () => {
+        expect(unreachable({ ...OPENAI, provider: 'lmstudio' }, 'Connection error.')).toBe(
+            "Can't reach LM Studio at https://api.example.com/v1 (Connection error.). Is its server running? Start it with `lms server start`, or set MODEL_BASE_URL.",
+        );
+    });
+
+    test('names the base URL with any other provider', () => {
+        expect(unreachable(OPENAI, 'Connection error.')).toBe(
+            "Can't reach https://api.example.com/v1 (Connection error.). Check MODEL_BASE_URL.",
         );
     });
 });

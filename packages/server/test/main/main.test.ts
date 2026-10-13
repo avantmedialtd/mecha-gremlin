@@ -330,6 +330,16 @@ describe('Formatted output by default', () => {
         );
         expect(requests).toHaveLength(0);
     });
+
+    test('LOG_FORMAT is trimmed, as every setting is', async () => {
+        const { output } = await hello({ LOG_FORMAT: ' json ' }, readThenAnswer);
+        const messages = output
+            .trim()
+            .split('\n')
+            .map((line) => (JSON.parse(line) as LogRecord).message);
+
+        expect(messages).toEqual(['asking', 'turn', 'tool call', 'tool result', 'turn', 'answer']);
+    });
 });
 
 describe('Actionable failures', () => {
@@ -387,7 +397,16 @@ describe('Actionable failures', () => {
         expect(code).toBe(1);
         expect(find(records, 'answer')).toBeUndefined();
         expect(errors(records)).toEqual([
-            expect.stringMatching(/^The turn failed \(server_error, HTTP 500\): .*model crashed/),
+            'The model server at http://127.0.0.1:1234/v1 failed the turn (500 model crashed). Try again; if it keeps failing, check its logs or status page.',
+        ]);
+    });
+
+    test('a rate-limited turn', async () => {
+        const { code, records } = await hello({}, { responses: () => httpError(429, 'slow down') });
+
+        expect(code).toBe(1);
+        expect(errors(records)).toEqual([
+            "The model server at http://127.0.0.1:1234/v1 is limiting requests (429 slow down). Wait a minute and try again; if it keeps happening, check the account's quota.",
         ]);
     });
 
@@ -413,10 +432,12 @@ describe('Actionable failures', () => {
         );
 
         expect(code).toBe(1);
-        expect(errors(records)).toEqual(['The turn failed (failed): server_error: it broke']);
+        expect(errors(records)).toEqual([
+            'The model server at http://127.0.0.1:1234/v1 failed the turn (server_error: it broke). Try again; if it keeps failing, check its logs or status page.',
+        ]);
     });
 
-    test('an unreachable model server', async () => {
+    test('LM Studio stops during the session', async () => {
         const { code, records } = await hello(
             {},
             {
@@ -428,9 +449,23 @@ describe('Actionable failures', () => {
 
         expect(code).toBe(1);
         expect(errors(records)).toEqual([
-            expect.stringMatching(
-                /^Can't reach http:\/\/127\.0\.0\.1:1234\/v1 \(.*\)\. Check MODEL_BASE_URL\.$/,
-            ),
+            "Can't reach LM Studio at http://127.0.0.1:1234/v1 (Connection error. (Unable to connect)). Is its server running? Start it with `lms server start`, or set MODEL_BASE_URL.",
+        ]);
+    });
+
+    test("another provider that can't be reached", async () => {
+        const { code, records } = await hello(
+            { MODEL_PROVIDER: 'openai', MODEL_API_KEY: 'sk-test', MODEL: 'gpt-test' },
+            {
+                responses: () => {
+                    throw new TypeError('Unable to connect');
+                },
+            },
+        );
+
+        expect(code).toBe(1);
+        expect(errors(records)).toEqual([
+            "Can't reach https://api.openai.com/v1 (Connection error. (Unable to connect)). Check MODEL_BASE_URL.",
         ]);
     });
 });

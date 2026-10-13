@@ -381,6 +381,29 @@ describe('Stop at the turn limit', () => {
         expect(paths).toEqual(['f0.txt']);
         expect(last).toMatchObject({ kind: 'turn_limit' });
     });
+
+    test('a limit of 1 sends one turn', async () => {
+        const { last, bodies, paths } = await runSession(endless, { maxTurns: 1 });
+
+        expect(bodies).toHaveLength(1);
+        expect(paths).toEqual([]);
+        expect(last).toEqual({ kind: 'turn_limit', turn: stats(1) });
+    });
+
+    test.each([0, -1, 2.5, Number.NaN, Number.POSITIVE_INFINITY])(
+        "a limit of %s isn't a positive integer, so nothing is sent",
+        async (maxTurns) => {
+            const { fetch, requests } = fakeFetch(endless);
+            vi.stubGlobal('fetch', fetch);
+            const created = await createSession(LM_STUDIO, { tools: [], history: START, maxTurns });
+
+            expect(created).toEqual({
+                ok: false,
+                error: `maxTurns must be a positive integer; got ${maxTurns}.`,
+            });
+            expect(requests).toHaveLength(0);
+        },
+    );
 });
 
 describe('End with a step, not a throw', () => {

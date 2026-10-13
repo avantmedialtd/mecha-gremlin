@@ -1,5 +1,5 @@
-import { describe, expect, test, vi } from 'vitest';
-import { type LogFormat, type Logger, createLogger, logFormat } from '../../src/log/log.ts';
+import { describe, expect, expectTypeOf, test, vi } from 'vitest';
+import { type Fields, type LogFormat, type Logger, createLogger } from '../../src/log/log.ts';
 
 const NOW = new Date(Date.UTC(2026, 9, 12, 7, 15, 51, 250));
 
@@ -20,16 +20,12 @@ const written = (format: LogFormat, log: (logger: Logger) => void): string[] => 
     return lines;
 };
 
-describe('logFormat', () => {
-    test.each([
-        [undefined, 'pretty'],
-        ['', 'pretty'],
-        ['pretty', 'pretty'],
-        ['json', 'json'],
-        ['JSON', undefined],
-        ['xml', undefined],
-    ])('%j means %j', (value, format) => {
-        expect(logFormat(value)).toBe(format);
+describe('Fields', () => {
+    test("can't take the names the record uses itself", () => {
+        expectTypeOf({ tool: 'read_file', usage: undefined }).toExtend<Fields>();
+        expectTypeOf({ time: 'noon' }).not.toExtend<Fields>();
+        expectTypeOf({ level: 'info' }).not.toExtend<Fields>();
+        expectTypeOf({ message: 'hi' }).not.toExtend<Fields>();
     });
 });
 
@@ -98,6 +94,22 @@ describe('Formatted output', () => {
 
         expect(lines).toEqual([`${CLOCK} INFO  turn number=1`]);
     });
+
+    test('a multi-line message keeps its first line in place, and its other lines come first', () => {
+        const lines = written('pretty', (log) =>
+            log.error('The turn failed.\nTry again.', { tool: 'read_file', text: 'one\ntwo' }),
+        );
+
+        expect(lines).toEqual([
+            `${CLOCK} ERROR The turn failed. tool=read_file\n    Try again.\n  text:\n    one\n    two`,
+        ]);
+    });
+
+    test('\\r\\n breaks lines as \\n does', () => {
+        const lines = written('pretty', (log) => log.info('one\r\ntwo', { text: 'three\r\nfour' }));
+
+        expect(lines).toEqual([`${CLOCK} INFO  one\n    two\n  text:\n    three\n    four`]);
+    });
 });
 
 describe('JSON output', () => {
@@ -112,6 +124,16 @@ describe('JSON output', () => {
             '{"time":"2026-10-12T07:15:51.250Z","level":"info","message":"tool call","tool":"read_file","arguments":{"path":"a.txt"}}',
             '{"time":"2026-10-12T07:15:51.250Z","level":"warn","message":"tool failed","error":"one\\ntwo"}',
             '{"time":"2026-10-12T07:15:51.250Z","level":"error","message":"stopped"}',
+        ]);
+    });
+
+    test("an undefined field can't overwrite the record's own time, level or message", () => {
+        const lines = written('json', (log) =>
+            log.info('turn', { time: undefined, level: undefined, message: undefined }),
+        );
+
+        expect(lines).toEqual([
+            '{"time":"2026-10-12T07:15:51.250Z","level":"info","message":"turn"}',
         ]);
     });
 });

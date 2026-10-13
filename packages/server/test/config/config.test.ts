@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { loadConfig } from '../../src/config/config.ts';
+import { loadConfig, loadLogFormat } from '../../src/config/config.ts';
 
 describe('loadConfig', () => {
     test('defaults to a local LM Studio with nothing set', () => {
@@ -134,6 +134,26 @@ describe('loadConfig', () => {
                 expect.stringContaining('MODEL_BASE_URL'),
                 expect.stringContaining('MODEL_REASONING_EFFORT'),
             ],
+        });
+    });
+});
+
+describe('loadLogFormat', () => {
+    test.each([
+        [undefined, 'pretty'],
+        ['', 'pretty'],
+        ['  ', 'pretty'],
+        ['pretty', 'pretty'],
+        ['json', 'json'],
+        [' json ', 'json'],
+    ])('%j means %j', (value, format) => {
+        expect(loadLogFormat({ LOG_FORMAT: value })).toEqual({ ok: true, value: format });
+    });
+
+    test.each(['JSON', 'xml'])('%j is refused', (value) => {
+        expect(loadLogFormat({ LOG_FORMAT: value })).toEqual({
+            ok: false,
+            error: `LOG_FORMAT must be pretty or json; got "${value}".`,
         });
     });
 });

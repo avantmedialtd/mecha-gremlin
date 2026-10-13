@@ -77,11 +77,15 @@ const runCall = async (
     }
 };
 
-/** The model is chosen first, which can fail before any turn: LM Studio may have none loaded. */
+/** Choosing the model can fail before any turn: LM Studio may have none loaded. */
 export const createSession = async (
     config: Config,
     { tools, history: initial, maxTurns = MAX_TURNS }: SessionOptions,
 ): Promise<Result<Session, string>> => {
+    if (!Number.isInteger(maxTurns) || maxTurns < 1) {
+        return err(`maxTurns must be a positive integer; got ${maxTurns}.`);
+    }
+
     const choice = await resolveModel(config);
 
     if (!choice.ok) {

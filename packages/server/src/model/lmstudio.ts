@@ -12,6 +12,10 @@ export const lmStudioKeyRejected = (status: number): string => {
     return `LM Studio rejected the API key (HTTP ${status}). Its "Require Authentication" setting is on, so set MODEL_API_KEY to one of its tokens.`;
 };
 
+export const lmStudioUnreachable = (baseUrl: string, why: string): string => {
+    return `Can't reach LM Studio at ${baseUrl} (${why}). Is its server running? Start it with \`lms server start\`, or set MODEL_BASE_URL.`;
+};
+
 /**
  * Lists LM Studio's models through its native REST API, which lives at the server's origin.
  * The OpenAI-compatible `/v1/models` lists every downloaded model, and naming one that isn't
@@ -31,9 +35,7 @@ export const fetchModels = async (config: Config): Promise<Result<unknown, strin
     } catch (error) {
         const why = error instanceof Error ? error.message : String(error);
 
-        return err(
-            `Can't reach LM Studio at ${config.baseUrl} (${why}). Is its server running? Start it with \`lms server start\`, or set MODEL_BASE_URL.`,
-        );
+        return err(lmStudioUnreachable(config.baseUrl, why));
     }
 
     if (response.status === 401 || response.status === 403) {

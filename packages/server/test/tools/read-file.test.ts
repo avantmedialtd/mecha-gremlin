@@ -28,7 +28,12 @@ beforeAll(async () => {
     await writeFile(join(root, 'exact.txt'), 'e'.repeat(READ_LIMIT));
     await writeFile(join(root, 'big.txt'), 'b'.repeat(40_000));
     await writeFile(join(root, 'euro.txt'), '€'.repeat(20_000));
-    await writeFile(join(root, 'continuations.txt'), new Uint8Array(40_000).fill(0x80));
+    await writeFile(join(root, 'emoji.txt'), `a${'😀'.repeat(10_000)}`);
+    // ASCII, with 20 UTF-8 continuation bytes, which can't stand alone, around the limit.
+    await writeFile(
+        join(root, 'broken.txt'),
+        new Uint8Array(33_780).fill(0x61).fill(0x80, 32_760, 32_780),
+    );
     await writeFile(join(root, 'locked.txt'), 'locked');
     await chmod(join(root, 'locked.txt'), 0o000);
 });
@@ -182,20 +187,27 @@ describe('Cap what it returns', () => {
         });
     });
 
-    test('a cut never moves back past the start of the file', async () => {
-        // Nothing but UTF-8 continuation bytes: no character starts anywhere before the limit.
-        expect(await read('continuations.txt')).toEqual({
-            ok: true,
-            value: '\n\n[truncated: showing the first 0 of 40000 bytes]',
-        });
-    });
-
     test('the cut never splits a character', async () => {
         const outcome = await read('euro.txt');
 
         expect(outcome).toEqual({
             ok: true,
             value: `${'€'.repeat(10_922)}\n\n[truncated: showing the first 32766 of 60000 bytes]`,
+        });
+    });
+
+    test('nor a four-byte character, which takes the cut back 3 bytes', async () => {
+        expect(await read('emoji.txt')).toEqual({
+            ok: true,
+            value: `a${'😀'.repeat(8191)}\n\n[truncated: showing the first 32765 of 40001 bytes]`,
+        });
+    });
+
+    test('in invalid UTF-8, the cut moves back no more than 3 bytes', async () => {
+        // The 5 continuation bytes left before the cut read as U+FFFD each.
+        expect(await read('broken.txt')).toEqual({
+            ok: true,
+            value: `${'a'.repeat(32_760)}${'�'.repeat(5)}\n\n[truncated: showing the first 32765 of 33780 bytes]`,
         });
     });
 });

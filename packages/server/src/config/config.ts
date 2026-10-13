@@ -1,5 +1,6 @@
 import { type Result, err, ok } from '@mecha-gremlin/core/result';
 import type { ReasoningEffort } from 'openai/resources/shared';
+import type { LogFormat } from '../log/log.ts';
 
 type Effort = Exclude<ReasoningEffort, null>;
 
@@ -125,6 +126,15 @@ const checkEffort = (raw: string | undefined): Result<Effort | undefined, string
     return err(
         `MODEL_REASONING_EFFORT must be one of ${REASONING_EFFORTS.join(', ')}; got "${raw}".`,
     );
+};
+
+/** Apart from `loadConfig`, and read before it: the log reports what's wrong with the rest. */
+export const loadLogFormat = (env: Env): Result<LogFormat, string> => {
+    const format = read(env, 'LOG_FORMAT') ?? 'pretty';
+
+    return format === 'pretty' || format === 'json'
+        ? ok(format)
+        : err(`LOG_FORMAT must be pretty or json; got "${format}".`);
 };
 
 /** Reads and validates the server's settings. Pure: it touches nothing but `env`. */

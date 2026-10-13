@@ -267,4 +267,42 @@ describe('validateArgs', () => {
             '- path: Nope',
         );
     });
+
+    test.each([
+        ['an error', new Error('boom')],
+        ['something else', 'boom'],
+    ])('a validator that throws or rejects with %s', async (_what, thrown) => {
+        const throwing = fakeTool(() => {
+            throw thrown;
+        });
+        const rejecting = fakeTool(async () => {
+            throw thrown;
+        });
+        const expected = `Validating the arguments for read_file failed (boom).\nThe arguments must match this JSON Schema: ${expectedSchema}`;
+
+        expect(errorOf(await validateArgs(throwing.tool, '{"path":"a"}'))).toBe(expected);
+        expect(errorOf(await validateArgs(rejecting.tool, '{"path":"a"}'))).toBe(expected);
+    });
+
+    test("a JSON Schema that can't be produced is left out", async () => {
+        const { tool } = fakeTool();
+        const unsupported: Tool<Args> = {
+            ...tool,
+            schema: {
+                '~standard': {
+                    ...tool.schema['~standard'],
+                    jsonSchema: {
+                        input: () => {
+                            throw new Error('unsupported target');
+                        },
+                        output: () => ({}),
+                    },
+                },
+            },
+        };
+
+        expect(errorOf(await validateArgs(unsupported, '[]'))).toBe(
+            'The arguments for read_file must be a JSON object.',
+        );
+    });
 });

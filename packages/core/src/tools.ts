@@ -81,15 +81,27 @@ const issuePath = (issue: StandardSchemaV1.Issue): string => {
         .join('.');
 };
 
+const reasonOf = (error: unknown): string => {
+    return error instanceof Error ? error.message : String(error);
+};
+
 /** Errors end with the expected JSON Schema, so the model can correct its next call (Brief 4.5). */
 export const validateArgs = async <Args>(
     tool: Tool<Args>,
     raw: string,
 ): Promise<Result<Args, string>> => {
-    const fail = (problem: string): Err<string> =>
-        err(
-            `${problem}\nThe arguments must match this JSON Schema: ${JSON.stringify(toFunctionTool(tool).parameters)}`,
-        );
+    const fail = (problem: string): Err<string> => {
+        let schema: string;
+
+        // `jsonSchema.input` may throw for a target the library doesn't support.
+        try {
+            schema = JSON.stringify(toFunctionTool(tool).parameters);
+        } catch {
+            return err(problem);
+        }
+
+        return err(`${problem}\nThe arguments must match this JSON Schema: ${schema}`);
+    };
 
     // Some models send no arguments at all to a tool that takes none.
     let value: unknown = {};
@@ -98,9 +110,7 @@ export const validateArgs = async <Args>(
         try {
             value = JSON.parse(raw);
         } catch (error) {
-            const reason = error instanceof Error ? error.message : String(error);
-
-            return fail(`The arguments for ${tool.name} are not valid JSON (${reason}).`);
+            return fail(`The arguments for ${tool.name} are not valid JSON (${reasonOf(error)}).`);
         }
     }
 
@@ -108,7 +118,13 @@ export const validateArgs = async <Args>(
         return fail(`The arguments for ${tool.name} must be a JSON object.`);
     }
 
-    const result = await tool.schema['~standard'].validate(value);
+    let result: StandardSchemaV1.Result<Args>;
+
+    try {
+        result = await tool.schema['~standard'].validate(value);
+    } catch (error) {
+        return fail(`Validating the arguments for ${tool.name} failed (${reasonOf(error)}).`);
+    }
 
     if (result.issues === undefined) {
         return ok(result.value);

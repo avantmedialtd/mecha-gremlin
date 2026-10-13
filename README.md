@@ -67,7 +67,7 @@ It returns at most 32 KiB of a file, and notes when it cut the file short. Every
 
 ## Configuration
 
-Settings come from the environment. Bun also reads a local `.env` file, which is gitignored.
+Settings come from the environment. Bun also reads a local `.env` file, which is gitignored. Each value is trimmed, and a blank one counts as unset.
 
 | Variable | Default with `lmstudio` | Default with `openai` | Meaning |
 |---|---|---|---|
