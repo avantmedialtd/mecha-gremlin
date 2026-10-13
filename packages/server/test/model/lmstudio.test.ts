@@ -4,8 +4,16 @@ import { fetchModels, pickModel } from "../../src/model/lmstudio.ts";
 
 type Entry = { key: string; type?: string; instances?: string[] };
 
+const config: Config = {
+    provider: "lmstudio",
+    baseUrl: "http://lmstudio.test:1234/v1",
+    apiKey: "test-key",
+    model: undefined,
+    reasoningEffort: "none",
+};
+
 /** A `/api/v1/models` payload, shaped like LM Studio 0.4's. */
-function modelsPayload(...entries: Entry[]) {
+const modelsPayload = (...entries: Entry[]) => {
     return {
         models: entries.map(({ key, type = "llm", instances = [] }) => ({
             type,
@@ -17,14 +25,6 @@ function modelsPayload(...entries: Entry[]) {
             })),
         })),
     };
-}
-
-const config: Config = {
-    provider: "lmstudio",
-    baseUrl: "http://lmstudio.test:1234/v1",
-    apiKey: "test-key",
-    model: undefined,
-    reasoningEffort: "none",
 };
 
 describe("pickModel", () => {
@@ -106,12 +106,12 @@ describe("pickModel", () => {
 });
 
 /** `fetchModels`, with the global `fetch` faked by `fake`. */
-function fetchModelsWith(
+const fetchModelsWith = (
     fake: (input: string | URL | Request, init?: RequestInit) => Promise<Response>,
-) {
+) => {
     vi.stubGlobal("fetch", fake);
     return fetchModels(config);
-}
+};
 
 describe("fetchModels", () => {
     test("calls the native models endpoint with the bearer token", async () => {

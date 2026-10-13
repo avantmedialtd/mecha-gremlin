@@ -39,14 +39,14 @@ afterAll(async () => {
     await rm(outside, { recursive: true, force: true });
 });
 
-function read(path: string): Promise<ToolOutcome> {
+const read = (path: string): Promise<ToolOutcome> => {
     return readFileTool(root).invoke(JSON.stringify({ path }));
-}
+};
 
-function errorOf(outcome: ToolOutcome): string {
+const errorOf = (outcome: ToolOutcome): string => {
     expect(outcome.ok).toBe(false);
     return (outcome as Extract<ToolOutcome, { ok: false }>).error;
-}
+};
 
 describe("Read a UTF-8 text file under a root directory", () => {
     test("reads a file", async () => {

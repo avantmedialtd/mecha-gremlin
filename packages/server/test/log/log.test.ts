@@ -8,7 +8,7 @@ const CLOCK = [NOW.getHours(), NOW.getMinutes(), NOW.getSeconds()]
     .map((part) => String(part).padStart(2, "0"))
     .join(":");
 
-function written(format: LogFormat, log: (logger: Logger) => void): string[] {
+const written = (format: LogFormat, log: (logger: Logger) => void): string[] => {
     vi.spyOn(Date, "now").mockReturnValue(NOW.getTime());
     const lines: string[] = [];
     vi.spyOn(console, "log").mockImplementation((line: unknown) => {
@@ -17,7 +17,7 @@ function written(format: LogFormat, log: (logger: Logger) => void): string[] {
 
     log(createLogger(format));
     return lines;
-}
+};
 
 describe("logFormat", () => {
     test.each([

@@ -19,19 +19,51 @@ const ReadFileArgs = z.strictObject({
         ),
 });
 
-export function readFileTool(root: string): ToolHandler {
-    return defineTool(
-        {
-            name: "read_file",
-            description:
-                "Read a UTF-8 text file in the working directory and return its contents. Files over 32 KiB are cut short, with a note saying so.",
-            schema: ReadFileArgs,
-        },
-        ({ path }) => readFile(root, path),
-    );
-}
+const isInside = (root: string, target: string): boolean => {
+    const path = relative(root, target);
+    return path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path);
+};
 
-async function readFile(root: string, path: string): Promise<ToolOutcome> {
+/** Files named `.env*` hold secrets by convention; direnv's `.envrc` is meant to match too. */
+const isEnvFile = (path: string): boolean => {
+    return basename(path).startsWith(".env");
+};
+
+const readHead = async (file: string, length: number): Promise<Uint8Array> => {
+    const chunks: Uint8Array[] = [];
+
+    for await (const chunk of createReadStream(file, { start: 0, end: length - 1 })) {
+        chunks.push(chunk as Uint8Array);
+    }
+
+    return Buffer.concat(chunks);
+};
+
+/** UTF-8 continuation bytes are 10xxxxxx; cutting just before one would split a character. */
+const characterBoundary = (bytes: Uint8Array, cut: number): number => {
+    let boundary = cut;
+
+    while (boundary > 0 && ((bytes[boundary] ?? 0) & 0xc0) === 0x80) {
+        boundary--;
+    }
+
+    return boundary;
+};
+
+/** TextDecoder replaces invalid UTF-8 with U+FFFD instead of throwing. */
+const decode = (bytes: Uint8Array): string => {
+    return new TextDecoder().decode(bytes);
+};
+
+const failure = (error: string): ToolOutcome => {
+    return { ok: false, error };
+};
+
+const errorCode = (error: unknown): unknown => {
+    return typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
+};
+
+const readFile = async (root: string, path: string): Promise<ToolOutcome> => {
     const name = JSON.stringify(path);
     const outside = (): ToolOutcome =>
         failure(`${name} is outside the directory read_file may read.`);
@@ -89,48 +121,16 @@ async function readFile(root: string, path: string): Promise<ToolOutcome> {
             `Can't read ${name}: ${error instanceof Error ? error.message : String(error)}`,
         );
     }
-}
+};
 
-function isInside(root: string, target: string): boolean {
-    const path = relative(root, target);
-    return path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path);
-}
-
-/** Files named `.env*` hold secrets by convention; direnv's `.envrc` is meant to match too. */
-function isEnvFile(path: string): boolean {
-    return basename(path).startsWith(".env");
-}
-
-async function readHead(file: string, length: number): Promise<Uint8Array> {
-    const chunks: Uint8Array[] = [];
-
-    for await (const chunk of createReadStream(file, { start: 0, end: length - 1 })) {
-        chunks.push(chunk as Uint8Array);
-    }
-
-    return Buffer.concat(chunks);
-}
-
-/** UTF-8 continuation bytes are 10xxxxxx; cutting just before one would split a character. */
-function characterBoundary(bytes: Uint8Array, cut: number): number {
-    let boundary = cut;
-
-    while (boundary > 0 && ((bytes[boundary] ?? 0) & 0xc0) === 0x80) {
-        boundary--;
-    }
-
-    return boundary;
-}
-
-/** TextDecoder replaces invalid UTF-8 with U+FFFD instead of throwing. */
-function decode(bytes: Uint8Array): string {
-    return new TextDecoder().decode(bytes);
-}
-
-function failure(error: string): ToolOutcome {
-    return { ok: false, error };
-}
-
-function errorCode(error: unknown): unknown {
-    return typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
-}
+export const readFileTool = (root: string): ToolHandler => {
+    return defineTool(
+        {
+            name: "read_file",
+            description:
+                "Read a UTF-8 text file in the working directory and return its contents. Files over 32 KiB are cut short, with a note saying so.",
+            schema: ReadFileArgs,
+        },
+        ({ path }) => readFile(root, path),
+    );
+};

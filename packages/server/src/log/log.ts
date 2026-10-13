@@ -14,30 +14,20 @@ export interface Logger {
 type Level = "info" | "warn" | "error";
 
 /** Unset or empty means the default, `pretty`; anything but `pretty` or `json` is no format at all. */
-export function logFormat(value: string | undefined): LogFormat | undefined {
+export const logFormat = (value: string | undefined): LogFormat | undefined => {
     if (value === undefined || value === "" || value === "pretty") {
         return "pretty";
     }
 
     return value === "json" ? "json" : undefined;
-}
+};
 
-export function createLogger(format: LogFormat): Logger {
-    const write =
-        (level: Level) =>
-        (message: string, fields: Fields = {}): void => {
-            const time = new Date(Date.now());
-            const record =
-                format === "json"
-                    ? JSON.stringify({ time: time.toISOString(), level, message, ...fields })
-                    : pretty(time, level, message, fields);
-            console.log(record);
-        };
+/** Bare when it can't be misread as more than one value; JSON otherwise. */
+const inline = (value: Json): string => {
+    return typeof value === "string" && /^[^\s"=]+$/.test(value) ? value : JSON.stringify(value);
+};
 
-    return { info: write("info"), warn: write("warn"), error: write("error") };
-}
-
-function pretty(time: Date, level: Level, message: string, fields: Fields): string {
+const pretty = (time: Date, level: Level, message: string, fields: Fields): string => {
     const line = [time.toTimeString().slice(0, 8), level.toUpperCase().padEnd(5), message];
     const blocks: string[] = [];
 
@@ -54,9 +44,19 @@ function pretty(time: Date, level: Level, message: string, fields: Fields): stri
     }
 
     return [line.join(" "), ...blocks].join("\n");
-}
+};
 
-/** Bare when it can't be misread as more than one value; JSON otherwise. */
-function inline(value: Json): string {
-    return typeof value === "string" && /^[^\s"=]+$/.test(value) ? value : JSON.stringify(value);
-}
+export const createLogger = (format: LogFormat): Logger => {
+    const write =
+        (level: Level) =>
+        (message: string, fields: Fields = {}): void => {
+            const time = new Date(Date.now());
+            const record =
+                format === "json"
+                    ? JSON.stringify({ time: time.toISOString(), level, message, ...fields })
+                    : pretty(time, level, message, fields);
+            console.log(record);
+        };
+
+    return { info: write("info"), warn: write("warn"), error: write("error") };
+};

@@ -6,7 +6,7 @@ import { runTurn } from "../src/index.ts";
 type Handler = (url: string, init: RequestInit | undefined) => Response | Promise<Response>;
 
 /** A real OpenAI client whose HTTP layer is `handler`; records each JSON request body. */
-function makeClient(handler: Handler) {
+const makeClient = (handler: Handler) => {
     const bodies: Record<string, unknown>[] = [];
     const client = new OpenAI({
         apiKey: "test-key",
@@ -22,27 +22,20 @@ function makeClient(handler: Handler) {
     });
 
     return { client, bodies };
-}
+};
 
-function sseFrame(event: Record<string, unknown>): string {
+const sseFrame = (event: Record<string, unknown>): string => {
     return `event: ${String(event.type)}\ndata: ${JSON.stringify(event)}\n\n`;
-}
+};
 
-function sse(...events: Array<Record<string, unknown>>): Response {
+const sse = (...events: Array<Record<string, unknown>>): Response => {
     return new Response(events.map(sseFrame).join(""), {
         status: 200,
         headers: { "content-type": "text/event-stream" },
     });
-}
+};
 
-function jsonError(status: number, errorMessage: string): Response {
-    return new Response(JSON.stringify({ error: { message: errorMessage } }), {
-        status,
-        headers: { "content-type": "application/json" },
-    });
-}
-
-function responseObject(fields: Record<string, unknown> = {}) {
+const responseObject = (fields: Record<string, unknown> = {}) => {
     return {
         id: "resp_1",
         object: "response",
@@ -52,9 +45,9 @@ function responseObject(fields: Record<string, unknown> = {}) {
         incomplete_details: null,
         ...fields,
     };
-}
+};
 
-function message(text: string) {
+const message = (text: string) => {
     return {
         type: "message",
         id: "msg_1",
@@ -62,7 +55,14 @@ function message(text: string) {
         status: "completed",
         content: [{ type: "output_text", text, annotations: [] }],
     };
-}
+};
+
+const jsonError = (status: number, errorMessage: string): Response => {
+    return new Response(JSON.stringify({ error: { message: errorMessage } }), {
+        status,
+        headers: { "content-type": "application/json" },
+    });
+};
 
 const usage = {
     input_tokens: 21,

@@ -31,16 +31,106 @@ export interface TurnOptions {
 
 export type TurnFailure = Extract<TurnResult, { ok: false }>;
 
+/** Concatenates the `output_text` parts of every message item, in order. */
+const outputText = (response: Response): string => {
+    let text = "";
+
+    for (const item of response.output) {
+        if (item.type !== "message") {
+            continue;
+        }
+
+        for (const part of item.content) {
+            if (part.type === "output_text") {
+                text += part.text;
+            }
+        }
+    }
+
+    return text;
+};
+
+const aborted = (): TurnFailure => {
+    return { ok: false, error: "aborted", detail: "the turn was aborted" };
+};
+
+const statusOf = (error: unknown): number | undefined => {
+    if (typeof error !== "object" || error === null || !("status" in error)) {
+        return undefined;
+    }
+
+    return typeof error.status === "number" ? error.status : undefined;
+};
+
+/** True if `value`'s class, or any class it extends, has the given name. */
+const hasClassName = (value: unknown, name: string): boolean => {
+    let proto: unknown =
+        typeof value === "object" && value !== null ? Object.getPrototypeOf(value) : null;
+
+    while (typeof proto === "object" && proto !== null) {
+        if (proto.constructor.name === name) {
+            return true;
+        }
+
+        proto = Object.getPrototypeOf(proto);
+    }
+
+    return false;
+};
+
+const describe = (error: unknown): string => {
+    if (!(error instanceof Error)) {
+        return String(error);
+    }
+
+    const cause = error.cause instanceof Error ? error.cause.message : undefined;
+    return cause && cause !== error.message ? `${error.message} (${cause})` : error.message;
+};
+
+/**
+ * Classifies a failure to start the turn. Uses the HTTP status and the error's class name
+ * rather than `instanceof`, so it still works if the caller's `openai` is a different copy.
+ */
+const classifyRequestError = (error: unknown, signal: AbortSignal | undefined): TurnFailure => {
+    if (signal?.aborted || hasClassName(error, "APIUserAbortError")) {
+        return aborted();
+    }
+
+    const status = statusOf(error);
+
+    if (status !== undefined) {
+        const kind: TurnErrorKind =
+            status === 401 || status === 403
+                ? "auth"
+                : status === 429
+                  ? "rate_limit"
+                  : status >= 500
+                    ? "server_error"
+                    : "bad_request";
+        return { ok: false, error: kind, status, detail: describe(error) };
+    }
+
+    if (hasClassName(error, "APIConnectionTimeoutError")) {
+        return { ok: false, error: "timeout", detail: describe(error) };
+    }
+
+    if (hasClassName(error, "APIConnectionError")) {
+        return { ok: false, error: "unreachable", detail: describe(error) };
+    }
+
+    return { ok: false, error: "fatal", detail: describe(error) };
+};
+
 /**
  * Runs one model turn over the Responses API. The request is always streamed, and stored
  * only if the caller sets `store: true`. Model, HTTP and transport failures come back as
  * `{ ok: false }` values; this function does not throw for them.
  */
-export async function runTurn(
+export const runTurn = async (
     client: OpenAI,
     request: TurnRequest,
     options: TurnOptions = {},
-): Promise<TurnResult> {
+): Promise<TurnResult> => {
     const { signal } = options;
 
     let stream: AsyncIterable<ResponseStreamEvent>;
@@ -101,94 +191,4 @@ export async function runTurn(
     }
 
     return { ok: false, error: "failed", detail: "the stream ended without a terminal event" };
-}
-
-/** Concatenates the `output_text` parts of every message item, in order. */
-function outputText(response: Response): string {
-    let text = "";
-
-    for (const item of response.output) {
-        if (item.type !== "message") {
-            continue;
-        }
-
-        for (const part of item.content) {
-            if (part.type === "output_text") {
-                text += part.text;
-            }
-        }
-    }
-
-    return text;
-}
-
-/**
- * Classifies a failure to start the turn. Uses the HTTP status and the error's class name
- * rather than `instanceof`, so it still works if the caller's `openai` is a different copy.
- */
-function classifyRequestError(error: unknown, signal: AbortSignal | undefined): TurnFailure {
-    if (signal?.aborted || hasClassName(error, "APIUserAbortError")) {
-        return aborted();
-    }
-
-    const status = statusOf(error);
-
-    if (status !== undefined) {
-        const kind: TurnErrorKind =
-            status === 401 || status === 403
-                ? "auth"
-                : status === 429
-                  ? "rate_limit"
-                  : status >= 500
-                    ? "server_error"
-                    : "bad_request";
-        return { ok: false, error: kind, status, detail: describe(error) };
-    }
-
-    if (hasClassName(error, "APIConnectionTimeoutError")) {
-        return { ok: false, error: "timeout", detail: describe(error) };
-    }
-
-    if (hasClassName(error, "APIConnectionError")) {
-        return { ok: false, error: "unreachable", detail: describe(error) };
-    }
-
-    return { ok: false, error: "fatal", detail: describe(error) };
-}
-
-function aborted(): TurnFailure {
-    return { ok: false, error: "aborted", detail: "the turn was aborted" };
-}
-
-function statusOf(error: unknown): number | undefined {
-    if (typeof error !== "object" || error === null || !("status" in error)) {
-        return undefined;
-    }
-
-    return typeof error.status === "number" ? error.status : undefined;
-}
-
-/** True if `value`'s class, or any class it extends, has the given name. */
-function hasClassName(value: unknown, name: string): boolean {
-    let proto: unknown =
-        typeof value === "object" && value !== null ? Object.getPrototypeOf(value) : null;
-
-    while (typeof proto === "object" && proto !== null) {
-        if (proto.constructor.name === name) {
-            return true;
-        }
-
-        proto = Object.getPrototypeOf(proto);
-    }
-
-    return false;
-}
-
-function describe(error: unknown): string {
-    if (!(error instanceof Error)) {
-        return String(error);
-    }
-
-    const cause = error.cause instanceof Error ? error.cause.message : undefined;
-    return cause && cause !== error.message ? `${error.message} (${cause})` : error.message;
-}
+};

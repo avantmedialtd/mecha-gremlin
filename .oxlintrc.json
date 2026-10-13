@@ -8,7 +8,9 @@
     "rules": {
         "curly": ["error", "all"],
         "prefer-const": "error",
-        "prefer-arrow-callback": "error"
+        "prefer-arrow-callback": "error",
+        "func-style": ["error", "expression"],
+        "no-use-before-define": "error"
     },
     "env": {
         "builtin": true

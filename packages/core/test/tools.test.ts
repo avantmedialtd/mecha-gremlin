@@ -27,7 +27,7 @@ const PARAMETERS = {
 };
 
 /** Hand-written, so these tests rely on the Standard Schema interface alone. */
-function fakeTool(validate: Validate = (value) => ({ value: value as Args })) {
+const fakeTool = (validate: Validate = (value) => ({ value: value as Args })) => {
     const validated: unknown[] = [];
     const targets: string[] = [];
     const tool: Tool<Args> = {
@@ -56,14 +56,14 @@ function fakeTool(validate: Validate = (value) => ({ value: value as Args })) {
     };
 
     return { tool, validated, targets };
-}
+};
 
-function errorOf(result: ArgsResult<Args>): string {
+const errorOf = (result: ArgsResult<Args>): string => {
     expect(result.ok).toBe(false);
     return (result as Extract<ArgsResult<Args>, { ok: false }>).error;
-}
+};
 
-function message(...texts: string[]): ResponseOutputMessage {
+const message = (...texts: string[]): ResponseOutputMessage => {
     return {
         type: "message",
         id: "msg_1",
@@ -71,13 +71,13 @@ function message(...texts: string[]): ResponseOutputMessage {
         status: "completed",
         content: texts.map((text) => ({ type: "output_text", text, annotations: [] })),
     };
-}
+};
 
-function refusal(text: string): ResponseOutputMessage {
+const refusal = (text: string): ResponseOutputMessage => {
     return { ...message(), content: [{ type: "refusal", refusal: text }] };
-}
+};
 
-function call(callId: string): ResponseFunctionToolCall {
+const call = (callId: string): ResponseFunctionToolCall => {
     return {
         type: "function_call",
         id: `fc_${callId}`,
@@ -86,7 +86,7 @@ function call(callId: string): ResponseFunctionToolCall {
         arguments: '{"path":"package.json"}',
         status: "completed",
     };
-}
+};
 
 const reasoning: ResponseOutputItem = {
     type: "reasoning",

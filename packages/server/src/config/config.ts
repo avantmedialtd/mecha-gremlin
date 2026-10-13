@@ -42,8 +42,41 @@ export type ConfigResult = { ok: true; config: Config } | { ok: false; problems:
 
 export type Env = Record<string, string | undefined>;
 
+/** A set variable's trimmed value; unset and blank are both undefined. */
+const read = (env: Env, name: string): string | undefined => {
+    const value = env[name]?.trim();
+    return value ? value : undefined;
+};
+
+/** An http(s) URL without query or fragment, with any trailing slash removed. */
+const parseBaseUrl = (value: string): string | undefined => {
+    let url: URL;
+
+    try {
+        url = new URL(value);
+    } catch {
+        return undefined;
+    }
+
+    const isHttp = url.protocol === "http:" || url.protocol === "https:";
+
+    if (!isHttp || url.search !== "" || url.hash !== "") {
+        return undefined;
+    }
+
+    return url.href.replace(/\/+$/, "");
+};
+
+const isProvider = (value: string): value is Provider => {
+    return (PROVIDERS as readonly string[]).includes(value);
+};
+
+const isEffort = (value: string): value is Effort => {
+    return (REASONING_EFFORTS as readonly string[]).includes(value);
+};
+
 /** Reads and validates the server's settings. Pure: it touches nothing but `env`. */
-export function loadConfig(env: Env): ConfigResult {
+export const loadConfig = (env: Env): ConfigResult => {
     const rawProvider = read(env, "MODEL_PROVIDER") ?? "lmstudio";
 
     if (!isProvider(rawProvider)) {
@@ -108,37 +141,4 @@ export function loadConfig(env: Env): ConfigResult {
             reasoningEffort: rawEffort !== undefined && isEffort(rawEffort) ? rawEffort : undefined,
         },
     };
-}
-
-/** A set variable's trimmed value; unset and blank are both undefined. */
-function read(env: Env, name: string): string | undefined {
-    const value = env[name]?.trim();
-    return value ? value : undefined;
-}
-
-/** An http(s) URL without query or fragment, with any trailing slash removed. */
-function parseBaseUrl(value: string): string | undefined {
-    let url: URL;
-
-    try {
-        url = new URL(value);
-    } catch {
-        return undefined;
-    }
-
-    const isHttp = url.protocol === "http:" || url.protocol === "https:";
-
-    if (!isHttp || url.search !== "" || url.hash !== "") {
-        return undefined;
-    }
-
-    return url.href.replace(/\/+$/, "");
-}
-
-function isProvider(value: string): value is Provider {
-    return (PROVIDERS as readonly string[]).includes(value);
-}
-
-function isEffort(value: string): value is Effort {
-    return (REASONING_EFFORTS as readonly string[]).includes(value);
-}
+};

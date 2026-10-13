@@ -38,12 +38,16 @@ const CONFIG: Config = {
     reasoningEffort: undefined,
 };
 
-function recordingTool(
+const output = (callId: string, text: string): HistoryItem => {
+    return { type: "function_call_output", call_id: callId, output: text };
+};
+
+const recordingTool = (
     run: (path: string) => Promise<ToolOutcome> = async (path) => ({
         ok: true,
         output: `contents of ${path}`,
     }),
-) {
+) => {
     const paths: string[] = [];
     const handler = defineTool(
         {
@@ -58,17 +62,13 @@ function recordingTool(
     );
 
     return { handler, paths };
-}
+};
 
-function output(callId: string, text: string): HistoryItem {
-    return { type: "function_call_output", call_id: callId, output: text };
-}
-
-function stats(number: number, turnUsage: ResponseUsage = usage()): TurnStats {
+const stats = (number: number, turnUsage: ResponseUsage = usage()): TurnStats => {
     return { number, usage: turnUsage, seconds: 1.5 };
-}
+};
 
-async function start(config: Config, options: SessionOptions): Promise<Session> {
+const start = async (config: Config, options: SessionOptions): Promise<Session> => {
     const created = await createSession(config, options);
 
     if (!created.ok) {
@@ -76,13 +76,13 @@ async function start(config: Config, options: SessionOptions): Promise<Session> 
     }
 
     return created;
-}
+};
 
-async function runSession(
+const runSession = async (
     server: FakeServer,
     options: Partial<SessionOptions> = {},
     config: Config = CONFIG,
-) {
+) => {
     const { fetch, requests, turnBodies } = fakeFetch(server);
     vi.stubGlobal("fetch", fetch);
     const tool = recordingTool();
@@ -107,16 +107,16 @@ async function runSession(
         paths: tool.paths,
         handler: tool.handler,
     };
-}
+};
 
 const roundTrip = [reasoning(), call("read_file", { path: "package.json" }, "call_1")];
 
-function readThenAnswer() {
+const readThenAnswer = () => {
     return script(
         () => completed(roundTrip),
         () => completed([message("Done.")]),
     );
-}
+};
 
 const LM_STUDIO: Config = {
     ...CONFIG,

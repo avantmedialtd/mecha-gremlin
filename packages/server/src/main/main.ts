@@ -13,9 +13,66 @@ const FILE_QUESTION = "What is this file for? Answer in two or three sentences."
 const INSTRUCTIONS =
     "You answer questions about files in the working directory. Before answering a question about a file, read it with the read_file tool. Keep your answers brief.";
 
-process.exitCode = await run(process.argv.slice(2));
+/** The question's words are joined, so it needn't be quoted. */
+const parseArgs = (args: readonly string[]): { file: string; question: string } => {
+    const [file, ...words] = args;
 
-async function run(args: readonly string[]): Promise<number> {
+    if (file === undefined) {
+        return { file: DEFAULT_FILE, question: DEFAULT_QUESTION };
+    }
+
+    return { file, question: words.length > 0 ? words.join(" ") : FILE_QUESTION };
+};
+
+/** Arguments that parse are logged as data; the rest as the model sent them. */
+const parsed = (raw: string): Json => {
+    try {
+        return JSON.parse(raw) as Json;
+    } catch {
+        return raw;
+    }
+};
+
+const turnFields = ({ number, usage, seconds }: TurnStats): Fields => {
+    return {
+        number,
+        inputTokens: usage?.input_tokens,
+        cachedTokens: usage?.input_tokens_details?.cached_tokens,
+        outputTokens: usage?.output_tokens,
+        reasoningTokens: usage?.output_tokens_details?.reasoning_tokens,
+        seconds: Math.round(seconds * 10) / 10,
+    };
+};
+
+const failure = (
+    step: Exclude<SessionStep, { kind: "calls" | "final" }>,
+    config: Config,
+): string => {
+    switch (step.kind) {
+        case "turn_failed": {
+            const { error, detail, status } = step.failure;
+
+            if (error === "auth") {
+                return keyRejected(config, status ?? 401);
+            }
+
+            if (error === "unreachable") {
+                return `Can't reach ${config.baseUrl} (${detail}). Check MODEL_BASE_URL.`;
+            }
+
+            const http = status === undefined ? "" : `, HTTP ${status}`;
+            return `The turn failed (${error}${http}): ${detail}`;
+        }
+        case "turn_limit":
+            return `The model didn't answer within ${MAX_TURNS} turns: it was still calling tools. Try a narrower question.`;
+        case "empty":
+            return "The model gave no answer: its turn had neither text nor tool calls. Try again, or rephrase the question.";
+        case "history":
+            return `The conversation can't be continued (${step.detail}). The model sent something the openai SDK can't replay; try updating it.`;
+    }
+};
+
+const run = async (args: readonly string[]): Promise<number> => {
     const format = logFormat(process.env.LOG_FORMAT);
     const log = createLogger(format ?? "pretty");
     const fail = (message: string): number => {
@@ -87,60 +144,6 @@ async function run(args: readonly string[]): Promise<number> {
     }
 
     throw new Error("The session's steps ran out before an answer or a failure.");
-}
+};
 
-/** The question's words are joined, so it needn't be quoted. */
-function parseArgs(args: readonly string[]): { file: string; question: string } {
-    const [file, ...words] = args;
-
-    if (file === undefined) {
-        return { file: DEFAULT_FILE, question: DEFAULT_QUESTION };
-    }
-
-    return { file, question: words.length > 0 ? words.join(" ") : FILE_QUESTION };
-}
-
-/** Arguments that parse are logged as data; the rest as the model sent them. */
-function parsed(raw: string): Json {
-    try {
-        return JSON.parse(raw) as Json;
-    } catch {
-        return raw;
-    }
-}
-
-function turnFields({ number, usage, seconds }: TurnStats): Fields {
-    return {
-        number,
-        inputTokens: usage?.input_tokens,
-        cachedTokens: usage?.input_tokens_details?.cached_tokens,
-        outputTokens: usage?.output_tokens,
-        reasoningTokens: usage?.output_tokens_details?.reasoning_tokens,
-        seconds: Math.round(seconds * 10) / 10,
-    };
-}
-
-function failure(step: Exclude<SessionStep, { kind: "calls" | "final" }>, config: Config): string {
-    switch (step.kind) {
-        case "turn_failed": {
-            const { error, detail, status } = step.failure;
-
-            if (error === "auth") {
-                return keyRejected(config, status ?? 401);
-            }
-
-            if (error === "unreachable") {
-                return `Can't reach ${config.baseUrl} (${detail}). Check MODEL_BASE_URL.`;
-            }
-
-            const http = status === undefined ? "" : `, HTTP ${status}`;
-            return `The turn failed (${error}${http}): ${detail}`;
-        }
-        case "turn_limit":
-            return `The model didn't answer within ${MAX_TURNS} turns: it was still calling tools. Try a narrower question.`;
-        case "empty":
-            return "The model gave no answer: its turn had neither text nor tool calls. Try again, or rephrase the question.";
-        case "history":
-            return `The conversation can't be continued (${step.detail}). The model sent something the openai SDK can't replay; try updating it.`;
-    }
-}
+process.exitCode = await run(process.argv.slice(2));

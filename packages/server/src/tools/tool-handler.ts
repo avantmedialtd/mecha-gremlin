@@ -9,10 +9,10 @@ export interface ToolHandler {
  * The loop holds tools with different argument types in one list. Validating inside this closure
  * keeps each tool's arguments typed from its schema to its `run`.
  */
-export function defineTool<Args>(
+export const defineTool = <Args>(
     tool: Tool<Args>,
     run: (args: Args) => Promise<ToolOutcome>,
-): ToolHandler {
+): ToolHandler => {
     return {
         tool,
         async invoke(rawArgs) {
@@ -20,4 +20,4 @@ export function defineTool<Args>(
             return validated.ok ? run(validated.args) : { ok: false, error: validated.error };
         },
     };
-}
+};

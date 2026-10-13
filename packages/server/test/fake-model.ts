@@ -9,7 +9,7 @@ import type {
 /** Not `typeof fetch`: Bun's adds `fetch.preconnect`, which a fake has no use for. */
 type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
-export function message(text: string): ResponseOutputMessage {
+export const message = (text: string): ResponseOutputMessage => {
     return {
         type: "message",
         id: "msg_1",
@@ -17,18 +17,18 @@ export function message(text: string): ResponseOutputMessage {
         status: "completed",
         content: [{ type: "output_text", text, annotations: [] }],
     };
-}
+};
 
-export function reasoning(text = "I should read the file first."): ResponseReasoningItem {
+export const reasoning = (text = "I should read the file first."): ResponseReasoningItem => {
     return {
         type: "reasoning",
         id: "rs_1",
         summary: [],
         content: [{ type: "reasoning_text", text }],
     };
-}
+};
 
-export function call(name: string, args: unknown, callId = "call_1"): ResponseFunctionToolCall {
+export const call = (name: string, args: unknown, callId = "call_1"): ResponseFunctionToolCall => {
     return {
         type: "function_call",
         id: `fc_${callId}`,
@@ -37,9 +37,9 @@ export function call(name: string, args: unknown, callId = "call_1"): ResponseFu
         arguments: typeof args === "string" ? args : JSON.stringify(args),
         status: "completed",
     };
-}
+};
 
-export function usage(fields: Partial<ResponseUsage> = {}): ResponseUsage {
+export const usage = (fields: Partial<ResponseUsage> = {}): ResponseUsage => {
     return {
         input_tokens: 349,
         input_tokens_details: { cached_tokens: 256, cache_write_tokens: 0 },
@@ -48,12 +48,12 @@ export function usage(fields: Partial<ResponseUsage> = {}): ResponseUsage {
         total_tokens: 375,
         ...fields,
     };
-}
+};
 
-export function completed(
+export const completed = (
     output: ResponseOutputItem[],
     turnUsage: ResponseUsage = usage(),
-): Response {
+): Response => {
     const response = {
         id: "resp_1",
         object: "response",
@@ -67,15 +67,15 @@ export function completed(
     return new Response(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`, {
         headers: { "content-type": "text/event-stream" },
     });
-}
+};
 
-export function httpError(status: number, errorMessage: string): Response {
+export const httpError = (status: number, errorMessage: string): Response => {
     return Response.json({ error: { message: errorMessage } }, { status });
-}
+};
 
-export function script(...turns: Array<() => Response>): (n: number) => Response {
+export const script = (...turns: Array<() => Response>): ((n: number) => Response) => {
     return (n) => turns[n]?.() ?? httpError(500, `the script has no turn ${n + 1}`);
-}
+};
 
 export const loadedBonsai = {
     models: [
@@ -99,7 +99,7 @@ export interface RecordedRequest {
     authorization: string | null;
 }
 
-export function fakeFetch(server: FakeServer = {}) {
+export const fakeFetch = (server: FakeServer = {}) => {
     const requests: RecordedRequest[] = [];
     let turns = 0;
     const fetch: Fetch = async (input, init) => {
@@ -128,4 +128,4 @@ export function fakeFetch(server: FakeServer = {}) {
             .map((request) => request.body);
 
     return { fetch, requests, turnBodies };
-}
+};

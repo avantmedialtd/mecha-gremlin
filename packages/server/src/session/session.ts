@@ -58,24 +58,29 @@ export interface Session {
 
 const NOT_RUN: ToolOutcome = { ok: false, error: "not run: the turn limit was reached" };
 
-/** The model is chosen first, which can fail before any turn: LM Studio may have none loaded. */
-export async function createSession(
-    config: Config,
-    options: SessionOptions,
-): Promise<({ ok: true } & Session) | { ok: false; reason: string }> {
-    const choice = await resolveModel(config);
+const runCall = async (
+    call: ToolCall,
+    handlers: ReadonlyMap<string, ToolHandler>,
+): Promise<ToolOutcome> => {
+    const handler = handlers.get(call.name);
 
-    if (!choice.ok) {
-        return choice;
+    if (handler === undefined) {
+        const available = [...handlers.keys()].join(", ");
+        return {
+            ok: false,
+            error: `unknown tool ${JSON.stringify(call.name)}; available tools: ${available}`,
+        };
     }
 
-    const client = new OpenAI({ baseURL: config.baseUrl, apiKey: config.apiKey, maxRetries: 0 });
-    const history = [...options.history];
-    const steps = run(client, config, choice.model, options, history);
-    return { ok: true, model: choice.model, note: choice.note, steps, history };
-}
+    try {
+        return await handler.invoke(call.arguments);
+    } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        return { ok: false, error: `${call.name} failed: ${reason}` };
+    }
+};
 
-async function* run(
+const run = async function* (
     client: OpenAI,
     config: Config,
     model: string,
@@ -141,26 +146,21 @@ async function* run(
 
         yield { kind: "calls", turn, calls };
     }
-}
+};
 
-async function runCall(
-    call: ToolCall,
-    handlers: ReadonlyMap<string, ToolHandler>,
-): Promise<ToolOutcome> {
-    const handler = handlers.get(call.name);
+/** The model is chosen first, which can fail before any turn: LM Studio may have none loaded. */
+export const createSession = async (
+    config: Config,
+    options: SessionOptions,
+): Promise<({ ok: true } & Session) | { ok: false; reason: string }> => {
+    const choice = await resolveModel(config);
 
-    if (handler === undefined) {
-        const available = [...handlers.keys()].join(", ");
-        return {
-            ok: false,
-            error: `unknown tool ${JSON.stringify(call.name)}; available tools: ${available}`,
-        };
+    if (!choice.ok) {
+        return choice;
     }
 
-    try {
-        return await handler.invoke(call.arguments);
-    } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        return { ok: false, error: `${call.name} failed: ${reason}` };
-    }
-}
+    const client = new OpenAI({ baseURL: config.baseUrl, apiKey: config.apiKey, maxRetries: 0 });
+    const history = [...options.history];
+    const steps = run(client, config, choice.model, options, history);
+    return { ok: true, model: choice.model, note: choice.note, steps, history };
+};

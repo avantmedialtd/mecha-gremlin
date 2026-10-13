@@ -62,7 +62,7 @@ afterEach(() => {
  * The log is read as JSON records, which pins every field, unless a test asks for another format.
  * The formatted output has its own tests.
  */
-async function hello(env: Settings = {}, server: FakeServer = {}, args: string[] = []) {
+const hello = async (env: Settings = {}, server: FakeServer = {}, args: string[] = []) => {
     const settings: Settings = { LOG_FORMAT: "json", ...env };
 
     for (const name of SETTINGS) {
@@ -102,15 +102,15 @@ async function hello(env: Settings = {}, server: FakeServer = {}, args: string[]
             : [];
     const turns = requests.filter((request) => request.url.endsWith("/v1/responses"));
     return { code: process.exitCode, output, records, requests, turns, turn: turns[0] };
-}
+};
 
-function find(records: LogRecord[], wanted: string): LogRecord | undefined {
+const find = (records: LogRecord[], wanted: string): LogRecord | undefined => {
     return records.find((record) => record.message === wanted);
-}
+};
 
-function errors(records: LogRecord[]): string[] {
+const errors = (records: LogRecord[]): string[] => {
     return records.filter((record) => record.level === "error").map((record) => record.message);
-}
+};
 
 const readThenAnswer: FakeServer = {
     responses: script(

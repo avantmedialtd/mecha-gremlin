@@ -28,7 +28,7 @@ export type ArgsResult<Args> = { ok: true; args: Args } | { ok: false; error: st
  * nothing. `strict` makes OpenAI constrain generation to the schema; LM Studio ignores it, so
  * `validateArgs` still checks every call.
  */
-export function toFunctionTool(tool: Tool): FunctionTool {
+export const toFunctionTool = (tool: Tool): FunctionTool => {
     const { $schema: _dialect, ...parameters } = tool.schema["~standard"].jsonSchema.input({
         target: "draft-07",
     });
@@ -40,13 +40,13 @@ export function toFunctionTool(tool: Tool): FunctionTool {
         parameters,
         strict: true,
     };
-}
+};
 
 /**
  * Calls win over text because models pair a call with a blank or chatty message (Brief R11). A
  * refusal counts as the answer, so the user sees it instead of "no answer".
  */
-export function classify(output: readonly ResponseOutputItem[]): Turn {
+export const classify = (output: readonly ResponseOutputItem[]): Turn => {
     const calls = output.filter((item): item is ToolCall => item.type === "function_call");
 
     if (calls.length > 0) {
@@ -67,10 +67,25 @@ export function classify(output: readonly ResponseOutputItem[]): Turn {
 
     text = text.trim();
     return text === "" ? { kind: "empty" } : { kind: "final", text };
-}
+};
+
+const issuePath = (issue: StandardSchemaV1.Issue): string => {
+    const path = issue.path ?? [];
+
+    if (path.length === 0) {
+        return "(root)";
+    }
+
+    return path
+        .map((segment) => String(typeof segment === "object" ? segment.key : segment))
+        .join(".");
+};
 
 /** Errors end with the expected JSON Schema, so the model can correct its next call (Brief 4.5). */
-export async function validateArgs<Args>(tool: Tool<Args>, raw: string): Promise<ArgsResult<Args>> {
+export const validateArgs = async <Args>(
+    tool: Tool<Args>,
+    raw: string,
+): Promise<ArgsResult<Args>> => {
     const fail = (problem: string): ArgsResult<Args> => ({
         ok: false,
         error: `${problem}\nThe arguments must match this JSON Schema: ${JSON.stringify(toFunctionTool(tool).parameters)}`,
@@ -101,16 +116,4 @@ export async function validateArgs<Args>(tool: Tool<Args>, raw: string): Promise
 
     const issues = result.issues.map((issue) => `- ${issuePath(issue)}: ${issue.message}`);
     return fail(`The arguments for ${tool.name} don't match its schema:\n${issues.join("\n")}`);
-}
-
-function issuePath(issue: StandardSchemaV1.Issue): string {
-    const path = issue.path ?? [];
-
-    if (path.length === 0) {
-        return "(root)";
-    }
-
-    return path
-        .map((segment) => String(typeof segment === "object" ? segment.key : segment))
-        .join(".");
-}
+};

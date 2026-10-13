@@ -9,7 +9,7 @@ export type ModelChoice =
  * Decides which model to talk to. LM Studio is asked which model is loaded, so the app never
  * makes it load one on demand (Brief 4.9); every other provider names the model in MODEL.
  */
-export async function resolveModel(config: Config): Promise<ModelChoice> {
+export const resolveModel = async (config: Config): Promise<ModelChoice> => {
     if (config.provider === "lmstudio") {
         const models = await fetchModels(config);
 
@@ -24,13 +24,13 @@ export async function resolveModel(config: Config): Promise<ModelChoice> {
     return config.model === undefined
         ? { ok: false, reason: `MODEL is required with MODEL_PROVIDER=${config.provider}.` }
         : { ok: true, model: config.model };
-}
+};
 
 /** The message for a rejected API key, with the provider's own fix where there is one. */
-export function keyRejected(config: Config, status: number): string {
+export const keyRejected = (config: Config, status: number): string => {
     if (config.provider === "lmstudio") {
         return lmStudioKeyRejected(status);
     }
 
     return `${config.baseUrl} rejected the API key (HTTP ${status}). Check MODEL_API_KEY.`;
-}
+};

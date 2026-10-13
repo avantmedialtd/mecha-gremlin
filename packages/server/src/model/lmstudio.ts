@@ -9,13 +9,17 @@ interface LoadedModel {
     instanceIds: string[];
 }
 
+export const lmStudioKeyRejected = (status: number): string => {
+    return `LM Studio rejected the API key (HTTP ${status}). Its "Require Authentication" setting is on, so set MODEL_API_KEY to one of its tokens.`;
+};
+
 /**
  * Lists LM Studio's models through its native REST API, which lives at the server's origin.
  * The OpenAI-compatible `/v1/models` lists every downloaded model, and naming one that isn't
  * loaded makes LM Studio JIT-load it with its default context, which this app never relies on
  * (Brief 4.9).
  */
-export async function fetchModels(config: Config): Promise<ModelsResult> {
+export const fetchModels = async (config: Config): Promise<ModelsResult> => {
     const url = `${new URL(config.baseUrl).origin}/api/v1/models`;
 
     let response: Response;
@@ -49,18 +53,53 @@ export async function fetchModels(config: Config): Promise<ModelsResult> {
             reason: `${url} didn't return JSON. Is ${config.baseUrl} an LM Studio server, version 0.4 or later?`,
         };
     }
-}
+};
 
-export function lmStudioKeyRejected(status: number): string {
-    return `LM Studio rejected the API key (HTTP ${status}). Its "Require Authentication" setting is on, so set MODEL_API_KEY to one of its tokens.`;
-}
+const isRecord = (value: unknown): value is Record<string, unknown> => {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+};
+
+/** The loaded LLMs in a `/api/v1/models` payload, or undefined if its shape is unexpected. */
+const loadedModels = (payload: unknown): LoadedModel[] | undefined => {
+    if (!isRecord(payload) || !Array.isArray(payload.models)) {
+        return undefined;
+    }
+
+    const loaded: LoadedModel[] = [];
+
+    for (const entry of payload.models) {
+        if (!isRecord(entry) || typeof entry.key !== "string" || typeof entry.type !== "string") {
+            return undefined;
+        }
+
+        if (entry.type !== "llm") {
+            continue;
+        }
+
+        const instances = entry.loaded_instances ?? [];
+
+        if (!Array.isArray(instances)) {
+            return undefined;
+        }
+
+        const instanceIds = instances.flatMap((instance) =>
+            isRecord(instance) && typeof instance.id === "string" ? [instance.id] : [],
+        );
+
+        if (instanceIds.length > 0) {
+            loaded.push({ key: entry.key, instanceIds });
+        }
+    }
+
+    return loaded;
+};
 
 /**
  * Chooses the model to talk to from a `/api/v1/models` payload. Only LLMs with a loaded
  * instance qualify. A configured model must match a loaded instance id or model key;
  * otherwise the first loaded instance is used.
  */
-export function pickModel(payload: unknown, configured?: string): ModelChoice {
+export const pickModel = (payload: unknown, configured?: string): ModelChoice => {
     const loaded = loadedModels(payload);
 
     if (loaded === undefined) {
@@ -107,43 +146,4 @@ export function pickModel(payload: unknown, configured?: string): ModelChoice {
     }
 
     return { ok: true, model: first };
-}
-
-/** The loaded LLMs in a `/api/v1/models` payload, or undefined if its shape is unexpected. */
-function loadedModels(payload: unknown): LoadedModel[] | undefined {
-    if (!isRecord(payload) || !Array.isArray(payload.models)) {
-        return undefined;
-    }
-
-    const loaded: LoadedModel[] = [];
-
-    for (const entry of payload.models) {
-        if (!isRecord(entry) || typeof entry.key !== "string" || typeof entry.type !== "string") {
-            return undefined;
-        }
-
-        if (entry.type !== "llm") {
-            continue;
-        }
-
-        const instances = entry.loaded_instances ?? [];
-
-        if (!Array.isArray(instances)) {
-            return undefined;
-        }
-
-        const instanceIds = instances.flatMap((instance) =>
-            isRecord(instance) && typeof instance.id === "string" ? [instance.id] : [],
-        );
-
-        if (instanceIds.length > 0) {
-            loaded.push({ key: entry.key, instanceIds });
-        }
-    }
-
-    return loaded;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+};
