@@ -6,7 +6,8 @@
         "suspicious": "warn"
     },
     "rules": {
-        "curly": ["error", "all"]
+        "curly": ["error", "all"],
+        "prefer-const": "error"
     },
     "env": {
         "builtin": true
