@@ -119,3 +119,7 @@
 
 - [x] 11.1 The session yields `classify`'s `final` and `empty` results as they are, with the turn's stats, and `runTurn`'s failure whole, in a `turn_failed` step. `turn_limit` and `history` are steps of their own. The `answer` and `stop` steps are gone, and so are the `detail` texts that `stop` carried for `empty` and `turn_limit`; nothing read them.
 - [x] 11.2 `core` exports `TurnFailure`. `main.ts` switches on the step's kind, and the session tests assert the new steps.
+
+## 12. `main.ts` keeps only the program
+
+- [x] 12.1 Its helpers move beside it in `main/`: `args.ts` (`parseArgs` and the default file and questions), `fields.ts` (`parsed` and `turnFields`, for the log) and `failure.ts` (the message for a session that ends without an answer). `main.ts` keeps the developer prompt, `run` and the entry line; the hello tests still cover the helpers through it.

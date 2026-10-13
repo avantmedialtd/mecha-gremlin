@@ -10,7 +10,7 @@ A self-hosted, scheduled agent runner, in early development. The design and its 
 | [`packages/server`](packages/server) | `@mecha-gremlin/server`: the app. So far it asks the model a question about a file, which the model reads with the `read_file` tool in an agent loop. |
 
 Inside `packages/server/src`, the code is grouped by concern:
-- `main`: the entry point;
+- `main`: the entry point, and its helpers for the arguments, the log fields and the failure messages;
 - `config`;
 - `model`: model choice and LM Studio's API;
 - `session`: the agent loop, as a session that yields each turn's result;
