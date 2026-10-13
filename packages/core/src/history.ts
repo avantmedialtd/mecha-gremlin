@@ -26,8 +26,8 @@ export const toOutputItem = (
 };
 
 /**
- * `toResponseInputItems` strips the fields the SDK adds, such as `parsed_arguments`, and throws on
- * item types it doesn't know.
+ * Strips the fields the SDK adds, such as `parsed_arguments`, and returns an error for an item
+ * type the SDK doesn't know.
  */
 export const toInput = (history: readonly HistoryItem[]): Result<ResponseInputItem[], string> => {
     try {
