@@ -100,7 +100,6 @@ const run = async function* (
 
         if (!input.ok) {
             yield { kind: "history", detail: input.detail };
-
             return;
         }
 
@@ -115,7 +114,6 @@ const run = async function* (
 
         if (!result.ok) {
             yield { kind: "turn_failed", failure: result };
-
             return;
         }
 
@@ -127,7 +125,6 @@ const run = async function* (
 
         if (next.kind !== "calls") {
             yield { ...next, turn };
-
             return;
         }
 
@@ -138,7 +135,6 @@ const run = async function* (
             }
 
             yield { kind: "turn_limit", turn };
-
             return;
         }
 
