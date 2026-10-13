@@ -207,6 +207,23 @@ The brief already sketches the rest of the loop:
   - `TurnRequest` is the SDK's request without `stream`, an unnamed mapped type that the allowlist can't match. It is readonly on top, and `runTurn`'s parameter for it is exempt inline.
 - **What type information brought along:** the enabled categories' type-aware rules. They found three casts in the sources, now gone. They also found a `consistent-return` warning on a switch that TypeScript knows is exhaustive, so that rule gives way to `noImplicitReturns`. Tests may still cast, because they build malformed values on purpose.
 
+**13. Every mutant is caught.**
+- **The bar:** Stryker fails below a 100% mutation score, locally and in CI (`thresholds.break`).
+- **Tests first:** most mutants that survived pointed at behaviour no test checked:
+  - `runTurn`: HTTP 403, 429 and 400, timeouts, errors that aren't the SDK's, and responses without details;
+  - LM Studio: malformed payloads;
+  - settings that are missing one at a time.
+
+  Assertions now check exact details and messages, not just kinds.
+- **Then simpler code:** a mutant that behaves exactly like the original usually means the code checks something twice, so the repetition went:
+  - `loadConfig` checks each setting into its own `Result`, so nothing is checked again only to narrow a type;
+  - `statusOf`, `hasClassName` and `read_file`'s `errorCode` read through `Object()`, which wraps any thrown value, instead of guarding each case;
+  - `runTurn` no longer checks for `APIUserAbortError`, which the SDK throws only once the caller's signal is aborted;
+  - `runTurn` no longer handles an SSE `error` event, which the SDK throws as an `APIError` before it gets there;
+  - LM Studio entries without `loaded_instances` are skipped explicitly;
+  - the logger writes the readable format when it's asked for `pretty`, so `main.ts`' fallback to `pretty` has an effect a test can see.
+- **Only then a comment:** two `// Stryker disable next-line` comments remain, each with its reason. One is `main.ts`' final `throw`, which can't run. The other is how far `read_file` reads, which only changes memory use.
+
 ## Risks / Trade-offs
 
 - **A local model calls the wrong path, or answers without reading.** → The developer item tells it to read first. Errors such as "no such file" go back to it. The default question can't be answered without the file, and the cap stops a loop that never answers.

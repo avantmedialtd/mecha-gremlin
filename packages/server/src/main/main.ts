@@ -84,6 +84,8 @@ const run = async (args: readonly string[]): Promise<number> => {
         }
     }
 
+    // Can't run: the last step is always an answer or a failure.
+    // Stryker disable next-line all
     throw new Error("The session's steps ran out before an answer or a failure.");
 };
 

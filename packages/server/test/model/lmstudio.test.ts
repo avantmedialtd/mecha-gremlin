@@ -56,18 +56,35 @@ describe('pickModel', () => {
     });
 
     test('accepts a configured instance id or model key that is loaded', () => {
-        const payload = modelsPayload({ key: 'qwen3', instances: ['qwen3', 'qwen3:2'] });
+        const payload = modelsPayload(
+            { key: 'b', instances: ['b'] },
+            { key: 'qwen3', instances: ['qwen3:1', 'qwen3:2'] },
+        );
 
         expect(pickModel(payload, 'qwen3:2')).toEqual({ ok: true, value: { model: 'qwen3:2' } });
         expect(pickModel(payload, 'qwen3')).toEqual({ ok: true, value: { model: 'qwen3' } });
     });
 
     test('rejects a configured model that is not loaded, listing what is', () => {
-        const payload = modelsPayload({ key: 'a', instances: ['a'] }, { key: 'b' });
+        const payload = modelsPayload(
+            { key: 'a', instances: ['a'] },
+            { key: 'c', instances: ['c'] },
+            { key: 'b' },
+        );
         const choice = pickModel(payload, 'b');
 
-        expect(choice).toMatchObject({ ok: false, error: expect.stringContaining('Loaded: a.') });
+        expect(choice).toMatchObject({
+            ok: false,
+            error: expect.stringContaining('Loaded: a, c.'),
+        });
         expect(choice).toMatchObject({ error: expect.stringContaining('lms load b') });
+    });
+
+    test('rejects a configured model when nothing is loaded', () => {
+        expect(pickModel(modelsPayload({ key: 'a' }), 'a')).toEqual({
+            ok: false,
+            error: 'MODEL is "a", but that model isn\'t loaded in LM Studio. No model is loaded. Load it with `lms load a`.',
+        });
     });
 
     test('fails when no model is loaded', () => {
@@ -93,12 +110,31 @@ describe('pickModel', () => {
         });
     });
 
+    test('an LLM without loaded_instances is not loaded', () => {
+        expect(pickModel({ models: [{ type: 'llm', key: 'a' }] })).toMatchObject({
+            ok: false,
+            error: expect.stringContaining('No model is loaded'),
+        });
+    });
+
+    test('skips loaded instances without a string id', () => {
+        const payload = {
+            models: [{ type: 'llm', key: 'a', loaded_instances: [{ id: 1 }, null, { id: 'a:2' }] }],
+        };
+
+        expect(pickModel(payload)).toEqual({ ok: true, value: { model: 'a:2' } });
+    });
+
     // Each case is wrapped in its own row: test.each spreads array rows into arguments.
     test.each([
+        [undefined],
         [null],
         [[]],
         [{ data: [] }],
+        [{ models: [null] }],
         [{ models: [{ key: 1 }] }],
+        [{ models: [{ key: 1, type: 'llm' }] }],
+        [{ models: [{ key: 'a' }] }],
         [{ models: [{ key: 'a', type: 'llm', loaded_instances: {} }] }],
     ])('reports an unexpected payload shape: %j', (payload: unknown) => {
         expect(pickModel(payload)).toMatchObject({
@@ -156,12 +192,19 @@ describe('fetchModels', () => {
         });
     });
 
-    test('reports other HTTP errors and non-JSON bodies', async () => {
-        const notFound = await fetchModelsWith(async () => new Response('nope', { status: 404 }));
-        expect(notFound).toMatchObject({ ok: false });
+    test('reports any other HTTP error', async () => {
+        const result = await fetchModelsWith(async () => new Response('nope', { status: 404 }));
 
-        const html = await fetchModelsWith(async () => new Response('<html>', { status: 200 }));
-        expect(html).toMatchObject({
+        expect(result).toEqual({
+            ok: false,
+            error: 'LM Studio answered HTTP 404 for http://lmstudio.test:1234/api/v1/models.',
+        });
+    });
+
+    test('reports a body that is not JSON', async () => {
+        const result = await fetchModelsWith(async () => new Response('<html>', { status: 200 }));
+
+        expect(result).toMatchObject({
             ok: false,
             error: expect.stringContaining("didn't return JSON"),
         });

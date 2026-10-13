@@ -136,3 +136,9 @@
 - [x] 14.1 `createSession` creates the history and the step generator that grows it, so no function changes an array it was passed. The per-session setup (reasoning, function tools, handlers) moves into `createSession` beside them.
 - [x] 14.2 Every object type the code defines is readonly: properties, arrays and records, in `core`, the server and the test helpers.
 - [x] 14.3 Lint: `no-param-reassign` with `props`, and `typescript/prefer-readonly-parameter-types`, which skips inferred types and allows other packages' types by name. oxlint runs with type information through `oxlint-tsgolint`, and its type-aware rules removed three casts from the sources. `consistent-return` gives way to TypeScript's `noImplicitReturns`, and tests may still cast.
+
+## 15. Every mutant caught
+
+- [x] 15.1 Tests for the behaviour that surviving mutants showed untested: `runTurn`'s HTTP statuses, timeouts, other thrown values, responses without details, the text around refusals and tool calls, and a connection that breaks after an abort; LM Studio's HTTP errors, malformed payloads and model matching; each setting missing on its own; `resolveModel` and `keyRejected` on their own. Assertions check exact details and messages.
+- [x] 15.2 Code that a mutant couldn't change visibly got simpler: `loadConfig` checks each setting into a `Result`; `statusOf`, `hasClassName` and `errorCode` read through `Object()`; `runTurn` drops the `APIUserAbortError` check and the unreachable `error` case; LM Studio entries without `loaded_instances` are skipped explicitly; the logger checks for `pretty`.
+- [x] 15.3 Two `// Stryker disable next-line` comments, each with its reason: `main.ts`' final `throw`, and how far `read_file` reads. Stryker's `thresholds.break` is 100, so CI fails if any mutant survives.

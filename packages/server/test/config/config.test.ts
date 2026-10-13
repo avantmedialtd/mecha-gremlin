@@ -22,8 +22,8 @@ describe('loadConfig', () => {
         });
     });
 
-    test('a trailing slash on the base URL is removed', () => {
-        expect(loadConfig({ MODEL_BASE_URL: 'http://studio.local:1234/v1/' })).toMatchObject({
+    test('trailing slashes on the base URL are removed', () => {
+        expect(loadConfig({ MODEL_BASE_URL: 'http://studio.local:1234/v1//' })).toMatchObject({
             ok: true,
             value: { baseUrl: 'http://studio.local:1234/v1' },
         });
@@ -61,6 +61,17 @@ describe('loadConfig', () => {
         });
     });
 
+    test('any other provider may use a base URL without a path', () => {
+        expect(
+            loadConfig({
+                MODEL_PROVIDER: 'openai',
+                MODEL_BASE_URL: 'https://models.example.com',
+                MODEL_API_KEY: 'sk-test',
+                MODEL: 'gpt-test',
+            }),
+        ).toMatchObject({ ok: true, value: { baseUrl: 'https://models.example.com' } });
+    });
+
     test('the openai provider needs MODEL_API_KEY and MODEL', () => {
         expect(loadConfig({ MODEL_PROVIDER: 'openai' })).toEqual({
             ok: false,
@@ -71,22 +82,34 @@ describe('loadConfig', () => {
         });
     });
 
-    test('rejects an unknown provider', () => {
-        expect(loadConfig({ MODEL_PROVIDER: 'anthropic' })).toEqual({
+    test.each([
+        [{ MODEL: 'gpt-test' }, 'MODEL_API_KEY is required'],
+        [{ MODEL_API_KEY: 'sk-test' }, 'MODEL is required'],
+    ])('the openai provider fails with only %j set', (env, problem) => {
+        expect(loadConfig({ MODEL_PROVIDER: 'openai', ...env })).toEqual({
             ok: false,
-            error: [expect.stringContaining('MODEL_PROVIDER')],
+            error: [expect.stringContaining(problem)],
         });
     });
 
-    test.each(['not a url', 'ftp://127.0.0.1:1234/v1', 'http://127.0.0.1:1234/v1?x=1'])(
-        'rejects MODEL_BASE_URL=%s',
-        (value) => {
-            expect(loadConfig({ MODEL_BASE_URL: value })).toEqual({
-                ok: false,
-                error: [expect.stringContaining('MODEL_BASE_URL')],
-            });
-        },
-    );
+    test('rejects an unknown provider, listing the known ones', () => {
+        expect(loadConfig({ MODEL_PROVIDER: 'anthropic' })).toEqual({
+            ok: false,
+            error: ['MODEL_PROVIDER must be one of lmstudio, openai; got "anthropic".'],
+        });
+    });
+
+    test.each([
+        'not a url',
+        'ftp://127.0.0.1:1234/v1',
+        'http://127.0.0.1:1234/v1?x=1',
+        'http://127.0.0.1:1234/v1#top',
+    ])('rejects MODEL_BASE_URL=%s', (value) => {
+        expect(loadConfig({ MODEL_BASE_URL: value })).toEqual({
+            ok: false,
+            error: [expect.stringContaining('MODEL_BASE_URL')],
+        });
+    });
 
     test("explains that LM Studio's base URL ends in /v1", () => {
         expect(loadConfig({ MODEL_BASE_URL: 'http://127.0.0.1:1234' })).toEqual({
@@ -95,10 +118,12 @@ describe('loadConfig', () => {
         });
     });
 
-    test('rejects an unknown reasoning effort', () => {
+    test('rejects an unknown reasoning effort, listing the known ones', () => {
         expect(loadConfig({ MODEL_REASONING_EFFORT: 'extreme' })).toEqual({
             ok: false,
-            error: [expect.stringContaining('MODEL_REASONING_EFFORT')],
+            error: [
+                'MODEL_REASONING_EFFORT must be one of none, minimal, low, medium, high, xhigh, max; got "extreme".',
+            ],
         });
     });
 

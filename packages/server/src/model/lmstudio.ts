@@ -70,11 +70,11 @@ const loadedModels = (payload: unknown): readonly LoadedModel[] | undefined => {
             return undefined;
         }
 
-        if (entry.type !== 'llm') {
+        if (entry.type !== 'llm' || entry.loaded_instances === undefined) {
             continue;
         }
 
-        const instances = entry.loaded_instances ?? [];
+        const instances = entry.loaded_instances;
 
         if (!Array.isArray(instances)) {
             return undefined;

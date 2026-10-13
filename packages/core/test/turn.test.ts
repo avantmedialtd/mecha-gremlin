@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import OpenAI from 'openai';
 import { runTurn } from '../src/index.ts';
 
@@ -119,6 +119,34 @@ describe('runTurn', () => {
         expect(result).toMatchObject({ ok: true, value: { text: 'Hi!' } });
     });
 
+    test('the text leaves out refusals and tool calls', async () => {
+        const call = {
+            type: 'function_call',
+            id: 'fc_1',
+            call_id: 'call_1',
+            name: 'read_file',
+            arguments: '{}',
+            status: 'completed',
+        };
+        const answer = {
+            ...message('Partly.'),
+            content: [
+                { type: 'output_text', text: 'Partly.', annotations: [] },
+                { type: 'refusal', refusal: 'Not the rest.' },
+            ],
+        };
+        const { client } = makeClient(() =>
+            sse(created, {
+                type: 'response.completed',
+                response: responseObject({ output: [call, answer] }),
+            }),
+        );
+
+        const result = await runTurn(client, request);
+
+        expect(result).toMatchObject({ ok: true, value: { text: 'Partly.' } });
+    });
+
     test('the request is streamed and not stored by default', async () => {
         const { client, bodies } = makeClient(() =>
             sse(created, {
@@ -150,30 +178,61 @@ describe('runTurn', () => {
         expect(bodies[0]).toMatchObject({ store: true, stream: true });
     });
 
-    test('HTTP 401 is an auth failure', async () => {
-        const { client } = makeClient(() => jsonError(401, 'invalid token'));
+    test.each([
+        [400, 'bad_request'],
+        [401, 'auth'],
+        [403, 'auth'],
+        [429, 'rate_limit'],
+        [500, 'server_error'],
+    ])('HTTP %i is %s', async (status, kind) => {
+        const { client } = makeClient(() => jsonError(status, 'boom'));
 
         const result = await runTurn(client, request);
 
-        expect(result).toMatchObject({ ok: false, error: { kind: 'auth', status: 401 } });
+        expect(result).toEqual({ ok: false, error: { kind, status, detail: `${status} boom` } });
     });
 
-    test('HTTP 500 is a server error', async () => {
-        const { client } = makeClient(() => jsonError(500, 'boom'));
-
-        const result = await runTurn(client, request);
-
-        expect(result).toMatchObject({ ok: false, error: { kind: 'server_error', status: 500 } });
-    });
-
-    test('a connection failure is unreachable', async () => {
+    test('a connection failure is unreachable, with its cause', async () => {
         const { client } = makeClient(() => {
             throw new TypeError('fetch failed');
         });
 
         const result = await runTurn(client, request);
 
-        expect(result).toMatchObject({ ok: false, error: { kind: 'unreachable' } });
+        expect(result).toEqual({
+            ok: false,
+            error: { kind: 'unreachable', detail: 'Connection error. (fetch failed)' },
+        });
+    });
+
+    test('a connection that times out is a timeout', async () => {
+        // How undici reports its own connect timeout.
+        const { client } = makeClient(() => {
+            throw new TypeError('fetch failed', { cause: new Error('Connect Timeout Error') });
+        });
+
+        const result = await runTurn(client, request);
+
+        expect(result).toMatchObject({ ok: false, error: { kind: 'timeout' } });
+    });
+
+    test.each([
+        ['an Error', new Error('boom'), 'boom'],
+        [
+            'an Error caused by the same message',
+            new Error('boom', { cause: new Error('boom') }),
+            'boom',
+        ],
+        ['a string', 'boom', 'boom'],
+        ['null', null, 'null'],
+        ['an object whose status is not a number', { status: '500' }, '[object Object]'],
+    ])('anything else the client throws is fatal: %s', async (_name, thrown, detail) => {
+        const { client } = makeClient(() => sse(created));
+        vi.spyOn(client.responses, 'create').mockRejectedValue(thrown);
+
+        const result = await runTurn(client, request);
+
+        expect(result).toEqual({ ok: false, error: { kind: 'fatal', detail } });
     });
 
     test('response.incomplete is incomplete, with the reason', async () => {
@@ -195,6 +254,22 @@ describe('runTurn', () => {
         });
     });
 
+    test('response.incomplete without a reason is still incomplete', async () => {
+        const { client } = makeClient(() =>
+            sse(created, {
+                type: 'response.incomplete',
+                response: responseObject({ status: 'incomplete' }),
+            }),
+        );
+
+        const result = await runTurn(client, request);
+
+        expect(result).toEqual({
+            ok: false,
+            error: { kind: 'incomplete', detail: 'the response is incomplete' },
+        });
+    });
+
     test('response.failed is failed, with the error message', async () => {
         const { client } = makeClient(() =>
             sse(created, {
@@ -211,6 +286,22 @@ describe('runTurn', () => {
         expect(result).toMatchObject({
             ok: false,
             error: { kind: 'failed', detail: expect.stringContaining('model crashed') },
+        });
+    });
+
+    test('response.failed without an error is still failed', async () => {
+        const { client } = makeClient(() =>
+            sse(created, {
+                type: 'response.failed',
+                response: responseObject({ status: 'failed' }),
+            }),
+        );
+
+        const result = await runTurn(client, request);
+
+        expect(result).toEqual({
+            ok: false,
+            error: { kind: 'failed', detail: 'the response failed' },
         });
     });
 
@@ -239,7 +330,10 @@ describe('runTurn', () => {
 
         const result = await runTurn(client, request);
 
-        expect(result).toMatchObject({ ok: false, error: { kind: 'failed' } });
+        expect(result).toEqual({
+            ok: false,
+            error: { kind: 'failed', detail: 'the stream ended without a terminal event' },
+        });
     });
 
     test('aborting before the request starts is aborted', async () => {
@@ -249,35 +343,41 @@ describe('runTurn', () => {
 
         const result = await runTurn(client, request, { signal: controller.signal });
 
-        expect(result).toMatchObject({ ok: false, error: { kind: 'aborted' } });
-    });
-
-    test('aborting mid-stream is aborted', async () => {
-        const encoder = new TextEncoder();
-        const { client } = makeClient((_url, init) => {
-            const body = new ReadableStream<Uint8Array>({
-                start(controller) {
-                    controller.enqueue(encoder.encode(sseFrame(created)));
-                    init?.signal?.addEventListener('abort', () =>
-                        controller.error(
-                            new DOMException('The operation was aborted.', 'AbortError'),
-                        ),
-                    );
-                },
-            });
-
-            return new Response(body, {
-                status: 200,
-                headers: { 'content-type': 'text/event-stream' },
-            });
+        expect(result).toEqual({
+            ok: false,
+            error: { kind: 'aborted', detail: 'the turn was aborted' },
         });
-        const controller = new AbortController();
-
-        const pending = runTurn(client, request, { signal: controller.signal });
-        setTimeout(() => controller.abort(), 20);
-
-        expect(await pending).toMatchObject({ ok: false, error: { kind: 'aborted' } });
     });
+
+    // The SDK ends the stream quietly on an AbortError, but passes any other failure on.
+    test.each([
+        ['an AbortError', new DOMException('The operation was aborted.', 'AbortError')],
+        ['a broken connection', new Error('socket hang up')],
+    ])(
+        'aborting mid-stream is aborted, when the stream then fails with %s',
+        async (_name, failure) => {
+            const encoder = new TextEncoder();
+            const { client } = makeClient((_url, init) => {
+                const body = new ReadableStream<Uint8Array>({
+                    start(controller) {
+                        controller.enqueue(encoder.encode(sseFrame(created)));
+                        init?.signal?.addEventListener('abort', () => controller.error(failure));
+                    },
+                });
+
+                return new Response(body, {
+                    status: 200,
+                    headers: { 'content-type': 'text/event-stream' },
+                });
+            });
+            const controller = new AbortController();
+
+            const pending = runTurn(client, request, { signal: controller.signal });
+            setTimeout(() => controller.abort(), 20);
+
+            expect(await pending).toMatchObject({ ok: false, error: { kind: 'aborted' } });
+        },
+    );
 });
 
 // That core never reads the environment, writes to the console or uses Bun APIs is enforced by

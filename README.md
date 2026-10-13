@@ -92,7 +92,7 @@ bun run typecheck      # tsc --noEmit over the whole workspace
 bun run lint           # oxlint, with type information; warnings fail too
 bun run format         # oxfmt: 4-space indentation, single quotes; format:check only checks
 bun run check          # format:check, lint, typecheck and test, as CI would run them
-bun run mutation       # Stryker mutation testing (a few minutes); report in reports/mutation/
+bun run mutation       # Stryker mutation testing, which fails below 100%; report in reports/mutation/
 ```
 
 - **Formatting.** oxfmt formats code and config files. Markdown, `openspec/`, `.claude/` and `.opencode/` are excluded in `.oxfmtrc.json`, so prose documents and generated command files keep their layout.
@@ -106,6 +106,10 @@ bun run mutation       # Stryker mutation testing (a few minutes); report in rep
   - Tests may use type assertions (`no-unsafe-type-assertion` is off there), since they build malformed values on purpose.
   - `consistent-return` is off: TypeScript's `noImplicitReturns` checks the same thing, and knows when a switch covers every case.
 - **`core`'s boundaries are enforced by the linter.** It may not touch `process`, `Bun` or `console`, through an override in `.oxlintrc.json`.
+- **Every mutant must be caught.**
+  - Stryker fails below a 100% mutation score, so a new branch or message needs a test that would notice it changing.
+  - A mutant that behaves exactly like the original code, or sits in code that can't run, is usually better removed by simplifying the code.
+  - Where the code can't reasonably change, a `// Stryker disable next-line` comment turns the mutant off, with the reason on the line above. There are two: `main.ts`' final `throw`, and how far `read_file` reads.
 - **Vitest is pinned to 4.x.** Stryker's Vitest runner silently stops working on Vitest 5 (see `stryker.config.mjs`).
 - **Tests fake the app's globals.** The app reads the environment, `fetch`, the clock and `console` directly, with nothing injected. Tests fake them with `vi.stubEnv`, `vi.stubGlobal` and `vi.spyOn`, and Vitest undoes every fake after each test. Importing `main.ts` runs it, so its tests import it only after faking, and never statically.
 
@@ -116,6 +120,6 @@ GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) builds e
 1. **Check and test:**
    - a frozen install, then the format check, lint, typecheck and tests (failures are annotated on the PR);
    - `bun audit`, report only: the step shows as failed when there are advisories, but the job still passes.
-2. **Mutation testing:** once the checks pass, Stryker runs and uploads its HTML report as the `mutation-report` artifact.
+2. **Mutation testing:** once the checks pass, Stryker runs and uploads its HTML report as the `mutation-report` artifact. The job fails if any mutant survives.
 
 Actions are pinned to commit SHAs, and there is deliberately no dependency cache shared between builds.

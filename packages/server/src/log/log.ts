@@ -58,9 +58,9 @@ export const createLogger = (format: LogFormat): Logger => {
         (message: string, fields: Fields = {}): void => {
             const time = new Date(Date.now());
             const record =
-                format === 'json'
-                    ? JSON.stringify({ time: time.toISOString(), level, message, ...fields })
-                    : pretty(time, level, message, fields);
+                format === 'pretty'
+                    ? pretty(time, level, message, fields)
+                    : JSON.stringify({ time: time.toISOString(), level, message, ...fields });
             console.log(record);
         };
 

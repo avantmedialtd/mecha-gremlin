@@ -81,6 +81,52 @@ const isEffort = (value: string): value is Effort => {
     return (REASONING_EFFORTS as readonly string[]).includes(value);
 };
 
+const checkBaseUrl = (provider: Provider, raw: string): Result<string, string> => {
+    const example = DEFAULTS[provider].baseUrl;
+    const baseUrl = parseBaseUrl(raw);
+
+    if (baseUrl === undefined) {
+        return err(`MODEL_BASE_URL must be an http(s) URL such as ${example}; got "${raw}".`);
+    }
+
+    if (provider === 'lmstudio' && new URL(baseUrl).pathname === '/') {
+        return err(
+            `MODEL_BASE_URL is LM Studio's OpenAI-compatible base URL, which ends in /v1, such as ${example}; got "${raw}".`,
+        );
+    }
+
+    return ok(baseUrl);
+};
+
+const checkKey = (provider: Provider, raw: string | undefined): Result<string, string> => {
+    return raw === undefined
+        ? err(`MODEL_API_KEY is required with MODEL_PROVIDER=${provider}.`)
+        : ok(raw);
+};
+
+const checkModel = (
+    provider: Provider,
+    raw: string | undefined,
+): Result<string | undefined, string> => {
+    if (raw === undefined && provider !== 'lmstudio') {
+        return err(
+            `MODEL is required with MODEL_PROVIDER=${provider}; only lmstudio can pick the loaded model itself.`,
+        );
+    }
+
+    return ok(raw);
+};
+
+const checkEffort = (raw: string | undefined): Result<Effort | undefined, string> => {
+    if (raw === undefined || isEffort(raw)) {
+        return ok(raw);
+    }
+
+    return err(
+        `MODEL_REASONING_EFFORT must be one of ${REASONING_EFFORTS.join(', ')}; got "${raw}".`,
+    );
+};
+
 /** Reads and validates the server's settings. Pure: it touches nothing but `env`. */
 export const loadConfig = (env: Env): Result<Config, string[]> => {
     const rawProvider = read(env, 'MODEL_PROVIDER') ?? 'lmstudio';
@@ -93,52 +139,22 @@ export const loadConfig = (env: Env): Result<Config, string[]> => {
 
     const provider = rawProvider;
     const defaults = DEFAULTS[provider];
-    const problems: string[] = [];
+    const baseUrl = checkBaseUrl(provider, read(env, 'MODEL_BASE_URL') ?? defaults.baseUrl);
+    const apiKey = checkKey(provider, read(env, 'MODEL_API_KEY') ?? defaults.apiKey);
+    const model = checkModel(provider, read(env, 'MODEL'));
+    const effort = checkEffort(read(env, 'MODEL_REASONING_EFFORT') ?? defaults.reasoningEffort);
 
-    const rawBaseUrl = read(env, 'MODEL_BASE_URL') ?? defaults.baseUrl;
-    const baseUrl = parseBaseUrl(rawBaseUrl);
+    if (!baseUrl.ok || !apiKey.ok || !model.ok || !effort.ok) {
+        const checks = [baseUrl, apiKey, model, effort];
 
-    if (baseUrl === undefined) {
-        problems.push(
-            `MODEL_BASE_URL must be an http(s) URL such as ${defaults.baseUrl}; got "${rawBaseUrl}".`,
-        );
-    } else if (provider === 'lmstudio' && new URL(baseUrl).pathname === '/') {
-        problems.push(
-            `MODEL_BASE_URL is LM Studio's OpenAI-compatible base URL, which ends in /v1, such as ${defaults.baseUrl}; got "${rawBaseUrl}".`,
-        );
-    }
-
-    const apiKey = read(env, 'MODEL_API_KEY') ?? defaults.apiKey;
-
-    if (apiKey === undefined) {
-        problems.push(`MODEL_API_KEY is required with MODEL_PROVIDER=${provider}.`);
-    }
-
-    const model = read(env, 'MODEL');
-
-    if (model === undefined && provider !== 'lmstudio') {
-        problems.push(
-            `MODEL is required with MODEL_PROVIDER=${provider}; only lmstudio can pick the loaded model itself.`,
-        );
-    }
-
-    const rawEffort = read(env, 'MODEL_REASONING_EFFORT') ?? defaults.reasoningEffort;
-
-    if (rawEffort !== undefined && !isEffort(rawEffort)) {
-        problems.push(
-            `MODEL_REASONING_EFFORT must be one of ${REASONING_EFFORTS.join(', ')}; got "${rawEffort}".`,
-        );
-    }
-
-    if (problems.length > 0 || baseUrl === undefined || apiKey === undefined) {
-        return err(problems);
+        return err(checks.flatMap((check) => (check.ok ? [] : [check.error])));
     }
 
     return ok({
         provider,
-        baseUrl,
-        apiKey,
-        model,
-        reasoningEffort: rawEffort !== undefined && isEffort(rawEffort) ? rawEffort : undefined,
+        baseUrl: baseUrl.value,
+        apiKey: apiKey.value,
+        model: model.value,
+        reasoningEffort: effort.value,
     });
 };

@@ -31,6 +31,8 @@ const isEnvFile = (path: string): boolean => {
 };
 
 const readHead = async (file: string, length: number): Promise<Uint8Array> => {
+    // Reading past `length` only costs memory: the caller cuts the content at the limit.
+    // Stryker disable next-line ObjectLiteral,ArithmeticOperator
     const chunks = await Array.fromAsync(createReadStream(file, { start: 0, end: length - 1 }));
 
     return Buffer.concat(chunks);
@@ -52,8 +54,9 @@ const decode = (bytes: Uint8Array): string => {
     return new TextDecoder().decode(bytes);
 };
 
+/** `Object()` wraps anything thrown, null and strings too, so reading from it can't fail. */
 const errorCode = (error: unknown): unknown => {
-    return typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+    return Object(error).code;
 };
 
 const readFile = async (root: string, path: string): Promise<ToolOutcome> => {

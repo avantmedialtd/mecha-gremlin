@@ -64,20 +64,18 @@ const aborted = (): Err<TurnError> => {
     return err({ kind: 'aborted', detail: 'the turn was aborted' });
 };
 
+/** `Object()` wraps anything thrown, null and strings too, so reading from it can't fail. */
 const statusOf = (error: unknown): number | undefined => {
-    if (typeof error !== 'object' || error === null || !('status' in error)) {
-        return undefined;
-    }
+    const status: unknown = Object(error).status;
 
-    return typeof error.status === 'number' ? error.status : undefined;
+    return typeof status === 'number' ? status : undefined;
 };
 
 /** True if `value`'s class, or any class it extends, has the given name. */
 const hasClassName = (value: unknown, name: string): boolean => {
-    let proto: unknown =
-        typeof value === 'object' && value !== null ? Object.getPrototypeOf(value) : null;
+    let proto: object | null = Object.getPrototypeOf(Object(value));
 
-    while (typeof proto === 'object' && proto !== null) {
+    while (proto !== null) {
         if (proto.constructor.name === name) {
             return true;
         }
@@ -103,7 +101,8 @@ const describe = (error: unknown): string => {
  * rather than `instanceof`, so it still works if the caller's `openai` is a different copy.
  */
 const classifyRequestError = (error: unknown, signal: AbortSignal | undefined): Err<TurnError> => {
-    if (signal?.aborted || hasClassName(error, 'APIUserAbortError')) {
+    // The SDK throws APIUserAbortError only once this signal is aborted.
+    if (signal?.aborted) {
         return aborted();
     }
 
@@ -185,8 +184,6 @@ export const runTurn = async (
                         detail: error ? `${error.code}: ${error.message}` : 'the response failed',
                     });
                 }
-                case 'error':
-                    return err({ kind: 'failed', detail: event.message });
             }
         }
     } catch (error) {
@@ -195,6 +192,7 @@ export const runTurn = async (
         }
 
         // The stream had started, so the endpoint was reachable: whatever broke it is a failed turn.
+        // That includes an SSE `error` event, which the SDK throws as an APIError.
         return err({ kind: 'failed', detail: describe(error) });
     }
 
