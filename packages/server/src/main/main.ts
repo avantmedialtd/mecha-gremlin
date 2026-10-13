@@ -61,25 +61,26 @@ const run = async (args: readonly string[]): Promise<number> => {
             log.info("turn", turnFields(step.turn));
         }
 
-        if (step.kind === "final") {
-            log.info("answer", { text: step.text });
+        switch (step.kind) {
+            case "calls":
+                for (const { call, outcome } of step.calls) {
+                    log.info("tool call", { tool: call.name, arguments: parsed(call.arguments) });
 
-            return 0;
-        }
+                    if (outcome.ok) {
+                        const bytes = new TextEncoder().encode(outcome.output).byteLength;
+                        log.info("tool result", { tool: call.name, bytes });
+                    } else {
+                        log.warn("tool failed", { tool: call.name, error: outcome.error });
+                    }
+                }
 
-        if (step.kind !== "calls") {
-            return fail(failure(step, config));
-        }
+                break;
+            case "final":
+                log.info("answer", { text: step.text });
 
-        for (const { call, outcome } of step.calls) {
-            log.info("tool call", { tool: call.name, arguments: parsed(call.arguments) });
-
-            if (outcome.ok) {
-                const bytes = new TextEncoder().encode(outcome.output).byteLength;
-                log.info("tool result", { tool: call.name, bytes });
-            } else {
-                log.warn("tool failed", { tool: call.name, error: outcome.error });
-            }
+                return 0;
+            default:
+                return fail(failure(step, config));
         }
     }
 
