@@ -23,20 +23,20 @@ import type { ToolHandler } from '../tools/tool-handler.ts';
 export const MAX_TURNS = 8;
 
 export type SessionOptions = {
-    tools: readonly ToolHandler[];
-    history: readonly HistoryItem[];
-    maxTurns?: number;
+    readonly tools: readonly ToolHandler[];
+    readonly history: readonly HistoryItem[];
+    readonly maxTurns?: number;
 };
 
 export type TurnStats = {
-    number: number;
-    usage: ResponseUsage | undefined;
-    seconds: number;
+    readonly number: number;
+    readonly usage: ResponseUsage | undefined;
+    readonly seconds: number;
 };
 
 export type CallResult = {
-    call: ToolCall;
-    outcome: ToolOutcome;
+    readonly call: ToolCall;
+    readonly outcome: ToolOutcome;
 };
 
 /**
@@ -44,19 +44,19 @@ export type CallResult = {
  * the session goes on, is meant to join these later.
  */
 export type SessionStep =
-    | { kind: 'calls'; turn: TurnStats; calls: CallResult[] }
-    | (Exclude<Turn, { kind: 'calls' }> & { turn: TurnStats })
-    | { kind: 'turn_limit'; turn: TurnStats }
-    | { kind: 'turn_failed'; error: TurnError }
-    | { kind: 'history'; error: string };
+    | { readonly kind: 'calls'; readonly turn: TurnStats; readonly calls: readonly CallResult[] }
+    | (Exclude<Turn, { kind: 'calls' }> & { readonly turn: TurnStats })
+    | { readonly kind: 'turn_limit'; readonly turn: TurnStats }
+    | { readonly kind: 'turn_failed'; readonly error: TurnError }
+    | { readonly kind: 'history'; readonly error: string };
 
 export type Session = {
-    model: string;
+    readonly model: string;
     /** Set when the model was picked out of several loaded ones. */
-    note?: string;
-    steps: AsyncGenerator<SessionStep, void, undefined>;
+    readonly note?: string;
+    readonly steps: AsyncGenerator<SessionStep, void, undefined>;
     /** Grows as the session runs. While the caller handles a step, the session is paused. */
-    history: readonly HistoryItem[];
+    readonly history: readonly HistoryItem[];
 };
 
 const NOT_RUN: ToolOutcome = err('not run: the turn limit was reached');
@@ -82,78 +82,10 @@ const runCall = async (
     }
 };
 
-const run = async function* (
-    client: OpenAI,
-    config: Config,
-    model: string,
-    { tools, maxTurns = MAX_TURNS }: SessionOptions,
-    history: HistoryItem[],
-): AsyncGenerator<SessionStep, void, undefined> {
-    const reasoning =
-        config.reasoningEffort === undefined ? undefined : { effort: config.reasoningEffort };
-    // Once per session: changing the tools mid-session invalidates the prompt cache (Brief R3.4).
-    const functionTools = tools.map((handler) => toFunctionTool(handler.tool));
-    const handlers = new Map(tools.map((handler) => [handler.tool.name, handler]));
-
-    for (let number = 1; ; number++) {
-        const input = toInput(history);
-
-        if (!input.ok) {
-            yield { kind: 'history', error: input.error };
-            return;
-        }
-
-        const started = performance.now();
-        // An unset `reasoning` drops out of the JSON body.
-        const result = await runTurn(client, {
-            model,
-            input: input.value,
-            tools: functionTools,
-            reasoning,
-        });
-
-        if (!result.ok) {
-            yield { kind: 'turn_failed', error: result.error };
-            return;
-        }
-
-        const { response, usage } = result.value;
-        history.push(...response.output);
-        const turn = { number, usage, seconds: (performance.now() - started) / 1000 };
-
-        const next = classify(response.output);
-
-        if (next.kind !== 'calls') {
-            yield { ...next, turn };
-            return;
-        }
-
-        if (number >= maxTurns) {
-            // Every call needs an output before the history can be replayed (Brief 4.5).
-            for (const call of next.calls) {
-                history.push(toOutputItem(call.call_id, NOT_RUN));
-            }
-
-            yield { kind: 'turn_limit', turn };
-            return;
-        }
-
-        const calls: CallResult[] = [];
-
-        for (const call of next.calls) {
-            const outcome = await runCall(call, handlers);
-            history.push(toOutputItem(call.call_id, outcome));
-            calls.push({ call, outcome });
-        }
-
-        yield { kind: 'calls', turn, calls };
-    }
-};
-
 /** The model is chosen first, which can fail before any turn: LM Studio may have none loaded. */
 export const createSession = async (
     config: Config,
-    options: SessionOptions,
+    { tools, history: initial, maxTurns = MAX_TURNS }: SessionOptions,
 ): Promise<Result<Session, string>> => {
     const choice = await resolveModel(config);
 
@@ -163,8 +95,68 @@ export const createSession = async (
 
     const { model, note } = choice.value;
     const client = new OpenAI({ baseURL: config.baseUrl, apiKey: config.apiKey, maxRetries: 0 });
-    const history = [...options.history];
-    const steps = run(client, config, model, options, history);
+    const reasoning =
+        config.reasoningEffort === undefined ? undefined : { effort: config.reasoningEffort };
+    // Once per session: changing the tools mid-session invalidates the prompt cache (Brief R3.4).
+    const functionTools = tools.map((handler) => toFunctionTool(handler.tool));
+    const handlers = new Map(tools.map((handler) => [handler.tool.name, handler]));
+    const history = [...initial];
 
-    return ok({ model, note, steps, history });
+    const run = async function* (): AsyncGenerator<SessionStep, void, undefined> {
+        for (let number = 1; ; number++) {
+            const input = toInput(history);
+
+            if (!input.ok) {
+                yield { kind: 'history', error: input.error };
+                return;
+            }
+
+            const started = performance.now();
+            // An unset `reasoning` drops out of the JSON body.
+            const result = await runTurn(client, {
+                model,
+                input: input.value,
+                tools: functionTools,
+                reasoning,
+            });
+
+            if (!result.ok) {
+                yield { kind: 'turn_failed', error: result.error };
+                return;
+            }
+
+            const { response, usage } = result.value;
+            history.push(...response.output);
+            const turn = { number, usage, seconds: (performance.now() - started) / 1000 };
+
+            const next = classify(response.output);
+
+            if (next.kind !== 'calls') {
+                yield { ...next, turn };
+                return;
+            }
+
+            if (number >= maxTurns) {
+                // Every call needs an output before the history can be replayed (Brief 4.5).
+                for (const call of next.calls) {
+                    history.push(toOutputItem(call.call_id, NOT_RUN));
+                }
+
+                yield { kind: 'turn_limit', turn };
+                return;
+            }
+
+            const calls: CallResult[] = [];
+
+            for (const call of next.calls) {
+                const outcome = await runCall(call, handlers);
+                history.push(toOutputItem(call.call_id, outcome));
+                calls.push({ call, outcome });
+            }
+
+            yield { kind: 'calls', turn, calls };
+        }
+    };
+
+    return ok({ model, note, steps: run(), history });
 };

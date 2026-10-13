@@ -21,25 +21,31 @@ const PROVIDERS = ['lmstudio', 'openai'] as const;
  */
 export type Provider = (typeof PROVIDERS)[number];
 
+type Defaults = {
+    readonly baseUrl: string;
+    readonly apiKey?: string;
+    readonly reasoningEffort?: Effort;
+};
+
 /** Per-provider defaults. A local LM Studio needs no settings at all. */
-const DEFAULTS: Record<Provider, { baseUrl: string; apiKey?: string; reasoningEffort?: Effort }> = {
+const DEFAULTS: Readonly<Record<Provider, Defaults>> = {
     // Any API key works while LM Studio's "Require Authentication" is off.
     lmstudio: { baseUrl: 'http://127.0.0.1:1234/v1', apiKey: 'lm-studio', reasoningEffort: 'none' },
     openai: { baseUrl: 'https://api.openai.com/v1' },
 };
 
 export type Config = {
-    provider: Provider;
+    readonly provider: Provider;
     /** The OpenAI-compatible API's base URL, such as `http://127.0.0.1:1234/v1`, with no trailing slash. */
-    baseUrl: string;
-    apiKey: string;
+    readonly baseUrl: string;
+    readonly apiKey: string;
     /** The model to use. Optional with `lmstudio`, which then picks the loaded model. */
-    model: string | undefined;
+    readonly model: string | undefined;
     /** Sent as `reasoning.effort`. Undefined leaves the model's own default. */
-    reasoningEffort: Effort | undefined;
+    readonly reasoningEffort: Effort | undefined;
 };
 
-export type Env = Record<string, string | undefined>;
+export type Env = Readonly<Record<string, string | undefined>>;
 
 /** A set variable's trimmed value; unset and blank are both undefined. */
 const read = (env: Env, name: string): string | undefined => {

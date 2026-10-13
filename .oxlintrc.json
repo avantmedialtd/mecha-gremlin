@@ -5,13 +5,45 @@
         "correctness": "error",
         "suspicious": "warn"
     },
+    "options": {
+        "typeAware": true
+    },
     "rules": {
         "curly": ["error", "all"],
         "prefer-const": "error",
         "prefer-arrow-callback": "error",
         "func-style": ["error", "expression"],
         "no-use-before-define": "error",
-        "typescript/consistent-type-definitions": ["error", "type"]
+        "no-param-reassign": ["error", { "props": true }],
+        "typescript/consistent-type-definitions": ["error", "type"],
+        "typescript/consistent-return": "off",
+        "typescript/prefer-readonly-parameter-types": [
+            "error",
+            {
+                "ignoreInferredTypes": true,
+                "treatMethodsAsReadonly": true,
+                "allow": [
+                    { "from": "lib", "name": ["Uint8Array"] },
+                    {
+                        "from": "package",
+                        "package": "bun-types",
+                        "name": ["AbortSignal", "Request", "RequestInit", "URL"]
+                    },
+                    {
+                        "from": "package",
+                        "package": "openai",
+                        "name": [
+                            "OpenAI",
+                            "Response",
+                            "ResponseFunctionToolCall",
+                            "ResponseInputItemLike",
+                            "ResponseOutputItem",
+                            "ResponseUsage"
+                        ]
+                    }
+                ]
+            }
+        ]
     },
     "env": {
         "builtin": true
@@ -32,6 +64,12 @@
                         "message": "core stays runtime-neutral: no Bun.env or other Bun APIs."
                     }
                 ]
+            }
+        },
+        {
+            "files": ["packages/*/test/**"],
+            "rules": {
+                "typescript/no-unsafe-type-assertion": "off"
             }
         }
     ]

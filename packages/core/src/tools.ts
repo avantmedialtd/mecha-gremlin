@@ -18,9 +18,9 @@ export type ToolOutcome = Result<string, string>;
 export type ToolCall = Extract<ResponseOutputItem, { type: 'function_call' }>;
 
 export type Turn =
-    | { kind: 'calls'; calls: ToolCall[] }
-    | { kind: 'final'; text: string }
-    | { kind: 'empty' };
+    | { readonly kind: 'calls'; readonly calls: readonly ToolCall[] }
+    | { readonly kind: 'final'; readonly text: string }
+    | { readonly kind: 'empty' };
 
 /**
  * Draft-07 is the dialect the `openai` SDK's own helpers request, and `$schema` constrains
@@ -98,8 +98,7 @@ export const validateArgs = async <Args>(
         try {
             value = JSON.parse(raw);
         } catch (error) {
-            // JSON.parse only throws SyntaxError.
-            const reason = (error as SyntaxError).message;
+            const reason = error instanceof Error ? error.message : String(error);
 
             return fail(`The arguments for ${tool.name} are not valid JSON (${reason}).`);
         }

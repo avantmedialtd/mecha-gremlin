@@ -2,7 +2,11 @@ import { describe, expect, test, vi } from 'vitest';
 import type { Config } from '../../src/config/config.ts';
 import { fetchModels, pickModel } from '../../src/model/lmstudio.ts';
 
-type Entry = { key: string; type?: string; instances?: string[] };
+type Entry = {
+    readonly key: string;
+    readonly type?: string;
+    readonly instances?: readonly string[];
+};
 
 const config: Config = {
     provider: 'lmstudio',
@@ -13,7 +17,7 @@ const config: Config = {
 };
 
 /** A `/api/v1/models` payload, shaped like LM Studio 0.4's. */
-const modelsPayload = (...entries: Entry[]) => {
+const modelsPayload = (...entries: readonly Entry[]) => {
     return {
         models: entries.map(({ key, type = 'llm', instances = [] }) => ({
             type,
@@ -115,10 +119,10 @@ const fetchModelsWith = (
 
 describe('fetchModels', () => {
     test('calls the native models endpoint with the bearer token', async () => {
-        const seen: { url: string; auth: string | null }[] = [];
+        const seen: { readonly url: string; readonly auth: string | null }[] = [];
         const result = await fetchModelsWith(async (input, init) => {
             seen.push({
-                url: String(input),
+                url: input instanceof Request ? input.url : String(input),
                 auth: new Headers(init?.headers).get('authorization'),
             });
 

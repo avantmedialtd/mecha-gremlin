@@ -8,7 +8,7 @@ import type {
 import { type Err, type Result, err, ok } from './result.ts';
 
 /** A Responses API request. `runTurn` always streams it, so `stream` is not part of it. */
-export type TurnRequest = Omit<ResponseCreateParamsStreaming, 'stream'>;
+export type TurnRequest = Readonly<Omit<ResponseCreateParamsStreaming, 'stream'>>;
 
 export type TurnErrorKind =
     | 'unreachable'
@@ -23,18 +23,22 @@ export type TurnErrorKind =
     | 'fatal';
 
 export type TurnError = {
-    kind: TurnErrorKind;
-    detail: string;
-    status?: number;
+    readonly kind: TurnErrorKind;
+    readonly detail: string;
+    readonly status?: number;
 };
 
 export type TurnResult = Result<
-    { text: string; response: Response; usage: ResponseUsage | undefined },
+    {
+        readonly text: string;
+        readonly response: Response;
+        readonly usage: ResponseUsage | undefined;
+    },
     TurnError
 >;
 
 export type TurnOptions = {
-    signal?: AbortSignal;
+    readonly signal?: AbortSignal;
 };
 
 /** Concatenates the `output_text` parts of every message item, in order. */
@@ -136,6 +140,8 @@ const classifyRequestError = (error: unknown, signal: AbortSignal | undefined): 
  */
 export const runTurn = async (
     client: OpenAI,
+    // The SDK's request types hold mutable arrays, so `TurnRequest` can only be readonly on top.
+    // oxlint-disable-next-line typescript/prefer-readonly-parameter-types
     request: TurnRequest,
     options: TurnOptions = {},
 ): Promise<TurnResult> => {

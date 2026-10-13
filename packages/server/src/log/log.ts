@@ -1,7 +1,13 @@
-export type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
+export type Json =
+    | string
+    | number
+    | boolean
+    | null
+    | readonly Json[]
+    | { readonly [key: string]: Json };
 
 /** An undefined field is left out, as `JSON.stringify` does. */
-export type Fields = Record<string, Json | undefined>;
+export type Fields = Readonly<Record<string, Json | undefined>>;
 
 export type LogFormat = 'pretty' | 'json';
 

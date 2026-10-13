@@ -89,7 +89,7 @@ MODEL_PROVIDER=openai MODEL_API_KEY=sk-… MODEL=gpt-5.5 bun run hello
 ```sh
 bun run test           # unit tests (Vitest); no LM Studio needed. test:watch for watch mode
 bun run typecheck      # tsc --noEmit over the whole workspace
-bun run lint           # oxlint; warnings fail too
+bun run lint           # oxlint, with type information; warnings fail too
 bun run format         # oxfmt: 4-space indentation, single quotes; format:check only checks
 bun run check          # format:check, lint, typecheck and test, as CI would run them
 bun run mutation       # Stryker mutation testing (a few minutes); report in reports/mutation/
@@ -98,6 +98,13 @@ bun run mutation       # Stryker mutation testing (a few minutes); report in rep
 - **Formatting.** oxfmt formats code and config files. Markdown, `openspec/`, `.claude/` and `.opencode/` are excluded in `.oxfmtrc.json`, so prose documents and generated command files keep their layout.
 - **Tests run on Node.** Vitest runs the tests on Node, not Bun, so Bun-specific behaviour (decorators, `Bun.spawn`) needs checks run with `bun` itself.
 - **Lint rules beyond oxlint's defaults.** Every if/loop body needs braces (`curly`), and a `let` that is never reassigned must be a `const` (`prefer-const`). Functions are arrow functions assigned to a `const` (`func-style`, `prefer-arrow-callback`); a generator, which can't be an arrow, is a `function*` expression. A `const` can't be used before its line has run, so everything is defined before it's used (`no-use-before-define`): helpers come first, and a file reads bottom-up. Object types are `type` aliases, never interfaces (`typescript/consistent-type-definitions`).
+- **Functions never change their arguments.**
+  - A parameter can't be reassigned, nor its properties assigned (`no-param-reassign`).
+  - Every typed parameter must be readonly all the way down (`typescript/prefer-readonly-parameter-types`), so TypeScript rejects a write or a `push` through it. The code's own object types are readonly for that reason.
+  - Types from other packages can't be made readonly, so `.oxlintrc.json` allows them by name. The `openai` SDK's request type is readonly only on top, and `runTurn`'s parameter for it is exempt inline.
+- **Linting uses type information,** through `oxlint-tsgolint`. That also turns on the type-aware rules in the enabled categories, such as `no-floating-promises`. Two of them are adjusted:
+  - Tests may use type assertions (`no-unsafe-type-assertion` is off there), since they build malformed values on purpose.
+  - `consistent-return` is off: TypeScript's `noImplicitReturns` checks the same thing, and knows when a switch covers every case.
 - **`core`'s boundaries are enforced by the linter.** It may not touch `process`, `Bun` or `console`, through an override in `.oxlintrc.json`.
 - **Vitest is pinned to 4.x.** Stryker's Vitest runner silently stops working on Vitest 5 (see `stryker.config.mjs`).
 - **Tests fake the app's globals.** The app reads the environment, `fetch`, the clock and `console` directly, with nothing injected. Tests fake them with `vi.stubEnv`, `vi.stubGlobal` and `vi.spyOn`, and Vitest undoes every fake after each test. Importing `main.ts` runs it, so its tests import it only after faking, and never statically.

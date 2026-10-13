@@ -39,19 +39,18 @@ export const call = (name: string, args: unknown, callId = 'call_1'): ResponseFu
     };
 };
 
-export const usage = (fields: Partial<ResponseUsage> = {}): ResponseUsage => {
+export const usage = (inputTokens = 349): ResponseUsage => {
     return {
-        input_tokens: 349,
+        input_tokens: inputTokens,
         input_tokens_details: { cached_tokens: 256, cache_write_tokens: 0 },
         output_tokens: 26,
         output_tokens_details: { reasoning_tokens: 12 },
-        total_tokens: 375,
-        ...fields,
+        total_tokens: inputTokens + 26,
     };
 };
 
 export const completed = (
-    output: ResponseOutputItem[],
+    output: readonly ResponseOutputItem[],
     turnUsage: ResponseUsage = usage(),
 ): Response => {
     const response = {
@@ -74,7 +73,7 @@ export const httpError = (status: number, errorMessage: string): Response => {
     return Response.json({ error: { message: errorMessage } }, { status });
 };
 
-export const script = (...turns: Array<() => Response>): ((n: number) => Response) => {
+export const script = (...turns: ReadonlyArray<() => Response>): ((n: number) => Response) => {
     return (n) => turns[n]?.() ?? httpError(500, `the script has no turn ${n + 1}`);
 };
 
@@ -90,14 +89,14 @@ export const loadedBonsai = {
 };
 
 export type FakeServer = {
-    models?: () => Response;
-    responses?: (n: number) => Response;
+    readonly models?: () => Response;
+    readonly responses?: (n: number) => Response;
 };
 
 export type RecordedRequest = {
-    url: string;
-    body: Record<string, unknown> | undefined;
-    authorization: string | null;
+    readonly url: string;
+    readonly body: Readonly<Record<string, unknown>> | undefined;
+    readonly authorization: string | null;
 };
 
 export const fakeFetch = (server: FakeServer = {}) => {

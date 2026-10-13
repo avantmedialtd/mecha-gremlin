@@ -24,18 +24,18 @@ const makeClient = (handler: Handler) => {
     return { client, bodies };
 };
 
-const sseFrame = (event: Record<string, unknown>): string => {
+const sseFrame = (event: Readonly<Record<string, unknown>>): string => {
     return `event: ${String(event.type)}\ndata: ${JSON.stringify(event)}\n\n`;
 };
 
-const sse = (...events: Array<Record<string, unknown>>): Response => {
+const sse = (...events: ReadonlyArray<Readonly<Record<string, unknown>>>): Response => {
     return new Response(events.map(sseFrame).join(''), {
         status: 200,
         headers: { 'content-type': 'text/event-stream' },
     });
 };
 
-const responseObject = (fields: Record<string, unknown> = {}) => {
+const responseObject = (fields: Readonly<Record<string, unknown>> = {}) => {
     return {
         id: 'resp_1',
         object: 'response',

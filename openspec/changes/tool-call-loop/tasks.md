@@ -130,3 +130,9 @@
 - [x] 13.2 `core` returns it from `validateArgs`, `toInput` and `runTurn`. `ToolOutcome` and `TurnResult` are defined with it; `runTurn`'s error becomes `TurnError`, `{ kind, detail, status? }`. `ArgsResult`, `InputResult` and `TurnFailure` are gone.
 - [x] 13.3 The server returns it from `loadConfig`, `fetchModels`, `pickModel`, `resolveModel`, `createSession` and `read_file`, and the steps for a failed turn or history carry the original error as `error`. `ConfigResult` and `ModelsResult` are gone, and `read_file`'s own `failure` helper gives way to `err`.
 - [x] 13.4 Tests assert the new shapes, and the specs follow: a new `result` capability, and a `model-turn` delta for `runTurn`'s result.
+
+## 14. Readonly arguments
+
+- [x] 14.1 `createSession` creates the history and the step generator that grows it, so no function changes an array it was passed. The per-session setup (reasoning, function tools, handlers) moves into `createSession` beside them.
+- [x] 14.2 Every object type the code defines is readonly: properties, arrays and records, in `core`, the server and the test helpers.
+- [x] 14.3 Lint: `no-param-reassign` with `props`, and `typescript/prefer-readonly-parameter-types`, which skips inferred types and allows other packages' types by name. oxlint runs with type information through `oxlint-tsgolint`, and its type-aware rules removed three casts from the sources. `consistent-return` gives way to TypeScript's `noImplicitReturns`, and tests may still cast.

@@ -191,8 +191,8 @@ describe('Alternate model turns and tool calls until the model answers', () => {
         const afterCall = [...START, ...roundTrip, output('call_1', 'contents of package.json')];
         const { steps, history, bodies } = await runSession({
             responses: script(
-                () => completed(roundTrip, usage({ input_tokens: 100 })),
-                () => completed([message('\n\nIt runs the checks.')], usage({ input_tokens: 200 })),
+                () => completed(roundTrip, usage(100)),
+                () => completed([message('\n\nIt runs the checks.')], usage(200)),
             ),
         });
 
@@ -201,7 +201,7 @@ describe('Alternate model turns and tool calls until the model answers', () => {
         expect(steps).toEqual([
             {
                 kind: 'calls',
-                turn: stats(1, usage({ input_tokens: 100 })),
+                turn: stats(1, usage(100)),
                 calls: [
                     {
                         call: roundTrip[1],
@@ -211,7 +211,7 @@ describe('Alternate model turns and tool calls until the model answers', () => {
             },
             {
                 kind: 'final',
-                turn: stats(2, usage({ input_tokens: 200 })),
+                turn: stats(2, usage(200)),
                 text: 'It runs the checks.',
             },
         ]);

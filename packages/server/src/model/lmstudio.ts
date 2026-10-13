@@ -4,8 +4,8 @@ import type { Config } from '../config/config.ts';
 import type { ModelChoice } from './model.ts';
 
 type LoadedModel = {
-    key: string;
-    instanceIds: string[];
+    readonly key: string;
+    readonly instanceIds: readonly string[];
 };
 
 export const lmStudioKeyRejected = (status: number): string => {
@@ -58,7 +58,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> => {
 };
 
 /** The loaded LLMs in a `/api/v1/models` payload, or undefined if its shape is unexpected. */
-const loadedModels = (payload: unknown): LoadedModel[] | undefined => {
+const loadedModels = (payload: unknown): readonly LoadedModel[] | undefined => {
     if (!isRecord(payload) || !Array.isArray(payload.models)) {
         return undefined;
     }

@@ -15,7 +15,7 @@ import {
     validateArgs,
 } from '../src/index.ts';
 
-type Args = Record<string, unknown>;
+type Args = Readonly<Record<string, unknown>>;
 type Validate = (
     value: unknown,
 ) => StandardSchemaV1.Result<Args> | Promise<StandardSchemaV1.Result<Args>>;
@@ -67,7 +67,7 @@ const errorOf = (result: Result<Args, string>): string => {
     return (result as Err<string>).error;
 };
 
-const message = (...texts: string[]): ResponseOutputMessage => {
+const message = (...texts: readonly string[]): ResponseOutputMessage => {
     return {
         type: 'message',
         id: 'msg_1',

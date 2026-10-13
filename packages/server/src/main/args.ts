@@ -4,7 +4,9 @@ const DEFAULT_QUESTION = 'What exact command does the check script run? Quote it
 const FILE_QUESTION = 'What is this file for? Answer in two or three sentences.';
 
 /** The question's words are joined, so it needn't be quoted. */
-export const parseArgs = (args: readonly string[]): { file: string; question: string } => {
+export const parseArgs = (
+    args: readonly string[],
+): { readonly file: string; readonly question: string } => {
     const [file, ...words] = args;
 
     if (file === undefined) {

@@ -4,7 +4,7 @@ import type { TurnStats } from '../session/session.ts';
 /** Arguments that parse are logged as data; the rest as the model sent them. */
 export const parsed = (raw: string): Json => {
     try {
-        return JSON.parse(raw) as Json;
+        return JSON.parse(raw);
     } catch {
         return raw;
     }

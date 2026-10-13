@@ -27,12 +27,12 @@ export declare namespace StandardSchemaV1 {
     type Props<Input = unknown, Output = Input> = StandardTypedV1.Props<Input, Output> & {
         readonly validate: (
             value: unknown,
-            options?: Options | undefined,
+            options?: Options,
         ) => Result<Output> | Promise<Result<Output>>;
     };
 
     type Options = {
-        readonly libraryOptions?: Record<string, unknown> | undefined;
+        readonly libraryOptions?: Readonly<Record<string, unknown>> | undefined;
     };
 
     type Result<Output> = SuccessResult<Output> | FailureResult;
@@ -77,6 +77,6 @@ export declare namespace StandardJSONSchemaV1 {
 
     type Options = {
         readonly target: Target;
-        readonly libraryOptions?: Record<string, unknown> | undefined;
+        readonly libraryOptions?: Readonly<Record<string, unknown>> | undefined;
     };
 }

@@ -30,13 +30,13 @@ const SETTINGS = [
     'MODEL',
     'MODEL_REASONING_EFFORT',
 ] as const;
-type Settings = Partial<Record<(typeof SETTINGS)[number], string>>;
+type Settings = Readonly<Partial<Record<(typeof SETTINGS)[number], string>>>;
 
 type LogRecord = {
-    time: string;
-    level: string;
-    message: string;
-    [field: string]: unknown;
+    readonly time: string;
+    readonly level: string;
+    readonly message: string;
+    readonly [field: string]: unknown;
 };
 
 const PACKAGE_JSON = `${JSON.stringify({ scripts: { check: 'bun run lint && bun run test' } }, null, 4)}\n`;
@@ -62,7 +62,7 @@ afterEach(() => {
  * The log is read as JSON records, which pins every field, unless a test asks for another format.
  * The formatted output has its own tests.
  */
-const hello = async (env: Settings = {}, server: FakeServer = {}, args: string[] = []) => {
+const hello = async (env: Settings = {}, server: FakeServer = {}, args: readonly string[] = []) => {
     const settings: Settings = { LOG_FORMAT: 'json', ...env };
 
     for (const name of SETTINGS) {
@@ -105,11 +105,11 @@ const hello = async (env: Settings = {}, server: FakeServer = {}, args: string[]
     return { code: process.exitCode, output, records, requests, turns, turn: turns[0] };
 };
 
-const find = (records: LogRecord[], wanted: string): LogRecord | undefined => {
+const find = (records: readonly LogRecord[], wanted: string): LogRecord | undefined => {
     return records.find((record) => record.message === wanted);
 };
 
-const errors = (records: LogRecord[]): string[] => {
+const errors = (records: readonly LogRecord[]): string[] => {
     return records.filter((record) => record.level === 'error').map((record) => record.message);
 };
 

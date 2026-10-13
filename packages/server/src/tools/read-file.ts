@@ -31,11 +31,7 @@ const isEnvFile = (path: string): boolean => {
 };
 
 const readHead = async (file: string, length: number): Promise<Uint8Array> => {
-    const chunks: Uint8Array[] = [];
-
-    for await (const chunk of createReadStream(file, { start: 0, end: length - 1 })) {
-        chunks.push(chunk as Uint8Array);
-    }
+    const chunks = await Array.fromAsync(createReadStream(file, { start: 0, end: length - 1 }));
 
     return Buffer.concat(chunks);
 };

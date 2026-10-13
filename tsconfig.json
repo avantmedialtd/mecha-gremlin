@@ -13,6 +13,7 @@
         "strict": true,
         "skipLibCheck": true,
         "noFallthroughCasesInSwitch": true,
+        "noImplicitReturns": true,
         "noUncheckedIndexedAccess": true,
         "noImplicitOverride": true,
         "types": ["bun"]

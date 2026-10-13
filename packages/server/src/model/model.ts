@@ -2,7 +2,7 @@ import { type Result, err, ok } from '@mecha-gremlin/core';
 import type { Config } from '../config/config.ts';
 import { fetchModels, lmStudioKeyRejected, pickModel } from './lmstudio.ts';
 
-export type ModelChoice = Result<{ model: string; note?: string }, string>;
+export type ModelChoice = Result<{ readonly model: string; readonly note?: string }, string>;
 
 /**
  * Decides which model to talk to. LM Studio is asked which model is loaded, so the app never

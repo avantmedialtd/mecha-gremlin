@@ -195,6 +195,18 @@ The brief already sketches the rest of the loop:
 - **`runTurn`'s error is an object,** `{ kind, detail, status? }`, as `TurnError`. Its kind is `error.kind`, where it used to be a field named `error`.
 - **Names kept only where they say more than `Result` does:** `ToolOutcome` (what a handler returns, written for the model), `TurnResult` and `ModelChoice`. The aliases that only renamed a `Result` are gone: `ArgsResult`, `InputResult`, `ConfigResult`, `ModelsResult` and `TurnFailure`.
 
+**12. Functions never change their arguments, and the types say so.**
+- **The session's history:** `createSession` creates both the history and the generator that grows it. The generator appends to an array of its own session, not to one it was passed. The caller's starting array is copied and left unchanged, and `session.history` is a readonly view.
+- **Readonly types:** every object type the code defines has readonly properties, arrays and records, for example `Ok`, `Err`, `Turn`, `TurnError`, `Config`, `SessionOptions`, the steps, and the log's `Json` and `Fields`. TypeScript rejects a write or a `push` through any of them.
+- **Lint:**
+  - `no-param-reassign` with `props` rejects assigning a parameter or its properties.
+  - `typescript/prefer-readonly-parameter-types` requires every explicitly typed parameter to be readonly all the way down, so a new function can't quietly take a mutable type. It skips inferred parameter types, such as a callback's, which `no-param-reassign` still covers.
+  - Both need type information, so oxlint runs with `oxlint-tsgolint`.
+- **Exceptions:**
+  - Other packages' types are allowed by name, because they can't be made readonly: the `openai` client and its Responses items, `Uint8Array`, and Bun's `AbortSignal`, `Request`, `RequestInit` and `URL`.
+  - `TurnRequest` is the SDK's request without `stream`, an unnamed mapped type that the allowlist can't match. It is readonly on top, and `runTurn`'s parameter for it is exempt inline.
+- **What type information brought along:** the enabled categories' type-aware rules. They found three casts in the sources, now gone. They also found a `consistent-return` warning on a switch that TypeScript knows is exhaustive, so that rule gives way to `noImplicitReturns`. Tests may still cast, because they build malformed values on purpose.
+
 ## Risks / Trade-offs
 
 - **A local model calls the wrong path, or answers without reading.** → The developer item tells it to read first. Errors such as "no such file" go back to it. The default question can't be answered without the file, and the cap stops a loop that never answers.
