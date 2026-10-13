@@ -19,7 +19,7 @@
     "devDependencies": {
         "@stryker-mutator/core": "^10.0.0",
         "@stryker-mutator/vitest-runner": "^10.0.0",
-        "@types/bun": "^1.4.2",
+        "@types/bun": "^1.4.3",
         "oxfmt": "^0.72.0",
         "oxlint": "^1.87.0",
         "typescript": "^7.0.2",

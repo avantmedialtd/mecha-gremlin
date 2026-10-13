@@ -10,6 +10,6 @@
     "dependencies": {
         "@mecha-gremlin/core": "workspace:*",
         "openai": "^7.32.0",
-        "zod": "^4.6.6"
+        "zod": "^4.6.7"
     }
 }

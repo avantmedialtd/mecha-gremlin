@@ -21,7 +21,7 @@ concurrency:
 env:
     BUN_VERSION: 1.4.3
     # Vitest and Stryker run on Node; Stryker needs Node 22 or later.
-    NODE_VERSION: 24
+    NODE_VERSION: 26
 
 # Third-party actions are pinned to full commit SHAs (tag in the trailing comment), so a
 # moved or compromised tag can't change what runs here.
