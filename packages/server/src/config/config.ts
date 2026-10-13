@@ -1,4 +1,4 @@
-import { type Result, err, ok } from '@mecha-gremlin/core';
+import { type Result, err, ok } from '@mecha-gremlin/core/result';
 import type { ReasoningEffort } from 'openai/resources/shared';
 
 type Effort = Exclude<ReasoningEffort, null>;

@@ -5,15 +5,9 @@ import type {
     ResponseOutputMessage,
 } from 'openai/resources/responses/responses';
 import { describe, expect, test } from 'vitest';
-import {
-    type Err,
-    type Result,
-    type StandardSchemaV1,
-    type Tool,
-    classify,
-    toFunctionTool,
-    validateArgs,
-} from '../src/index.ts';
+import type { Err, Result } from '../src/result.ts';
+import type { StandardSchemaV1 } from '../src/standard-schema.ts';
+import { type Tool, classify, toFunctionTool, validateArgs } from '../src/tools.ts';
 
 type Args = Readonly<Record<string, unknown>>;
 type Validate = (

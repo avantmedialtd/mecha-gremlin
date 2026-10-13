@@ -1,4 +1,4 @@
-import { type Tool, type ToolOutcome, validateArgs } from '@mecha-gremlin/core';
+import { type Tool, type ToolOutcome, validateArgs } from '@mecha-gremlin/core/tools';
 
 export type ToolHandler = {
     readonly tool: Tool;

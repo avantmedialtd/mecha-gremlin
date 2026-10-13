@@ -4,7 +4,7 @@
     "description": "Stateless building blocks for a scheduled agent runner",
     "type": "module",
     "exports": {
-        ".": "./src/index.ts"
+        "./*": "./src/*.ts"
     },
     "devDependencies": {
         "openai": "^7.32.0"

@@ -1,7 +1,8 @@
 import { createReadStream } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
-import { type ToolOutcome, err, ok } from '@mecha-gremlin/core';
+import { err, ok } from '@mecha-gremlin/core/result';
+import type { ToolOutcome } from '@mecha-gremlin/core/tools';
 import { z } from 'zod';
 import { type ToolHandler, defineTool } from './tool-handler.ts';
 

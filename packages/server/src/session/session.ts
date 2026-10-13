@@ -1,18 +1,13 @@
+import { type HistoryItem, toInput, toOutputItem } from '@mecha-gremlin/core/history';
+import { type Result, err, ok } from '@mecha-gremlin/core/result';
 import {
-    type HistoryItem,
-    type Result,
     type ToolCall,
     type ToolOutcome,
     type Turn,
-    type TurnError,
     classify,
-    err,
-    ok,
-    runTurn,
     toFunctionTool,
-    toInput,
-    toOutputItem,
-} from '@mecha-gremlin/core';
+} from '@mecha-gremlin/core/tools';
+import { type TurnError, runTurn } from '@mecha-gremlin/core/turn';
 import OpenAI from 'openai';
 import type { ResponseUsage } from 'openai/resources/responses/responses';
 import type { Config } from '../config/config.ts';

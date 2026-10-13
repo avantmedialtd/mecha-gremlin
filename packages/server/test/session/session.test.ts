@@ -1,4 +1,6 @@
-import { type HistoryItem, type ToolOutcome, ok, toFunctionTool } from '@mecha-gremlin/core';
+import type { HistoryItem } from '@mecha-gremlin/core/history';
+import { ok } from '@mecha-gremlin/core/result';
+import { type ToolOutcome, toFunctionTool } from '@mecha-gremlin/core/tools';
 import type { ResponseUsage } from 'openai/resources/responses/responses';
 import { describe, expect, test, vi } from 'vitest';
 import { z } from 'zod';

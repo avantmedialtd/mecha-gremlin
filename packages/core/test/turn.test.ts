@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, test, vi } from 'vitest';
 import OpenAI from 'openai';
-import { runTurn } from '../src/index.ts';
+import { runTurn } from '../src/turn.ts';
 
 type Handler = (url: string, init: RequestInit | undefined) => Response | Promise<Response>;
 

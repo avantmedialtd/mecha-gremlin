@@ -17,7 +17,7 @@ Inside `packages/server/src`, the code is grouped by concern:
 - `tools`;
 - `log`: the structured logger.
 
-There are no index files: every import names the file it uses. The tests mirror the folders.
+Neither package has index files: every import names the file it uses. `core`'s `package.json` exports each module by name, so the server imports `@mecha-gremlin/core/turn`, `@mecha-gremlin/core/result` and so on. The tests mirror the folders.
 
 ## Prerequisites
 

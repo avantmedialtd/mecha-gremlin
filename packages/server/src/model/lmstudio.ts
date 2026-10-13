@@ -1,5 +1,5 @@
 // LM Studio specifics: finding out which model is loaded, through LM Studio's native REST API.
-import { type Result, err, ok } from '@mecha-gremlin/core';
+import { type Result, err, ok } from '@mecha-gremlin/core/result';
 import type { Config } from '../config/config.ts';
 import type { ModelChoice } from './model.ts';
 

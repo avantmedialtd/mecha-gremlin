@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
-import { type HistoryItem, err, ok, toInput, toOutputItem } from '../src/index.ts';
+import { type HistoryItem, toInput, toOutputItem } from '../src/history.ts';
+import { err, ok } from '../src/result.ts';
 
 describe('toOutputItem', () => {
     test("a successful call's output is its text", () => {

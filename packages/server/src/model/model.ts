@@ -1,4 +1,4 @@
-import { type Result, err, ok } from '@mecha-gremlin/core';
+import { type Result, err, ok } from '@mecha-gremlin/core/result';
 import type { Config } from '../config/config.ts';
 import { fetchModels, lmStudioKeyRejected, pickModel } from './lmstudio.ts';
 

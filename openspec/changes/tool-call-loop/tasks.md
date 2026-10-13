@@ -142,3 +142,7 @@
 - [x] 15.1 Tests for the behaviour that surviving mutants showed untested: `runTurn`'s HTTP statuses, timeouts, other thrown values, responses without details, the text around refusals and tool calls, and a connection that breaks after an abort; LM Studio's HTTP errors, malformed payloads and model matching; each setting missing on its own; `resolveModel` and `keyRejected` on their own. Assertions check exact details and messages.
 - [x] 15.2 Code that a mutant couldn't change visibly got simpler: `loadConfig` checks each setting into a `Result`; `statusOf`, `hasClassName` and `errorCode` read through `Object()`; `runTurn` drops the `APIUserAbortError` check and the unreachable `error` case; LM Studio entries without `loaded_instances` are skipped explicitly; the logger checks for `pretty`.
 - [x] 15.3 Two `// Stryker disable next-line` comments, each with its reason: `main.ts`' final `throw`, and how far `read_file` reads. Stryker's `thresholds.break` is 100, so CI fails if any mutant survives.
+
+## 16. No index files
+
+- [x] 16.1 `core`'s `src/index.ts` goes. Its `package.json` exports each module by name (`"./*": "./src/*.ts"`), and every import of `core`, in the server and in `core`'s own tests, names the module it uses.

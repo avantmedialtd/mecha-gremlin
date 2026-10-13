@@ -180,7 +180,7 @@ The brief already sketches the rest of the loop:
 - **`read_file`:** real temporary directories, with files, nested paths, `..`, absolute paths, links that point inside and outside the root, `.env` files, a directory, a binary file, and a 3-byte character straddling the cap.
 - **Stryker** covers the new code like the old. The live round trip against LM Studio is a manual check, as before.
 
-**9. The server's code lives in folders by concern, without index files.** The folders are `main` (the entry point, with its helpers beside it: `args.ts`, `fields.ts` and `failure.ts`), `config`, `model` (model choice and LM Studio's API), `session` (the agent loop), `tools` and `log`. Every import names the file it uses, and the tests mirror the folders.
+**9. The server's code lives in folders by concern, without index files.** The folders are `main` (the entry point, with its helpers beside it: `args.ts`, `fields.ts` and `failure.ts`), `config`, `model` (model choice and LM Studio's API), `session` (the agent loop), `tools` and `log`. Every import names the file it uses, and the tests mirror the folders. `core` has no index file either: its `package.json` exports every module by name (`"./*": "./src/*.ts"`), so the server imports `@mecha-gremlin/core/turn` and the like.
 
 **10. A hand-rolled structured logger, on stdout.**
 - **Records:** `log.info`, `log.warn` and `log.error` take a message and fields typed as JSON values, so the logger only ever receives JSON. Data goes in fields (`turn`, `tool call`, `tool result`, `answer`); errors keep their sentences as messages.

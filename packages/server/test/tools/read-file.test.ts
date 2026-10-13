@@ -1,7 +1,7 @@
 import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type ToolOutcome, toFunctionTool } from '@mecha-gremlin/core';
+import { type ToolOutcome, toFunctionTool } from '@mecha-gremlin/core/tools';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { READ_LIMIT, readFileTool } from '../../src/tools/read-file.ts';
 
