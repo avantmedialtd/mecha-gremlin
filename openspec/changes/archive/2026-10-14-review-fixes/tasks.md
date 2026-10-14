@@ -24,7 +24,7 @@
 - [x] 3.1 `log/log.ts`: `Fields` rules out `time`, `level` and `message`; undefined fields are dropped before either format builds a record
 - [x] 3.2 Formatted output: lines split at `/\r?\n/`; a multi-line message keeps its first line in place, and its other lines follow indented by four spaces, before any field block
 - [x] 3.3 Tests:
-  - `// @ts-expect-error` for each of the three names;
+  - `expectTypeOf`: a field named after any of the three doesn't type-check, which `tsc` checks;
   - JSON output with `time: undefined`;
   - a multi-line message with a field;
   - `\r\n` in a field and in a message.
