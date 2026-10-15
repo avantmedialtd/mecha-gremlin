@@ -626,13 +626,17 @@ Researched on 2026-10-15 for the next step: loading skills, with enough tools to
 **R12.1 What the playwright-cli skill needs from the agent.** **[H]**
 - **The skill ships with the CLI.** It lives in the npm package (`skills/playwright-cli/`), identical to the copy in its bundled playwright-core. SKILL.md is 15.4 KB, about 4k tokens, and links to 10 references totalling 53 KB. Its frontmatter's `allowed-tools: Bash(playwright-cli:*) Bash(npx playwright:*) Bash(npx --no-install playwright:*)` is Claude Code's syntax.
 - **A shell.** The model drives the browser with `playwright-cli <command>`.
-- **File reads.** Each command prints about 240 B: the page's URL and title, and a relative link to a snapshot file under `<cwd>/.playwright-cli/`, which the model then reads. Hacker News' front page made a 49 KB snapshot, over `read_file`'s 32 KiB cap. Narrower reads exist: `find` (15.6 KB of matches on that page, printed to stdout), `snapshot --depth=N`, and `--raw eval` (about 250 B for the top five titles).
+- **File reads, and output in line.**
+  - An action command such as `open`, `goto` or `click` prints about 240 B: the page's URL and title, and a relative link to a snapshot file under `<cwd>/.playwright-cli/`, which the model then reads.
+  - An explicit `snapshot` prints the whole tree to stdout instead: 48,250 bytes for Hacker News' front page, measured on 2026-10-15. That's despite SKILL.md's comment that it saves to a file.
+  - Either way the page is 49 KB, over `read_file`'s 32 KiB cap.
+  - Narrower reads exist: `find` (15.6 KB of matches on that page, printed to stdout), `snapshot --depth=N`, and `--raw eval` (about 250 B for the top five titles).
 - **Reads inside the skill's directory,** for its references.
 - **Copied skills go stale.** `playwright-cli install --skills` copies the skill into a project, and the CLI warns once a day when a copy no longer matches, unless `CI` or `NO_UPDATE_NOTIFIER` is set. The copy inside the installed package always matches.
 
 **R12.2 How playwright-cli runs.** **[H]**
 - **A detached daemon per session.** `open` spawns the browser daemon with `detached: true` (its own session and process group) and stdio `['ignore', 'pipe', <log file>]`. It reads stdout until "Daemon listening on", then closes the pipe and `unref()`s. So `open` returns in about 1.9 s even through a pipe, and a group kill aimed at the command misses the browser. The daemon inherits the caller's environment and takes its cwd as the root for output files.
-- **One session per install by default.** The CLI looks for a `.playwright/` folder from the cwd upwards. Without one, it hashes its own package root, so every caller of one install shares the `default` session. `PLAYWRIGHT_CLI_SESSION` selects a session, and a headless session exits after an hour idle.
+- **One session per install by default.** The CLI looks for a `.playwright/` folder from the cwd upwards. Without one, it hashes its own package root, so every caller of one install shares the `default` session. `PLAYWRIGHT_CLI_SESSION` selects a session, and a headless session exits after an hour idle; `PLAYWRIGHT_MCP_IDLE_TIMEOUT`, in milliseconds, changes that.
 - **`kill-all` isn't scoped.** It runs `ps auxww` and SIGKILLs every process whose command line contains `run-mcp-server`, `run-cli-server`, `cli-daemon`, `cliDaemon.js` or `dashboardApp.js`, swallowing errors. On a host that reaches all such processes of the same user, other tools' included. In a container it reaches the container's processes, and without procps it silently does nothing. The skill documents it to the model.
 - **Browser and config.** The default is branded Chrome (channel `chrome`), headless. Config merges `~/.playwright/cli.config.json`, then `.playwright/cli.config.json` in the cwd, then `PLAYWRIGHT_MCP_*` variables such as `PLAYWRIGHT_MCP_BROWSER`.
 - **Daemons leak in practice.** Codex Desktop's built-in Playwright skill, built on this CLI, has open reports of daemons and Chrome trees outliving tasks; one counted 8 daemons and 56 Chrome processes. Wherever the shell runs, a run needs cleanup at its end.
@@ -673,6 +677,12 @@ Researched on 2026-10-15 for the next step: loading skills, with enough tools to
 - **Validation is lenient:** warn on a name that doesn't match its directory or is too long; skip a skill only when its description is missing or its YAML can't be parsed. Consider a fallback for unquoted colons, which other clients accept.
 - **Over a session:** exempt skill content from compaction, and don't inject a skill that's already active.
 - **Trust:** project-level skills can come from an untrusted repository.
+
+**R12.8 Finding and stopping a run's processes on the host.** **[H]** Measured on the development Mac on 2026-10-15, for D18.
+- **Listing environments.** `ps axeww -o pid=,command=` and `ps -E` show the environment of the user's own processes, but not of Apple's platform binaries (`/bin/bash`, `/bin/sleep`). `ps -e` shows none. Linux's procps takes the same `axeww` flags.
+- **playwright-cli's processes.** A session started with `GREMLIN_RUN_ID` in its environment showed it on the daemon (Node), and not on any of its 7 Chrome processes, which hide their environment.
+- **Stopping them.** SIGTERM to the daemon alone stopped every Chrome process, in 60–160 ms in later runs. A daemon killed with SIGKILL instead would leave Chrome, which leads its own process group, beyond a sweep by run ID.
+- **`yaml` 2.9.1** parses every installed skill's frontmatter. With its default options it sends warnings, such as an unresolved tag, to `process.emitWarning`, which prints to stderr; `logLevel: 'error'` stops that and still throws on errors.
 
 **Sources:** the installed @playwright/cli 0.1.22 (README.md, skillCheck.js, and playwright-core's lib/tools/cli-client/ and coreBundle.js); agentskills.io/client-implementation/adding-skills-support; github.com/moby/moby/issues/9098; github.com/SWE-agent/mini-swe-agent and SWE-agent/SWE-ReX; github.com/OpenHands/OpenHands at 0.59.0; github.com/openai/codex issues #21292, #31560 and #34474, and codex-rs/exec-server; github.com/anthropics/sandbox-runtime and its issue #210; Docker Sandboxes (docker/docs, `sbx`); mcr.microsoft.com/playwright tags; Google's arm64 apt index; simonwillison.net/2025/Jun/16/the-lethal-trifecta.
 
@@ -1509,6 +1519,19 @@ The `migrate` service also runs `gremlin prune` on demand: `docker compose run -
 | Q15 | What is the shell tool's contract: arguments, output format and cap, exit codes, timeouts, environment, working directory, and cleanup at run end? | It is C3's process control, adapted to a host shell. C12 lists what the analysis says a host shell needs. |
 | Q16 | What turn and context budget does browsing need? | Each page action is a shell call plus a snapshot read, so the cap of 8 turns is too low, and one snapshot read can add up to 32 KiB (R12.1). C8's budgets wait for M2. |
 | Q17 | Where does SKILL.md parsing live, `core` or the server, and with which YAML parser? | 4.3 puts `parseSkill` in `core`. `Bun.YAML` can't run there (lint) or under Vitest on Node, so the `yaml` package would be `core`'s first runtime dependency. |
+
+**Q12–Q17 (2026-10-16).** The OpenSpec change `skills-and-shell` proposes an answer to each in its design (`openspec/changes/skills-and-shell/design.md`):
+
+| Question | Design decision |
+|---|---|
+| Q12 | 3 |
+| Q13 | 1 |
+| Q14 | 4 |
+| Q15 | 5 and 7 |
+| Q16 | 9 (`MAX_TURNS`) |
+| Q17 | 2 |
+
+They're settled when the change is archived.
 
 ## Spikes (M0)
 
