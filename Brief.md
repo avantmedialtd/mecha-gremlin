@@ -13,6 +13,7 @@
 >   - **Round two:** one agent audited that all 106 findings had landed correctly, and another did a fresh review of the revised design. Their 38 issues are folded in too.
 >   - Anything still unverified is marked [M] or [L], or listed as a spike.
 > - **Since revision 2, 2026-10-12:** R11 records the first pass of spike S2, a tool loop on LM Studio. C1, Q3 and the spikes table point to it.
+> - **2026-10-15:** R12 records the research for loading skills and using the playwright-cli skill. C12 weighs where the shell runs before M1, and D18 records the choice. Q12–Q17 list the skills questions still to settle.
 
 ---
 
@@ -86,9 +87,9 @@ Everything private (secrets, client specifics, my own skills and task definition
 
 ▸ **2. Agent loop.** Draft in 4.5. Budgets and a context-fill check beyond the iteration cap: C8. Narration handling: C9, using LM Studio's own markers (R5.2).
 
-▸ **3. Skills.** The SKILL.md spec has no typed tools (R7), so C4 proposes a different split. Storage: on disk (4.7).
+▸ **3. Skills.** The SKILL.md spec has no typed tools (R7), so C4 proposes a different split. Storage: on disk (4.7). For the first skills change: R12, Q12–Q17.
 
-▸ **4. Base tools.** Where they execute: C3. Process-group kill, pipe and stdin handling, and output caps: C3, 4.5, R8, R10.
+▸ **4. Base tools.** Where they execute: C3. Before M1, the shell runs on the host (C12, D18). Process-group kill, pipe and stdin handling, and output caps: C3, 4.5, R8, R10.
 
 ▸ **5. Persistence.** One row per history item rather than one `jsonb` array per run (C11). Entity draft: 4.4.
 
@@ -618,6 +619,63 @@ All **[H]**, run locally on 2026-10-12.
   - object `tool_choice` and `allowed_tools`;
   - other models.
 
+## R12. Skills, the playwright-cli skill, and where the shell runs
+
+Researched on 2026-10-15 for the next step: loading skills, with enough tools to use Microsoft's playwright-cli skill. The measurements ran on a Mac with Docker Desktop 29.8.2 (linux/arm64) and @playwright/cli 0.1.22, the npm latest. An independent fact-check re-verified the 12 source-based claims that matter most: 11 hold and 1 holds partly. Its corrections are folded in.
+
+**R12.1 What the playwright-cli skill needs from the agent.** **[H]**
+- **The skill ships with the CLI.** It lives in the npm package (`skills/playwright-cli/`), identical to the copy in its bundled playwright-core. SKILL.md is 15.4 KB, about 4k tokens, and links to 10 references totalling 53 KB. Its frontmatter's `allowed-tools: Bash(playwright-cli:*) Bash(npx playwright:*) Bash(npx --no-install playwright:*)` is Claude Code's syntax.
+- **A shell.** The model drives the browser with `playwright-cli <command>`.
+- **File reads.** Each command prints about 240 B: the page's URL and title, and a relative link to a snapshot file under `<cwd>/.playwright-cli/`, which the model then reads. Hacker News' front page made a 49 KB snapshot, over `read_file`'s 32 KiB cap. Narrower reads exist: `find` (15.6 KB of matches on that page, printed to stdout), `snapshot --depth=N`, and `--raw eval` (about 250 B for the top five titles).
+- **Reads inside the skill's directory,** for its references.
+- **Copied skills go stale.** `playwright-cli install --skills` copies the skill into a project, and the CLI warns once a day when a copy no longer matches, unless `CI` or `NO_UPDATE_NOTIFIER` is set. The copy inside the installed package always matches.
+
+**R12.2 How playwright-cli runs.** **[H]**
+- **A detached daemon per session.** `open` spawns the browser daemon with `detached: true` (its own session and process group) and stdio `['ignore', 'pipe', <log file>]`. It reads stdout until "Daemon listening on", then closes the pipe and `unref()`s. So `open` returns in about 1.9 s even through a pipe, and a group kill aimed at the command misses the browser. The daemon inherits the caller's environment and takes its cwd as the root for output files.
+- **One session per install by default.** The CLI looks for a `.playwright/` folder from the cwd upwards. Without one, it hashes its own package root, so every caller of one install shares the `default` session. `PLAYWRIGHT_CLI_SESSION` selects a session, and a headless session exits after an hour idle.
+- **`kill-all` isn't scoped.** It runs `ps auxww` and SIGKILLs every process whose command line contains `run-mcp-server`, `run-cli-server`, `cli-daemon`, `cliDaemon.js` or `dashboardApp.js`, swallowing errors. On a host that reaches all such processes of the same user, other tools' included. In a container it reaches the container's processes, and without procps it silently does nothing. The skill documents it to the model.
+- **Browser and config.** The default is branded Chrome (channel `chrome`), headless. Config merges `~/.playwright/cli.config.json`, then `.playwright/cli.config.json` in the cwd, then `PLAYWRIGHT_MCP_*` variables such as `PLAYWRIGHT_MCP_BROWSER`.
+- **Daemons leak in practice.** Codex Desktop's built-in Playwright skill, built on this CLI, has open reports of daemons and Chrome trees outliving tasks; one counted 8 daemons and 56 Chrome processes. Wherever the shell runs, a run needs cleanup at its end.
+
+**R12.3 `docker exec` as the shell's transport.** **[H]** Measured with `oven/bun:1.4.3`.
+- **Killing the client never stops the command.** That holds for SIGKILL, SIGTERM, SIGINT and SIGHUP (moby#9098, open since 2014). On SIGTERM and SIGINT the client even exits 0.
+- **An in-container `timeout -k <grace> <secs>` bounds it.** It kills the command's process group at the deadline (exit 124) and sends SIGKILL after the grace (137), even after the client is gone. `setsid` children escape it.
+- **No hang on held pipes.** Docker closes an exec's streams about 2 s after the exec'd process exits, so a background grandchild can't hang the call; its later output is lost.
+- **Clean defaults.** stdin is `/dev/null` unless `-i` is given, only `-e` variables reach the command, and each exec costs about 33 ms.
+- **Same-path bind mounts agree.** Paths, realpath, relative symlinks and visibility match on both sides. On Docker Desktop, files land owned by the host user.
+- **Sharp edges.** A plain `sleep` as PID 1 collects zombies, so use `--init`. Docker's own start errors come back as exit 126 or 127 on stdout. `bash -c` fails above 128 KiB of argument. An unknown uid gets HOME `/`.
+- **A run-ID sweep works, as root.** Scanning `/proc/*/environ` for `GREMLIN_RUN_ID` killed exactly one run's processes, `setsid` ones included. A non-root uid can't read root-owned or non-dumpable environs, so a sweep as the host user is untested.
+- **Networking.** On the default bridge, the container reaches the internet and `host.docker.internal`; an `--internal` network blocks both.
+
+**R12.4 Playwright in a linux/arm64 container.** **[H]**, from source, docs and registry metadata; not yet run.
+- **No branded Chrome.** Playwright refuses to install it on Linux arm64, in the CLI's bundled core and on main. Google's apt repo now ships arm64 Chrome, but Playwright doesn't support it. The CLI defaults to `chrome`, so a container has to select chromium, for example with `PLAYWRIGHT_MCP_BROWSER=chromium`.
+- **Node, not Bun.** The CLI spawns its daemon with `process.execPath`.
+- **No matching official image.** The CLI's alpha core expects Chromium r1247, and the v1.64.x images ship r1248. `playwright-cli install-browser chromium` fetches the matching build. A `node:26-trixie-slim` image with it comes to about 1.1 GB, with a 3–5 minute cold build (estimates).
+- **Defaults in a container.** Chromium runs with `--no-sandbox`. Playwright's Docker docs recommend `--init` and `--ipc=host`; a larger `/dev/shm` is an alternative.
+- **Not yet run.** The real CLI with Chromium hasn't been run in a container here.
+
+**R12.5 OS sandboxes on macOS.**
+- **Ready-made profiles stop Chromium [H].** Codex's Seatbelt profile and Anthropic's sandbox-runtime both lack a `mach-register` rule, so Chromium dies at launch (open issues, reproduced in October 2026).
+- **An allow-by-default profile ran the skill [M].** It denied the home directory except the working directory, a run HOME and the skill roots, plus `.env` files, LM Studio's port and the Docker socket. The real `open`, `snapshot` and `close` ran inside it with branded Chrome, whose own sandbox has to be off because it can't nest. That run used a subset of the full rules. Inside it, `ps` fails, so `kill-all` kills nothing.
+- **Gaps [M].** Other same-user processes' environments stay readable through sysctl; keychain access is unproven; everything outside the home stays readable; the network stays open; and it is macOS-only.
+
+**R12.6 Where other harnesses run the shell.** **[H]**
+- **On the host, optionally in an OS sandbox:** Codex CLI, and Claude Code's Bash sandbox, which is off by default.
+- **The whole agent in a container or VM:** OpenHands V1, Claude Code's devcontainer, Gemini CLI's sandbox, Docker Sandboxes.
+- **The harness outside, its tools inside (C3's split):** OpenHands V0 (an HTTP action server), SWE-ReX (an HTTP server with a token), E2B (envd), and Codex's `exec-server` (JSON-RPC). mini-swe-agent runs one `docker exec` per command in a `sleep 2h` container; its timeout kills only the client, so the command keeps running.
+- **Docker Sandboxes (`sbx`) can host just a shell:** a microVM driven with `sbx exec`, whose outbound traffic goes through a host proxy with deny-by-default presets. It needs a Docker sign-in.
+- **The lethal trifecta** is private data, untrusted content and a way to send data out, together. Simon Willison: "The only way to stay safe there is to avoid that lethal trifecta combination entirely." A shell that browses has all three unless its boundary removes one.
+
+**R12.7 Adding skills support, per the client guide.** **[H]**
+- **Catalog:** each skill's name, description and SKILL.md location, in the system prompt or in the activation tool's description. With no skills, omit it entirely.
+- **Activation:** the model reads SKILL.md, or calls a dedicated tool whose `name` parameter is an enum. The tool returns the body without frontmatter, wrapped (for example `<skill_content name="…">`), with the skill's directory and a *list* of its resources, never their contents.
+- **Resources** load on demand through the model's file tool, with skill directories allowlisted for reads.
+- **Validation is lenient:** warn on a name that doesn't match its directory or is too long; skip a skill only when its description is missing or its YAML can't be parsed. Consider a fallback for unquoted colons, which other clients accept.
+- **Over a session:** exempt skill content from compaction, and don't inject a skill that's already active.
+- **Trust:** project-level skills can come from an untrusted repository.
+
+**Sources:** the installed @playwright/cli 0.1.22 (README.md, skillCheck.js, and playwright-core's lib/tools/cli-client/ and coreBundle.js); agentskills.io/client-implementation/adding-skills-support; github.com/moby/moby/issues/9098; github.com/SWE-agent/mini-swe-agent and SWE-agent/SWE-ReX; github.com/OpenHands/OpenHands at 0.59.0; github.com/openai/codex issues #21292, #31560 and #34474, and codex-rs/exec-server; github.com/anthropics/sandbox-runtime and its issue #210; Docker Sandboxes (docker/docs, `sbx`); mcr.microsoft.com/playwright tags; Google's arm64 apt index; simonwillison.net/2025/Jun/16/the-lethal-trifecta.
+
 ---
 
 # Part 3: Where the brief stands, and challenges
@@ -867,6 +925,32 @@ These are **proposals, not decisions**. Each links to a decision in Part 5. "Bri
   - It covers model output, skill bodies, app-tool output and exec output alike. The exec server's normalisation (C3) is only one of those sources.
   - Truncation always cuts on code-point boundaries.
 - **Decision:** D7.
+
+### C12. Before M1, where does the shell run?
+- **Brief says:** "Isolation is Docker: the container is the boundary" (non-goal). C3 puts the shell in a workspace container behind an exec server, and M1 builds it (4.10).
+- **Problem:** loop features are arriving before M1's compose stack. The next one, skills with the playwright-cli skill, needs a shell (R12.1), and the skill feeds the model untrusted web pages. With private data in reach and an open network, that is the lethal trifecta (R12.6). A shell also ends what `read_file`'s confinement stands in for: the tool-loop design keeps the `.env` refusal only until the workspace container exists.
+- **What a host shell reaches:** everything the user's account can. On a developer machine that means SSH keys, cloud and package-registry credentials, tokens in the environment and in keychain-backed helpers, `.env` files in other projects, login files and LaunchAgents, the Docker socket, other tools' Playwright daemons (through `kill-all`, R12.2) and LM Studio's API. This was measured on the development Mac and is recorded here by category only, because this repo is public.
+- **Options:**
+
+| | Where commands run | C3's process control | At M1 |
+|---|---|---|---|
+| **A** | `bash -c` on the host, as the user | TypeScript, in the CLI | the engine moves into the workspace |
+| **A+** | the same, inside a generated Seatbelt profile (R12.5) | TypeScript, in the CLI | the fence is deleted and the engine moves |
+| **B-lite** | the workspace container, through `docker exec` and an in-container `timeout -k` (R12.3) | coreutils and a bash wrapper | the docker-exec glue is replaced |
+| **B** | the workspace container, with C3's exec server built now | TypeScript, in the container | kept almost unchanged |
+
+- **Analysis (2026-10-15):** an advocate per option and an impartial judge scored them on eight criteria: fidelity to the Brief's boundary, the blast radius of a prompt-injected model, cost now, rework at M1, testability, development ergonomics, portability to a Linux box, and fit with playwright-cli. Out of 40, B scored 31, B-lite 26, A 25 and A+ 23, ranked B, B-lite, A+, A.
+  - **B over B-lite, narrowly.** Both need the same image and the same Chromium bring-up (R12.4), and B's boundary is no stronger. B's code is the M1 component under the 100% mutation bar; B-lite's glue is replaced at M1, and its process control lives in bash.
+  - **A last, for untrusted browsing.** The judge called it defensible only for attended runs against sites the user picks.
+  - **Effort, estimated:** A 2.5–3 days; A+ and B-lite 3–4; B 4–6.
+- **What a host shell needs, from the analysis** (input to Q15):
+  - an environment built from scratch, never `process.env`, because Bun loads `.env` into it and children inherit it;
+  - a working directory of its own, outside any repository;
+  - a `.playwright/` folder there and a per-run `PLAYWRIGHT_CLI_SESSION`, so runs share a browser neither with each other nor with other tools (R12.2);
+  - `CI=1` among C3's prompt-disabling variables;
+  - cleanup at run end, since the browser daemon outlives every command (R12.2). macOS has no `/proc`, and `ps eww` shows the environment of only some processes, so a sweep by run ID needs care there;
+  - LM Studio's token auth, since its API needs none by default (R5.6).
+- **Decision:** D18.
 
 ---
 
@@ -1366,6 +1450,8 @@ The `migrate` service also runs `gremlin prune` on demand: `docker compose run -
 | **M6 Compaction summariser** | A plain summarising turn behind the M2 seam, **only if telemetry shows context growth** | A long run crosses the threshold and continues |
 | **M7 Publish** | `core` API docs and reference loop, npm publish | The package is published |
 
+**Loop features are arriving ahead of M1.** The tool loop came first (R11). Skills and the shell come next, with the shell on the host until the workspace exists (D18). M1 moves both into the workspace.
+
 ## 4.11 Won't build (scope fence, C10)
 
 - A plugin system, provider registry, event bus or multi-agent orchestration.
@@ -1400,6 +1486,7 @@ The `migrate` service also runs `gremlin prune` on demand: `docker compose run -
 | D15 | `emitDecoratorMetadata` | Off, with explicit types · on, with `Relation<T>` and `import type` | **Off** (C7); S1 confirms | open |
 | D16 | Meaning of overlap `queue` | Coalesce (fire once after the active run) · a real depth-1 queue (needs two partial indexes) | **Coalesce** (4.8) | open |
 | D17 | Isolating skill secrets | Visible workspace-wide (documented) · per-task uid in the workspace | **Workspace-wide for now**; revisit with Q5. Per-task uids edge toward the non-goal | open |
+| D18 | Where the shell runs before M1 | Host shell (A) · host shell in a Seatbelt fence (A+) · workspace container through `docker exec` (B-lite) · C3's workspace and exec server, built early (B) | **B**, narrowly over B-lite (C12) | **decided 2026-10-15: A**, a host shell. D3 still governs M1 |
 
 ## Open questions
 
@@ -1416,6 +1503,12 @@ The `migrate` service also runs `gremlin prune` on demand: `docker compose run -
 | Q9 | Does SIWC cover a personal, unattended, scheduled runner? | The docs don't say. **For:** a guide for running an open-source app on a remote VM; the example agent name is OpenClaw, which has a built-in cron scheduler; and OpenAI's Codex lead called use through Sign in with ChatGPT in OSS clients "completely fine" (R1.4). **Against:** the Codex docs say "The right way to authenticate automation is with an API key" (R1.3). It needs OpenAI's answer or a reading of the terms, not a spike. |
 | Q10 | Is a client deployment always one install per client, with no multi-tenancy? | Assumed yes. Otherwise every table needs a tenant key from the start. |
 | Q11 | Which time zone do schedules use by default? | Without a zone, croner uses the process zone, which is UTC in containers (R8). Proposal: `tz` per task, with a deployment default (4.8). |
+| Q12 | How does the model activate a skill: an `activate_skill` tool whose `name` is an enum of the skills, or by reading SKILL.md with `read_file`? | C4 and the client guide favour the tool (R12.7): no invented names, frontmatter stripped, a list of resources, and every activation logged. Reading needs no new tool. |
+| Q13 | Where do skills come from before tasks exist: configured directories, the standard scan (`.agents/skills` and `~/.agents/skills`), or both? | A scan of the home directory picks up skills written for other agents. The playwright-cli skill is best read from the installed package, whose copy always matches the CLI (R12.1). |
+| Q14 | How does the model read a skill's references: `read_file` with read-only skill roots, or through the shell? | The first widens `read_file` beyond the working directory, as the client guide suggests (R12.7). With a host shell (D18), the shell can read them either way. |
+| Q15 | What is the shell tool's contract: arguments, output format and cap, exit codes, timeouts, environment, working directory, and cleanup at run end? | It is C3's process control, adapted to a host shell. C12 lists what the analysis says a host shell needs. |
+| Q16 | What turn and context budget does browsing need? | Each page action is a shell call plus a snapshot read, so the cap of 8 turns is too low, and one snapshot read can add up to 32 KiB (R12.1). C8's budgets wait for M2. |
+| Q17 | Where does SKILL.md parsing live, `core` or the server, and with which YAML parser? | 4.3 puts `parseSkill` in `core`. `Bun.YAML` can't run there (lint) or under Vitest on Node, so the `yaml` package would be `core`'s first runtime dependency. |
 
 ## Spikes (M0)
 
@@ -1428,6 +1521,8 @@ The `migrate` service also runs `gremlin prune` on demand: `docker compose run -
 | S5 | Docker plumbing and the exec server | **Networking:** `host.docker.internal` reaches LM Studio on 127.0.0.1 (Docker Desktop only; on Linux, bind to the bridge IP), and internal-network reachability matches R10. **Process control:** the exec server kills process groups on timeout and on client disconnect; kills processes that escaped with `setsid` through `GREMLIN_RUN_ID`; on reset, kills everything except PID 1 and itself; returns promptly when a background grandchild holds the pipe; never blocks on stdin; reaps zombies under `init`. **Output:** `yes` with a 5-minute timeout returns head and tail within the cap while memory stays flat; binary, NUL and cut-emoji output is stored safely. **Ownership:** on a Linux host, files the agent writes are owned by the host user. | D3, 4.9 |
 
 **S2 status (2026-10-12).** On `prism-ml/bonsai-27b`, the first criterion passes: multi-turn function calls with client-held history. `cached_tokens` is reported too (R11). The other criteria are still open.
+
+**S5 status (2026-10-15).** `docker exec` process control, same-path mounts and container networking were measured on Docker Desktop (R12.3). Still open: the exec server, ownership on a Linux host, a run-ID sweep as a non-root user, and the real playwright-cli with Chromium in a container (R12.4).
 
 ---
 
@@ -1452,6 +1547,14 @@ All corrections from both rounds are applied in this version.
 | Design review (Parts 3–5) | | 31 issues | **High severity:** `ON CONFLICT` tick; heartbeat timer; context-fill check; NUL-safe storage. **Medium severity, among others:** lock order, role separation, skills mounted in the app, milestone order |
 | Round two: fix audit | 106 findings | 92 correct, 13 fixed | Restored hedges (R1.5 "mostly right" [M]); the catch-up rule no longer overrides `queue` or the post-block probe; smaller qualifiers in 4.5, 4.6, 3.0, C2 and C4 |
 | Round two: fresh design review | | 25 issues | **High severity:** "missed" fires defined by a gap with no tick (persisted `last_tick_at`); deferred runs re-arm their fire. **Medium severity:** workers respect backoff; `run.model_profile`; a single daemon via advisory lock; a hard per-run deadline; full grant matrix with no-cascade foreign keys and a `migrate` service; a storage sanitiser for NUL and lone surrogates; per-task savepoints; token-conditional refresh; per-profile claim loops; the exec output cap in M1. **Low severity:** limit-domain backoff, `tool_start` events, state machine, context fill counting output tokens, the tick query, `gremlin run`, secrets in env, milestone gating, env files untracked, workspace user, `setsid` cleanup, retention and backups, "unreachable" on every backend |
+
+**R12 and C12 (2026-10-15).** Two probes on the development Mac and two research agents gathered 109 claims. An independent fact-check re-verified the 12 source-based claims that matter most (11 hold, 1 partly) and flagged 16 places where a probe report concluded more than its commands showed. The notable corrections:
+- `kill-all` reaches only the same user's processes;
+- "`docker exec` works" covered its mechanics, not playwright-cli in a container;
+- run-ID sweeps were tested only as root;
+- a container reaches loopback-only host services through `host.docker.internal`, so rebinding LM Studio wouldn't hide it.
+
+All are folded into R12 and C12.
 
 ---
 
@@ -1508,3 +1611,14 @@ All corrections from both rounds are applied in this version.
 - docs.docker.com/reference/compose-file/networks/
 - docs.docker.com/reference/cli/dockerd/ (host gateway IP)
 - docs.docker.com/reference/cli/docker/container/run/
+- github.com/moby/moby/issues/9098 (killing the `docker exec` client)
+- docs.docker.com/ai/sandboxes/ (Docker Sandboxes, `sbx`)
+
+**Playwright and agent harnesses (R12)**
+- the installed @playwright/cli 0.1.22 and its bundled playwright-core (lib/tools/cli-client/, coreBundle.js, skills/)
+- playwright.dev/docs/docker; mcr.microsoft.com/playwright tags
+- github.com/SWE-agent/mini-swe-agent; github.com/SWE-agent/SWE-ReX
+- github.com/OpenHands/OpenHands (0.59.0)
+- github.com/openai/codex issues #21292, #31560 and #34474; codex-rs/exec-server
+- github.com/anthropics/sandbox-runtime and its issue #210
+- simonwillison.net/2025/Jun/16/the-lethal-trifecta
