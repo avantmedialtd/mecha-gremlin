@@ -21,13 +21,13 @@
 
 ## 3. CI
 
-- [ ] 3.1 `.github/workflows/ci.yml`:
+- [x] 3.1 `.github/workflows/ci.yml`:
   - the `NODE_VERSION` comment says Node starts the server;
   - the step becomes "Start the server on Node" and runs `bun run server:node`;
   - its comment and its `::error::` message speak of the server.
 
   Push with gh's credential, `git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push`, because the keychain's token can't push workflow files.
-- [ ] 3.2 CI passes on the branch: both jobs, with the mutation job at 100%
+- [x] 3.2 CI passes on the branch: both jobs, with the mutation job at 100%
 
 ## 4. README
 
@@ -48,7 +48,7 @@
 
 ## 6. After archiving (the session's)
 
-- [ ] 6.1 After `openspec archive`:
+- [x] 6.1 After `openspec archive`:
   - add the commands, `bun run server` and `bun run server:node`, to `model-hello`'s Purpose;
   - check that "Run the server on Bun or on Node" and "Stop the session's processes when the server ends" are still the spec's last two requirements;
   - run `openspec validate --all --strict`.

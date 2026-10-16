@@ -2,12 +2,12 @@
 
 ## Purpose
 
-The server entry point that chooses a model by provider (the model loaded in LM Studio by default, or a named model from any OpenAI-compatible service), has it carry out a task through the agent loop with a shell, `read_file` and skills, and logs the answer, with its configuration, its failure behaviour, and how it stops the session's processes. It runs on Bun or Node.
+The server entry point that chooses a model by provider (the model loaded in LM Studio by default, or a named model from any OpenAI-compatible service), has it carry out a task through the agent loop with a shell, `read_file` and skills, and logs the answer, with its configuration, its failure behaviour, and how it stops the session's processes. It runs on Bun, with `bun run server`, or on Node, with `bun run server:node`.
 ## Requirements
 ### Requirement: Carry out a task and log the answer
-Running the server entry point, `bun run hello [task…]` from the repository root, SHALL:
+Running the server entry point, `bun run server [task…]` from the repository root, SHALL:
 1. choose the model to use;
-2. take the task from the arguments, joined with spaces. With no arguments, the task SHALL be "What exact command does the check script in package.json run? Quote it.";
+2. take the task from the arguments, joined with spaces. With no arguments, the task SHALL be "Use the playwright-cli skill to find the title of https://example.com";
 3. load the skills `SKILLS_PATH` lists (`skills`);
 4. run the agent loop, with a turn limit of `MAX_TURNS`, with:
    - the tools `read_file`, rooted at the working directory with the loaded skills' directories, then `shell`, in the working directory, then `activate_skill` when any skill is loaded;
@@ -23,11 +23,11 @@ Running the server entry point, `bun run hello [task…]` from the repository ro
 Every turn SHALL go to the OpenAI-compatible Responses endpoint at `{MODEL_BASE_URL}/responses` with the chosen model and, when one is configured, `reasoning.effort`.
 
 #### Scenario: Default task
-- **WHEN** the hello runs with no arguments
-- **THEN** the first request's `user` item is "What exact command does the check script in package.json run? Quote it."
+- **WHEN** the server runs with no arguments
+- **THEN** the first request's `user` item is "Use the playwright-cli skill to find the title of https://example.com"
 
 #### Scenario: Task from the arguments
-- **WHEN** the hello runs with the arguments `Which`, `runtime` and `does README.md describe?`
+- **WHEN** the server runs with the arguments `Which`, `runtime` and `does README.md describe?`
 - **THEN** the first request's `user` item is "Which runtime does README.md describe?"
 
 #### Scenario: The tools offered
@@ -51,7 +51,7 @@ Every turn SHALL go to the OpenAI-compatible Responses endpoint at `{MODEL_BASE_
 - **THEN** exactly 3 requests are sent
 
 ### Requirement: Log each tool call and turn
-The hello SHALL log, through the structured logger:
+The server SHALL log, through the structured logger:
 - when at least one skill is loaded, an `info` record `skills` with the field `names`, the loaded skills' names in sorted order;
 - the `skill not loaded` and `skill warning` records that loading the skills produces (`skills`);
 - before the first turn, an `info` record `asking` with the fields `model`, `baseUrl`, `run` (the session's run ID), `workDir` (the working directory's real path) and `task`;
@@ -235,25 +235,25 @@ When a turn fails, the message SHALL include the failure's detail, such as the s
 - **WHEN** a turn returns neither tool calls nor text
 - **THEN** the error says the model gave no answer, no `answer` record is logged, and the exit code is 1
 
-### Requirement: Run on Bun or on Node
-The hello SHALL run on Bun with `bun run hello`, and on Node with `bun run hello:node`, taking the same arguments and settings. `bun run hello:node` SHALL load the `.env` file in the current directory when there is one, and SHALL start without one; other `.env` files that Bun reads, such as `.env.local`, are not read on Node. `packages/server/package.json` SHALL declare both runtimes in `engines`. CI SHALL start the hello on Node.
+### Requirement: Run the server on Bun or on Node
+The server SHALL run on Bun with `bun run server`, and on Node with `bun run server:node`, taking the same arguments and settings. `bun run server:node` SHALL load the `.env` file in the current directory when there is one, and SHALL start without one; other `.env` files that Bun reads, such as `.env.local`, are not read on Node. `packages/server/package.json` SHALL declare both runtimes in `engines`. CI SHALL start the server on Node.
 
 #### Scenario: On Node
-- **WHEN** `bun run hello:node` runs with `MODEL_BASE_URL` set to `http://127.0.0.1:9/v1`, where nothing listens, and there is no `.env`
+- **WHEN** `bun run server:node` runs with `MODEL_BASE_URL` set to `http://127.0.0.1:9/v1`, where nothing listens, and there is no `.env`
 - **THEN** Node notes on stderr that `.env` wasn't found, an `error` record says LM Studio can't be reached at that URL, and the exit code is 1, as on Bun
 
 #### Scenario: Settings from .env on Node
-- **WHEN** the `.env` in the current directory sets `MODEL_PROVIDER` to `nonsense`, and the hello runs on Node with `--env-file-if-exists=.env`
+- **WHEN** the `.env` in the current directory sets `MODEL_PROVIDER` to `nonsense`, and the server runs on Node with `--env-file-if-exists=.env`
 - **THEN** an `error` record names `MODEL_PROVIDER`, and the exit code is 1
 
-#### Scenario: CI starts the hello on Node
+#### Scenario: CI starts the server on Node
 - **WHEN** CI's check job runs
-- **THEN** it runs `bun run hello:node` with `MODEL_BASE_URL` set to a port where nothing listens, and fails unless the exit code is 1 and the output says LM Studio can't be reached
+- **THEN** it runs `bun run server:node` with `MODEL_BASE_URL` set to a port where nothing listens, and fails unless the exit code is 1 and the output says LM Studio can't be reached
 
-### Requirement: Stop the session's processes when the hello ends
-The hello SHALL await the shell's `dispose()` before it exits, whether the session answered or failed.
-- When `dispose()` stopped any processes, the hello SHALL log an `info` record `stopped` with the field `count`, once.
-- When `dispose()` couldn't run its sweep, the hello SHALL log a `warn` record `cleanup failed` with the field `error`, and keep its exit code.
+### Requirement: Stop the session's processes when the server ends
+The server SHALL await the shell's `dispose()` before it exits, whether the session answered or failed.
+- When `dispose()` stopped any processes, the server SHALL log an `info` record `stopped` with the field `count`, once.
+- When `dispose()` couldn't run its sweep, the server SHALL log a `warn` record `cleanup failed` with the field `error`, and keep its exit code.
 - **Signal handlers:** it SHALL install handlers for SIGINT, SIGTERM and SIGHUP before the session starts, and SHALL remove them once `dispose()` has resolved.
 - **The first signal** SHALL:
   - log a `warn` record `interrupted` with the field `signal`;
@@ -265,28 +265,29 @@ The hello SHALL await the shell's `dispose()` before it exits, whether the sessi
 
 #### Scenario: A process left behind
 - **WHEN** a command starts a process in a session of its own, and the model then answers
-- **THEN** that process is stopped before the hello exits, and a `stopped` record has `count` 1
+- **THEN** that process is stopped before the server exits, and a `stopped` record has `count` 1
 
 #### Scenario: Ctrl-C
-- **WHEN** the hello receives SIGINT during the session
+- **WHEN** the server receives SIGINT during the session
 - **THEN** a `warn` record `interrupted` gives the signal `SIGINT`, the session's processes are stopped, and the exit code is 130
 
 #### Scenario: SIGTERM
-- **WHEN** the hello receives SIGTERM during the session
+- **WHEN** the server receives SIGTERM during the session
 - **THEN** a `warn` record `interrupted` gives the signal `SIGTERM`, the session's processes are stopped, and the exit code is 143
 
 #### Scenario: The terminal closes
-- **WHEN** the hello receives SIGHUP during the session
+- **WHEN** the server receives SIGHUP during the session
 - **THEN** a `warn` record `interrupted` gives the signal `SIGHUP`, the session's processes are stopped, and the exit code is 129
 
 #### Scenario: Ctrl-C twice
 - **WHEN** SIGINT arrives twice in quick succession
 - **THEN** one `interrupted` record is logged, the processes are stopped once, and the exit code is 130
 
-#### Scenario: No handler outlives the hello
-- **WHEN** the hello ends after an answer
+#### Scenario: No handler outlives the server
+- **WHEN** the server ends after an answer
 - **THEN** `process` has as many SIGINT, SIGTERM and SIGHUP listeners as before it started
 
 #### Scenario: The sweep can't run
 - **WHEN** the model answers, and the sweep can't list processes
 - **THEN** a `warn` record `cleanup failed` gives the reason, and the exit code is 0
+
