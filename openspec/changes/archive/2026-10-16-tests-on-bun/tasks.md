@@ -28,7 +28,7 @@
   - the mutation job drops `actions/setup-node`.
 
   Push with gh's credential, `git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push`, because the keychain's token can't push workflow files.
-- [ ] 3.2 CI passes on the branch: both jobs, with the mutation job at 100%
+- [x] 3.2 CI passes on the branch: both jobs, with the mutation job at 100%
 
 ## 4. Docs
 
