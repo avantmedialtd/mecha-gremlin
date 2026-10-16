@@ -1,4 +1,4 @@
-# model-hello Specification
+# server Specification
 
 ## Purpose
 

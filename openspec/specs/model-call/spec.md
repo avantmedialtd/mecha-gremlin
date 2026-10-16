@@ -1,4 +1,4 @@
-# model-turn Specification
+# model-call Specification
 
 ## Purpose
 
