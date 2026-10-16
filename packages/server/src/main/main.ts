@@ -11,7 +11,7 @@ import { readFileTool } from '../tools/read-file.ts';
 import { createShell } from '../tools/shell.ts';
 import { parseArgs } from './args.ts';
 import { failure } from './failure.ts';
-import { parsed, turnFields } from './fields.ts';
+import { modelCallFields, parsed } from './fields.ts';
 
 // 128 plus the signal's number, as a shell reports a process that a signal ended.
 const EXIT_CODES = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 } as const;
@@ -146,7 +146,7 @@ const run = async (args: readonly string[]): Promise<number> => {
                 { role: 'developer', content: developer },
                 { role: 'user', content: task },
             ],
-            maxTurns: config.maxTurns,
+            maxSteps: config.maxSteps,
         });
 
         if (!created.ok) {
@@ -173,8 +173,8 @@ const run = async (args: readonly string[]): Promise<number> => {
                 return EXIT_CODES[interrupted];
             }
 
-            if ('turn' in step) {
-                log.info('turn', turnFields(step.turn));
+            if ('stats' in step) {
+                log.info('model call', modelCallFields(step.stats));
             }
 
             switch (step.kind) {

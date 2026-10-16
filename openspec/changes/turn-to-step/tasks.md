@@ -1,23 +1,23 @@
 ## 1. `core`: the model call (`model-call`, `tool-calls`)
 
-- [ ] 1.1 `git mv packages/core/src/turn.ts packages/core/src/model-call.ts` (design decision 1):
+- [x] 1.1 `git mv packages/core/src/turn.ts packages/core/src/model-call.ts` (design decision 1):
   - `runTurn` becomes `callModel`;
   - `TurnRequest`, `TurnResult`, `TurnError`, `TurnErrorKind` and `TurnOptions` become `ModelCallRequest`, `ModelCallResult`, `ModelCallError`, `ModelCallErrorKind` and `ModelCallOptions`;
   - the abort's detail becomes "the model call was aborted", and the comments speak of the model call;
   - the inline oxlint exemption stays on the request parameter.
-- [ ] 1.2 `packages/core/src/tools.ts`: `Turn` becomes `Reply`, which `classify` returns. `src/history.ts`' comment says the history is replayed on every model call.
-- [ ] 1.3 `git mv packages/core/test/turn.test.ts packages/core/test/model-call.test.ts`. Its describe and test titles follow `model-call`'s requirements and scenarios, such as "Completed call", "Response ends incomplete" and "Response fails mid-stream".
+- [x] 1.2 `packages/core/src/tools.ts`: `Turn` becomes `Reply`, which `classify` returns. `src/history.ts`' comment says the history is replayed on every model call.
+- [x] 1.3 `git mv packages/core/test/turn.test.ts packages/core/test/model-call.test.ts`. Its describe and test titles follow `model-call`'s requirements and scenarios, such as "Completed call", "Response ends incomplete" and "Response fails mid-stream".
 
 ## 2. The session (`agent-loop`)
 
-- [ ] 2.1 `packages/server/src/session/session.ts` (design decisions 1 and 2):
+- [x] 2.1 `packages/server/src/session/session.ts` (design decisions 1 and 2):
   - the exported `MAX_TURNS = 8` and its comment go. `maxTurns` becomes `maxSteps`, and is required. The positive-integer check stays, and its error names `maxSteps`;
   - `TurnStats` becomes `StepStats`, carried as `stats`;
   - the `turn_limit` step becomes `step_limit`, and `turn_failed` becomes `model_call_failed`, carrying a `ModelCallError`;
   - the output of a call that isn't run says "not run: the step limit was reached";
   - it imports `callModel` from `@mecha-gremlin/core/model-call`, and `Reply` from `@mecha-gremlin/core/tools`;
   - its comments speak of steps and model calls.
-- [ ] 2.2 `packages/server/test/session/session.test.ts`:
+- [x] 2.2 `packages/server/test/session/session.test.ts`:
   - the describe titles follow `agent-loop`'s requirement titles;
   - "The model never stops calling tools" passes `maxSteps: 8`, as the `MAX_TURNS` import goes;
   - the not-positive-integer test also covers a step limit left out;
@@ -25,12 +25,12 @@
 
 ## 3. The server (`server`, `structured-log`)
 
-- [ ] 3.1 `packages/server/src/config/config.ts` (design decision 4):
+- [x] 3.1 `packages/server/src/config/config.ts` (design decision 4):
   - `MAX_STEPS`, through `DEFAULT_MAX_STEPS`, `checkMaxSteps` and `config.maxSteps`. The default's comment counts two steps for each page action;
   - while `MAX_TURNS` is set, whatever the provider and whatever `MAX_STEPS` holds, `loadConfig` reports "MAX_TURNS is now MAX_STEPS; rename it in your settings."
-- [ ] 3.2 `packages/server/src/main/fields.ts`: `turnFields` becomes `modelCallFields`, which gives `step` where it gave `number`. `src/main/main.ts` logs `model call` from a step's `stats`, and passes `maxSteps`.
-- [ ] 3.3 `packages/server/src/main/failure.ts`: `turnFailed` becomes `modelCallFailed`. The cases are `model_call_failed` and `step_limit`, with design decision 5's messages.
-- [ ] 3.4 Tests. Describe titles follow `server`'s requirement titles, and helpers named after turns follow design decision 7.
+- [x] 3.2 `packages/server/src/main/fields.ts`: `turnFields` becomes `modelCallFields`, which gives `step` where it gave `number`. `src/main/main.ts` logs `model call` from a step's `stats`, and passes `maxSteps`.
+- [x] 3.3 `packages/server/src/main/failure.ts`: `turnFailed` becomes `modelCallFailed`. The cases are `model_call_failed` and `step_limit`, with design decision 5's messages.
+- [x] 3.4 Tests. Describe titles follow `server`'s requirement titles, and helpers named after turns follow design decision 7.
   - `test/config/config.test.ts`: `MAX_STEPS`'s values and default. `MAX_TURNS` is refused when set alone, beside a valid `MAX_STEPS`, and beside an unknown provider;
   - `test/main/failure.test.ts`: design decision 5's messages;
   - `test/main/main.test.ts`:
@@ -44,7 +44,7 @@
 
 ## 4. README
 
-- [ ] 4.1 README:
+- [x] 4.1 README:
   - the packages table's `core` row: `callModel` calls the model once over the Responses API, streamed, and returns the reply or a classified error; `classify` is for a model call's output;
   - the packages list: the session "yields each step's result";
   - the imports example: `@mecha-gremlin/core/model-call`;
@@ -61,16 +61,16 @@
   - the verb: "Turn on LM Studio's token auth", "turns on the type-aware rules" and "turns the mutant off" in the README, "a later turn of its event loop" in `spawn.test.ts`, and "turned into input", "turn a history", "turning chat history" and "turns into a different string" in the specs;
   - `MAX_TURNS`, in `config.ts`, its tests, `main.test.ts`' `SETTINGS`, the README's note and the `server` spec;
   - the three Purposes that 7.1 updates.
-- [ ] 5.2 `bun run check` passes, and `bun run mutation` reaches 100%
+- [x] 5.2 `bun run check` passes, and `bun run mutation` reaches 100%
 - [ ] 5.3 CI passes on the branch: both jobs, with the mutation job at 100%
 
 ## 6. Live check (the session's)
 
-- [ ] 6.1 Against the local LM Studio, with `SKILLS_PATH` set to playwright-cli's skills and a dedicated `WORK_DIR`:
+- [x] 6.1 Against the local LM Studio, with `SKILLS_PATH` set to playwright-cli's skills and a dedicated `WORK_DIR`:
   - `bun run server` answers "Example Domain" and exits 0, logging `model call` records numbered by `step`;
   - `bun run server:node` does the same on Node.
-- [ ] 6.2 With `MAX_TURNS=5` in the environment, `bun run server` exits 1 before any network call, with an error that names `MAX_STEPS`
-- [ ] 6.3 Replace the README's sample log with the pretty output of 6.1's run on Bun
+- [x] 6.2 With `MAX_TURNS=5` in the environment, `bun run server` exits 1 before any network call, with an error that names `MAX_STEPS`
+- [x] 6.3 Replace the README's sample log with the pretty output of 6.1's run on Bun
 
 ## 7. After archiving (the session's)
 

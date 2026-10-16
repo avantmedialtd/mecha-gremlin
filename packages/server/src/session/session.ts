@@ -1,29 +1,26 @@
 import { type HistoryItem, toInput, toOutputItem } from '@mecha-gremlin/core/history';
+import { type ModelCallError, callModel } from '@mecha-gremlin/core/model-call';
 import { type Result, err, ok } from '@mecha-gremlin/core/result';
 import {
+    type Reply,
     type ToolCall,
     type ToolOutcome,
-    type Turn,
     classify,
     toFunctionTool,
 } from '@mecha-gremlin/core/tools';
-import { type TurnError, runTurn } from '@mecha-gremlin/core/turn';
 import OpenAI from 'openai';
 import type { ResponseUsage } from 'openai/resources/responses/responses';
 import type { Config } from '../config/config.ts';
 import { resolveModel } from '../model/model.ts';
 import type { ToolHandler } from '../tools/tool-handler.ts';
 
-/** The brief's hard cap on iterations; budgets and a context check come later (Brief C8). */
-export const MAX_TURNS = 8;
-
 export type SessionOptions = {
     readonly tools: readonly ToolHandler[];
     readonly history: readonly HistoryItem[];
-    readonly maxTurns?: number;
+    readonly maxSteps: number;
 };
 
-export type TurnStats = {
+export type StepStats = {
     readonly number: number;
     readonly usage: ResponseUsage | undefined;
     readonly seconds: number;
@@ -35,14 +32,14 @@ export type CallResult = {
 };
 
 /**
- * The result of one turn. A step that asks the user for input, and takes the reply back before
+ * The result of one step. A step that asks the user for input, and takes the reply back before
  * the session goes on, is meant to join these later.
  */
 export type SessionStep =
-    | { readonly kind: 'calls'; readonly turn: TurnStats; readonly calls: readonly CallResult[] }
-    | (Exclude<Turn, { kind: 'calls' }> & { readonly turn: TurnStats })
-    | { readonly kind: 'turn_limit'; readonly turn: TurnStats }
-    | { readonly kind: 'turn_failed'; readonly error: TurnError }
+    | { readonly kind: 'calls'; readonly stats: StepStats; readonly calls: readonly CallResult[] }
+    | (Exclude<Reply, { kind: 'calls' }> & { readonly stats: StepStats })
+    | { readonly kind: 'step_limit'; readonly stats: StepStats }
+    | { readonly kind: 'model_call_failed'; readonly error: ModelCallError }
     | { readonly kind: 'history'; readonly error: string };
 
 export type Session = {
@@ -54,7 +51,7 @@ export type Session = {
     readonly history: readonly HistoryItem[];
 };
 
-const NOT_RUN: ToolOutcome = err('not run: the turn limit was reached');
+const NOT_RUN: ToolOutcome = err('not run: the step limit was reached');
 
 const runCall = async (
     call: ToolCall,
@@ -77,13 +74,13 @@ const runCall = async (
     }
 };
 
-/** Choosing the model can fail before any turn: LM Studio may have none loaded. */
+/** Choosing the model can fail before any model call: LM Studio may have none loaded. */
 export const createSession = async (
     config: Config,
-    { tools, history: initial, maxTurns = MAX_TURNS }: SessionOptions,
+    { tools, history: initial, maxSteps }: SessionOptions,
 ): Promise<Result<Session, string>> => {
-    if (!Number.isInteger(maxTurns) || maxTurns < 1) {
-        return err(`maxTurns must be a positive integer; got ${maxTurns}.`);
+    if (!Number.isInteger(maxSteps) || maxSteps < 1) {
+        return err(`maxSteps must be a positive integer; got ${maxSteps}.`);
     }
 
     const choice = await resolveModel(config);
@@ -112,7 +109,7 @@ export const createSession = async (
 
             const started = performance.now();
             // An unset `reasoning` drops out of the JSON body.
-            const result = await runTurn(client, {
+            const result = await callModel(client, {
                 model,
                 input: input.value,
                 tools: functionTools,
@@ -120,28 +117,28 @@ export const createSession = async (
             });
 
             if (!result.ok) {
-                yield { kind: 'turn_failed', error: result.error };
+                yield { kind: 'model_call_failed', error: result.error };
                 return;
             }
 
             const { response, usage } = result.value;
             history.push(...response.output);
-            const turn = { number, usage, seconds: (performance.now() - started) / 1000 };
+            const stats = { number, usage, seconds: (performance.now() - started) / 1000 };
 
             const next = classify(response.output);
 
             if (next.kind !== 'calls') {
-                yield { ...next, turn };
+                yield { ...next, stats };
                 return;
             }
 
-            if (number >= maxTurns) {
+            if (number >= maxSteps) {
                 // Every call needs an output before the history can be replayed (Brief 4.5).
                 for (const call of next.calls) {
                     history.push(toOutputItem(call.call_id, NOT_RUN));
                 }
 
-                yield { kind: 'turn_limit', turn };
+                yield { kind: 'step_limit', stats };
                 return;
             }
 
@@ -153,7 +150,7 @@ export const createSession = async (
                 calls.push({ call, outcome });
             }
 
-            yield { kind: 'calls', turn, calls };
+            yield { kind: 'calls', stats, calls };
         }
     };
 

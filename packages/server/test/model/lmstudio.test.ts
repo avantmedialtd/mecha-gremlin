@@ -15,7 +15,7 @@ const config: Config = {
     model: undefined,
     reasoningEffort: 'none',
     skillsPath: undefined,
-    maxTurns: 30,
+    maxSteps: 30,
 };
 
 /** A `/api/v1/models` payload, shaped like LM Studio 0.4's. */

@@ -51,7 +51,7 @@ The server SHALL log, through the structured logger:
 - when at least one skill is loaded, an `info` record `skills` with the field `names`, the loaded skills' names in sorted order;
 - the `skill not loaded` and `skill warning` records that loading the skills produces (`skills`);
 - before the first model call, an `info` record `asking` with the fields `model`, `baseUrl`, `run` (the session's run ID), `workDir` (the working directory's real path) and `task`;
-- as each step completes, an `info` record `model call`. Its fields are `step`, the step's number, then `seconds`, the model call's, rounded to a tenth, and, when the server reports them, `inputTokens`, `cachedTokens`, `outputTokens` and `reasoningTokens`;
+- as each step completes, an `info` record `model call`. Its fields are `step`, the step's number; `inputTokens`, `cachedTokens`, `outputTokens` and `reasoningTokens`, when the server reports them; and `seconds`, the model call's, rounded to a tenth;
 - then, for each of the step's tool calls:
   - an `info` record `tool call` with the fields `tool` and `arguments`. The arguments are logged as JSON when they parse, and as the model sent them otherwise;
   - then an `info` record `tool result` with the fields `tool` and `bytes`, or a `warn` record `tool failed` with the fields `tool` and `error`.

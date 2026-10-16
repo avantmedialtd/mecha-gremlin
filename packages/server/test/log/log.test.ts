@@ -46,11 +46,17 @@ describe('Formatted output', () => {
 
     test('fields follow as key=value, in order', () => {
         const lines = written('pretty', (log) =>
-            log.info('turn', { number: 1, seconds: 1.5, cached: true, usage: null, file: 'a.txt' }),
+            log.info('model call', {
+                step: 1,
+                seconds: 1.5,
+                cached: true,
+                usage: null,
+                file: 'a.txt',
+            }),
         );
 
         expect(lines).toEqual([
-            `${CLOCK} INFO  turn number=1 seconds=1.5 cached=true usage=null file=a.txt`,
+            `${CLOCK} INFO  model call step=1 seconds=1.5 cached=true usage=null file=a.txt`,
         ]);
     });
 
@@ -90,18 +96,23 @@ describe('Formatted output', () => {
     });
 
     test('an undefined field is left out', () => {
-        const lines = written('pretty', (log) => log.info('turn', { number: 1, usage: undefined }));
+        const lines = written('pretty', (log) =>
+            log.info('model call', { step: 1, usage: undefined }),
+        );
 
-        expect(lines).toEqual([`${CLOCK} INFO  turn number=1`]);
+        expect(lines).toEqual([`${CLOCK} INFO  model call step=1`]);
     });
 
     test('a multi-line message keeps its first line in place, and its other lines come first', () => {
         const lines = written('pretty', (log) =>
-            log.error('The turn failed.\nTry again.', { tool: 'read_file', text: 'one\ntwo' }),
+            log.error('The model call failed.\nTry again.', {
+                tool: 'read_file',
+                text: 'one\ntwo',
+            }),
         );
 
         expect(lines).toEqual([
-            `${CLOCK} ERROR The turn failed. tool=read_file\n    Try again.\n  text:\n    one\n    two`,
+            `${CLOCK} ERROR The model call failed. tool=read_file\n    Try again.\n  text:\n    one\n    two`,
         ]);
     });
 
@@ -129,11 +140,11 @@ describe('JSON output', () => {
 
     test("an undefined field can't overwrite the record's own time, level or message", () => {
         const lines = written('json', (log) =>
-            log.info('turn', { time: undefined, level: undefined, message: undefined }),
+            log.info('model call', { time: undefined, level: undefined, message: undefined }),
         );
 
         expect(lines).toEqual([
-            '{"time":"2026-10-12T07:15:51.250Z","level":"info","message":"turn"}',
+            '{"time":"2026-10-12T07:15:51.250Z","level":"info","message":"model call"}',
         ]);
     });
 });

@@ -17,7 +17,7 @@ export type ToolOutcome = Result<string, string>;
 
 export type ToolCall = Extract<ResponseOutputItem, { type: 'function_call' }>;
 
-export type Turn =
+export type Reply =
     | { readonly kind: 'calls'; readonly calls: readonly ToolCall[] }
     | { readonly kind: 'final'; readonly text: string }
     | { readonly kind: 'empty' };
@@ -45,7 +45,7 @@ export const toFunctionTool = (tool: Tool): FunctionTool => {
  * Calls win over text because models pair a call with a blank or chatty message (Brief R11). A
  * refusal counts as the answer, so the user sees it instead of "no answer".
  */
-export const classify = (output: readonly ResponseOutputItem[]): Turn => {
+export const classify = (output: readonly ResponseOutputItem[]): Reply => {
     const calls = output.filter((item): item is ToolCall => item.type === 'function_call');
 
     if (calls.length > 0) {

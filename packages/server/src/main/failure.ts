@@ -1,10 +1,10 @@
-import type { TurnError } from '@mecha-gremlin/core/turn';
+import type { ModelCallError } from '@mecha-gremlin/core/model-call';
 import type { Config } from '../config/config.ts';
 import { keyRejected, unreachable } from '../model/model.ts';
 import type { SessionStep } from '../session/session.ts';
 
 /** The SDK's error messages already start with the HTTP status, as in "429 slow down". */
-const turnFailed = ({ kind, detail, status }: TurnError, config: Config): string => {
+const modelCallFailed = ({ kind, detail, status }: ModelCallError, config: Config): string => {
     const server = `The model server at ${config.baseUrl}`;
 
     switch (kind) {
@@ -20,13 +20,13 @@ const turnFailed = ({ kind, detail, status }: TurnError, config: Config): string
             return `${server} rejected the request (${detail}). Check that MODEL and MODEL_REASONING_EFFORT suit it.`;
         case 'server_error':
         case 'failed':
-            return `${server} failed the turn (${detail}). Try again; if it keeps failing, check its logs or status page.`;
+            return `${server} failed the request (${detail}). Try again; if it keeps failing, check its logs or status page.`;
         case 'incomplete':
-            return `The model stopped before finishing its turn (${detail}). Try a narrower task.`;
+            return `The model stopped before finishing its reply (${detail}). Try a narrower task.`;
         case 'aborted':
-            return `The turn didn't finish (${detail}). Run the command again.`;
+            return `The model call didn't finish (${detail}). Run the command again.`;
         case 'fatal':
-            return `The turn failed unexpectedly (${detail}). Try again; if it keeps happening, report it as a bug.`;
+            return `The model call failed unexpectedly (${detail}). Try again; if it keeps happening, report it as a bug.`;
     }
 };
 
@@ -35,12 +35,12 @@ export const failure = (
     config: Config,
 ): string => {
     switch (step.kind) {
-        case 'turn_failed':
-            return turnFailed(step.error, config);
-        case 'turn_limit':
-            return `The model didn't answer within ${step.turn.number} turns: it was still calling tools. Try a narrower task, or raise MAX_TURNS.`;
+        case 'model_call_failed':
+            return modelCallFailed(step.error, config);
+        case 'step_limit':
+            return `The model didn't answer within ${step.stats.number} steps: it was still calling tools. Try a narrower task, or raise MAX_STEPS.`;
         case 'empty':
-            return 'The model gave no answer: its turn had neither text nor tool calls. Try again, or rephrase the task.';
+            return 'The model gave no answer: its reply had neither text nor tool calls. Try again, or rephrase the task.';
         case 'history':
             return `The conversation can't be continued (${step.error}). The model sent something the openai SDK can't replay; try updating it.`;
     }

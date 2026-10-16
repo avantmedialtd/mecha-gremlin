@@ -6,11 +6,10 @@ import { describe, expect, test, vi } from 'vitest';
 import { z } from 'zod';
 import type { Config } from '../../src/config/config.ts';
 import {
-    MAX_TURNS,
     type Session,
     type SessionOptions,
     type SessionStep,
-    type TurnStats,
+    type StepStats,
     createSession,
 } from '../../src/session/session.ts';
 import { defineTool } from '../../src/tools/tool-handler.ts';
@@ -39,7 +38,7 @@ const CONFIG: Config = {
     model: 'test-model',
     reasoningEffort: undefined,
     skillsPath: undefined,
-    maxTurns: 30,
+    maxSteps: 30,
 };
 
 const output = (callId: string, text: string): HistoryItem => {
@@ -66,8 +65,8 @@ const recordingTool = (
     return { handler, paths };
 };
 
-const stats = (number: number, turnUsage: ResponseUsage = usage()): TurnStats => {
-    return { number, usage: turnUsage, seconds: 1.5 };
+const stats = (number: number, callUsage: ResponseUsage = usage()): StepStats => {
+    return { number, usage: callUsage, seconds: 1.5 };
 };
 
 const start = async (config: Config, options: SessionOptions): Promise<Session> => {
@@ -85,14 +84,19 @@ const runSession = async (
     options: Partial<SessionOptions> = {},
     config: Config = CONFIG,
 ) => {
-    const { fetch, requests, turnBodies } = fakeFetch(server);
+    const { fetch, requests, modelCallBodies } = fakeFetch(server);
     vi.stubGlobal('fetch', fetch);
     const tool = recordingTool();
-    // Every reading of the clock is 1.5 s after the last, so each turn takes 1.5 s.
+    // Every reading of the clock is 1.5 s after the last, so each model call takes 1.5 s.
     let clock = 0;
     vi.spyOn(performance, 'now').mockImplementation(() => (clock += 1500));
 
-    const session = await start(config, { tools: [tool.handler], history: START, ...options });
+    const session = await start(config, {
+        tools: [tool.handler],
+        history: START,
+        maxSteps: config.maxSteps,
+        ...options,
+    });
     const steps: SessionStep[] = [];
 
     for await (const step of session.steps) {
@@ -105,7 +109,7 @@ const runSession = async (
         last: steps.at(-1),
         history: session.history,
         requests,
-        bodies: turnBodies(),
+        bodies: modelCallBodies(),
         paths: tool.paths,
         handler: tool.handler,
     };
@@ -127,7 +131,7 @@ const LM_STUDIO: Config = {
     model: undefined,
 };
 
-describe('Choose the model when the session starts', () => {
+describe('Create a session from the configuration and a step limit', () => {
     test('another provider uses the configured model', async () => {
         const { session, bodies } = await runSession({ responses: readThenAnswer() });
 
@@ -165,22 +169,28 @@ describe('Choose the model when the session starts', () => {
     });
 
     test("with no model to use, the session doesn't start", async () => {
-        const { fetch, turnBodies } = fakeFetch({ models: () => Response.json({ models: [] }) });
+        const { fetch, modelCallBodies } = fakeFetch({
+            models: () => Response.json({ models: [] }),
+        });
         vi.stubGlobal('fetch', fetch);
-        const created = await createSession(LM_STUDIO, { tools: [], history: START });
+        const created = await createSession(LM_STUDIO, {
+            tools: [],
+            history: START,
+            maxSteps: LM_STUDIO.maxSteps,
+        });
 
         expect(created).toEqual({ ok: false, error: expect.stringContaining('lms load') });
-        expect(turnBodies()).toHaveLength(0);
+        expect(modelCallBodies()).toHaveLength(0);
     });
 });
 
-describe('Alternate model turns and tool calls until the model answers', () => {
+describe('Alternate model calls and tool calls until the model answers', () => {
     test('an answer without tools', async () => {
         const { steps, history, bodies } = await runSession({
             responses: script(() => completed([message('42')])),
         });
 
-        expect(steps).toEqual([{ kind: 'final', turn: stats(1), text: '42' }]);
+        expect(steps).toEqual([{ kind: 'final', stats: stats(1), text: '42' }]);
         expect(history).toEqual([...START, message('42')]);
         expect(bodies).toHaveLength(1);
         expect(bodies[0]).toMatchObject({
@@ -205,7 +215,7 @@ describe('Alternate model turns and tool calls until the model answers', () => {
         expect(steps).toEqual([
             {
                 kind: 'calls',
-                turn: stats(1, usage(100)),
+                stats: stats(1, usage(100)),
                 calls: [
                     {
                         call: roundTrip[1],
@@ -215,7 +225,7 @@ describe('Alternate model turns and tool calls until the model answers', () => {
             },
             {
                 kind: 'final',
-                turn: stats(2, usage(200)),
+                stats: stats(2, usage(200)),
                 text: 'It runs the checks.',
             },
         ]);
@@ -238,7 +248,7 @@ describe('Alternate model turns and tool calls until the model answers', () => {
         expect(bodies[1]?.tools).toEqual(bodies[0]?.tools);
     });
 
-    test('the configured reasoning effort goes with every turn', async () => {
+    test('the configured reasoning effort goes with every model call', async () => {
         const low = await runSession(
             { responses: readThenAnswer() },
             {},
@@ -264,8 +274,8 @@ describe('Alternate model turns and tool calls until the model answers', () => {
     });
 });
 
-describe('Run every call in order and answer each exactly once', () => {
-    test('two calls in one turn', async () => {
+describe('Run every tool call in order and answer each exactly once', () => {
+    test('two calls in one reply', async () => {
         const a = call('read_file', { path: 'a.txt' }, 'call_a');
         const b = call('read_file', { path: 'b.txt' }, 'call_b');
         const { history, paths } = await runSession({
@@ -350,14 +360,13 @@ describe('Run every call in order and answer each exactly once', () => {
     });
 });
 
-describe('Stop at the turn limit', () => {
+describe('Stop at the step limit', () => {
     const endless: FakeServer = {
         responses: (n) => completed([call('read_file', { path: `f${n}.txt` }, `call_${n}`)]),
     };
 
     test('the model never stops calling tools', async () => {
-        expect(MAX_TURNS).toBe(8);
-        const { steps, last, history, bodies, paths } = await runSession(endless);
+        const { steps, last, history, bodies, paths } = await runSession(endless, { maxSteps: 8 });
 
         expect(bodies).toHaveLength(8);
         expect(paths).toEqual([
@@ -369,47 +378,49 @@ describe('Stop at the turn limit', () => {
             'f5.txt',
             'f6.txt',
         ]);
-        expect(steps.map((step) => step.kind)).toEqual([...Array(7).fill('calls'), 'turn_limit']);
-        expect(last).toEqual({ kind: 'turn_limit', turn: stats(8) });
+        expect(steps.map((step) => step.kind)).toEqual([...Array(7).fill('calls'), 'step_limit']);
+        expect(last).toEqual({ kind: 'step_limit', stats: stats(8) });
         expect(history.at(-1)).toEqual(
-            output('call_7', 'Error: not run: the turn limit was reached'),
+            output('call_7', 'Error: not run: the step limit was reached'),
         );
     });
 
     test('the caller can set another limit', async () => {
-        const { last, bodies, paths } = await runSession(endless, { maxTurns: 2 });
+        const { last, bodies, paths } = await runSession(endless, { maxSteps: 2 });
 
         expect(bodies).toHaveLength(2);
         expect(paths).toEqual(['f0.txt']);
-        expect(last).toMatchObject({ kind: 'turn_limit' });
+        expect(last).toMatchObject({ kind: 'step_limit' });
     });
 
-    test('a limit of 1 sends one turn', async () => {
-        const { last, bodies, paths } = await runSession(endless, { maxTurns: 1 });
+    test('a limit of 1 calls the model once', async () => {
+        const { last, bodies, paths } = await runSession(endless, { maxSteps: 1 });
 
         expect(bodies).toHaveLength(1);
         expect(paths).toEqual([]);
-        expect(last).toEqual({ kind: 'turn_limit', turn: stats(1) });
+        expect(last).toEqual({ kind: 'step_limit', stats: stats(1) });
     });
 
-    test.each([0, -1, 2.5, Number.NaN, Number.POSITIVE_INFINITY])(
+    // undefined: a JavaScript caller can leave the limit out, though TypeScript requires it.
+    test.each([0, -1, 2.5, Number.NaN, Number.POSITIVE_INFINITY, undefined])(
         "a limit of %s isn't a positive integer, so nothing is sent",
-        async (maxTurns) => {
+        async (maxSteps) => {
             const { fetch, requests } = fakeFetch(endless);
             vi.stubGlobal('fetch', fetch);
-            const created = await createSession(LM_STUDIO, { tools: [], history: START, maxTurns });
+            const options = { tools: [], history: START, maxSteps } as SessionOptions;
+            const created = await createSession(LM_STUDIO, options);
 
             expect(created).toEqual({
                 ok: false,
-                error: `maxTurns must be a positive integer; got ${maxTurns}.`,
+                error: `maxSteps must be a positive integer; got ${maxSteps}.`,
             });
             expect(requests).toHaveLength(0);
         },
     );
 });
 
-describe('End with a step, not a throw', () => {
-    test('a later turn fails', async () => {
+describe('End every session with a step, not a throw', () => {
+    test('a later model call fails', async () => {
         const { last, history } = await runSession({
             responses: script(
                 () => completed(roundTrip),
@@ -418,7 +429,7 @@ describe('End with a step, not a throw', () => {
         });
 
         expect(last).toEqual({
-            kind: 'turn_failed',
+            kind: 'model_call_failed',
             error: {
                 kind: 'server_error',
                 status: 500,
@@ -437,7 +448,7 @@ describe('End with a step, not a throw', () => {
             responses: script(() => completed([reasoning()])),
         });
 
-        expect(steps).toEqual([{ kind: 'empty', turn: stats(1) }]);
+        expect(steps).toEqual([{ kind: 'empty', stats: stats(1) }]);
         expect(history).toEqual([...START, reasoning()]);
         expect(bodies).toHaveLength(1);
     });
@@ -451,14 +462,18 @@ describe('End with a step, not a throw', () => {
     });
 });
 
-describe('Yield the result of each turn as it completes', () => {
-    test("a turn's step comes before the next turn starts, with the history up to date", async () => {
-        const { fetch, turnBodies } = fakeFetch({ responses: readThenAnswer() });
+describe('Yield each step as it completes', () => {
+    test('a step comes before the next model call, with the history up to date', async () => {
+        const { fetch, modelCallBodies } = fakeFetch({ responses: readThenAnswer() });
         vi.stubGlobal('fetch', fetch);
-        const session = await start(CONFIG, { tools: [recordingTool().handler], history: START });
+        const session = await start(CONFIG, {
+            tools: [recordingTool().handler],
+            history: START,
+            maxSteps: CONFIG.maxSteps,
+        });
 
         expect((await session.steps.next()).value).toMatchObject({ kind: 'calls' });
-        expect(turnBodies()).toHaveLength(1);
+        expect(modelCallBodies()).toHaveLength(1);
         expect(session.history).toEqual([
             ...START,
             ...roundTrip,
@@ -466,13 +481,13 @@ describe('Yield the result of each turn as it completes', () => {
         ]);
 
         expect((await session.steps.next()).value).toMatchObject({ kind: 'final' });
-        expect(turnBodies()).toHaveLength(2);
+        expect(modelCallBodies()).toHaveLength(2);
         expect(session.history.at(-1)).toEqual(message('Done.'));
 
         expect(await session.steps.next()).toEqual({ done: true, value: undefined });
     });
 
-    test("a turn's calls carry their outcomes, failures included", async () => {
+    test("a step's calls carry their outcomes, failures included", async () => {
         const euro = recordingTool(async () => ok('€'));
         const a = call('read_file', { path: 'a' }, 'call_a');
         const b = call('read_file', {}, 'call_b');

@@ -6,7 +6,7 @@ A self-hosted, scheduled agent runner, in early development. The design and its 
 
 | Package | What it is |
 |---|---|
-| [`packages/core`](packages/core) | `@mecha-gremlin/core`: stateless functions. `runTurn` runs one streamed model turn over the Responses API and returns the reply or a classified error. The tool-calling pieces are tools defined by any [Standard Schema](https://standardschema.dev) library, `classify` for a turn's output, `validateArgs`, `toOutputItem`, and `toInput`, which replays the chat history. `skills` checks a SKILL.md and renders the skills catalog and a skill's activation, and `output` caps a command's output to its start and end as it streams in. |
+| [`packages/core`](packages/core) | `@mecha-gremlin/core`: stateless functions. `callModel` calls the model once over the Responses API, streamed, and returns the reply or a classified error. The tool-calling pieces are tools defined by any [Standard Schema](https://standardschema.dev) library, `classify` for a model call's output, `validateArgs`, `toOutputItem`, and `toInput`, which replays the chat history. `skills` checks a SKILL.md and renders the skills catalog and a skill's activation, and `output` caps a command's output to its start and end as it streams in. |
 | [`packages/yaml`](packages/yaml) | `@mecha-gremlin/yaml`: `parseYaml`, which uses Bun's built-in parser, `Bun.YAML`, on Bun, and the [`yaml`](https://www.npmjs.com/package/yaml) package elsewhere. The two give the same values for everything frontmatter uses. |
 | [`packages/process`](packages/process) | `@mecha-gremlin/process`: `spawnProcess`, which uses `Bun.spawn` on Bun and `node:child_process` elsewhere, and gives the process the same shape on both: its pid, its output as web streams, a promise of how it exited, and `unref()`. |
 | [`packages/server`](packages/server) | `@mecha-gremlin/server`: the app. So far it carries out a task in an agent loop, with a shell, `read_file` and skills. It runs on Bun or Node. |
@@ -15,7 +15,7 @@ Inside `packages/server/src`, the code is grouped by concern:
 - `main`: the entry point, and its helpers for the arguments, the log fields and the failure messages;
 - `config`;
 - `model`: model choice and LM Studio's API;
-- `session`: the agent loop, as a session that yields each turn's result;
+- `session`: the agent loop, as a session that yields each step's result;
 - `skills`: finding and reading the skills `SKILLS_PATH` lists;
 - `exec`: running a command, its environment, and stopping a session's processes at the end;
 - `tools`: `read_file`, `shell` and `activate_skill`;
@@ -25,7 +25,7 @@ Inside `packages/server/src`, the code is grouped by concern:
 
 At the top, [`test`](test) holds the signal guard, a Vitest setup file for every package's tests (see Develop).
 
-No package has index files: every import names the file it uses. The `package.json` of `core`, `yaml` and `process` exports each module by name, so the server imports `@mecha-gremlin/core/turn`, `@mecha-gremlin/core/result` and so on. The tests mirror the folders.
+No package has index files: every import names the file it uses. The `package.json` of `core`, `yaml` and `process` exports each module by name, so the server imports `@mecha-gremlin/core/model-call`, `@mecha-gremlin/core/result` and so on. The tests mirror the folders.
 
 ## Prerequisites
 
@@ -55,12 +55,12 @@ The command is `bun run server [task…]` on Bun, or `bun run server:node [task�
 
 **Quote the task,** in single quotes unless it holds one. The shell reads `?`, `*`, `&`, `;`, `!` and `$` itself: in zsh, macOS's default shell, an unquoted `?` stops the command with "no matches found" before Bun runs.
 
-The model carries out the task with its tools: `shell`, `read_file`, and `activate_skill` when skills are loaded. The loop runs until it answers, for at most `MAX_TURNS` turns, 30 by default. A question about a file usually takes two turns: one to read it and one to answer. A browsing task takes many more, about two for each page action. On a local 27B model, turns took from 15 seconds to about 2 minutes in testing, growing with the size of what the model reads.
+The model carries out the task with its tools: `shell`, `read_file`, and `activate_skill` when skills are loaded. The loop runs until it answers, for at most `MAX_STEPS` steps, 30 by default. A question about a file usually takes two steps: one to read it and one to answer. A browsing task takes many more, about two for each page action. On a local 27B model, a model call took from 15 seconds to about 2 minutes in testing, growing with the size of what the model reads.
 
 Everything is logged to stdout as structured records, one per line:
 - the skills loaded, and any that couldn't be;
 - the task, with the run's ID and the working directory;
-- each turn's token usage, including the input tokens served from the model server's cache;
+- each model call's token usage, including the input tokens served from the model server's cache;
 - each tool call and its result;
 - the answer;
 - the processes stopped when the session ends, if there were any;
@@ -69,19 +69,19 @@ Everything is logged to stdout as structured records, one per line:
 The default output is formatted for reading. This is the default task on a local 9B model:
 
 ```text
-18:06:36 INFO  skills names=["playwright-cli"]
-18:06:36 INFO  asking model=ornith-1.5-9b-mlx baseUrl=http://127.0.0.1:1234/v1 run=ce0c67ab workDir=/Users/you/gremlin-work task="Use the playwright-cli skill to find the title of https://example.com"
-18:06:45 INFO  turn number=1 inputTokens=813 cachedTokens=0 outputTokens=49 reasoningTokens=33 seconds=9.1
-18:06:45 INFO  tool call tool=activate_skill arguments={"name":"playwright-cli"}
-18:06:45 INFO  tool result tool=activate_skill bytes=15906
-18:07:15 INFO  turn number=2 inputTokens=4829 cachedTokens=891 outputTokens=107 reasoningTokens=86 seconds=28.7
-18:07:15 INFO  tool call tool=shell arguments={"command":"playwright-cli open https://example.com"}
-18:07:15 INFO  tool result tool=shell bytes=296
-18:07:21 INFO  turn number=3 inputTokens=5097 cachedTokens=4970 outputTokens=63 reasoningTokens=22 seconds=5.9
-18:07:21 INFO  tool call tool=shell arguments={"command":"playwright-cli close"}
-18:07:21 INFO  tool result tool=shell bytes=54
-18:07:23 INFO  turn number=4 inputTokens=5226 cachedTokens=5190 outputTokens=15 reasoningTokens=10 seconds=1.3
-18:07:23 INFO  answer text="**Example Domain**"
+22:01:54 INFO  skills names=["playwright-cli"]
+22:01:54 INFO  asking model=ornith-1.5-9b-mlx baseUrl=http://127.0.0.1:1234/v1 run=2880845d workDir=/Users/you/gremlin-work task="Use the playwright-cli skill to find the title of https://example.com"
+22:02:03 INFO  model call step=1 inputTokens=812 cachedTokens=0 outputTokens=48 reasoningTokens=32 seconds=9.2
+22:02:03 INFO  tool call tool=activate_skill arguments={"name":"playwright-cli"}
+22:02:03 INFO  tool result tool=activate_skill bytes=15906
+22:02:35 INFO  model call step=2 inputTokens=4827 cachedTokens=889 outputTokens=156 reasoningTokens=127 seconds=31.2
+22:02:35 INFO  tool call tool=shell arguments={"command":"playwright-cli open https://example.com"}
+22:02:35 INFO  tool result tool=shell bytes=296
+22:02:41 INFO  model call step=3 inputTokens=5147 cachedTokens=5017 outputTokens=49 reasoningTokens=17 seconds=5.3
+22:02:41 INFO  tool call tool=shell arguments={"command":"playwright-cli close"}
+22:02:41 INFO  tool result tool=shell bytes=54
+22:02:43 INFO  model call step=4 inputTokens=5265 cachedTokens=5226 outputTokens=28 reasoningTokens=15 seconds=2
+22:02:43 INFO  answer text="The title of https://example.com is **Example Domain**."
 ```
 
 `LOG_FORMAT=json` writes each record as a JSON object instead, with its time in ISO 8601.
@@ -145,7 +145,7 @@ Settings come from the environment, and from a local `.env` file, which is gitig
 | `LOG_FORMAT` | `pretty` | `pretty` | `pretty` formats the log for reading; `json` writes one JSON object per record |
 | `WORK_DIR` | the current directory | the current directory | The shell's working directory and `read_file`'s root. A relative path resolves against the current directory |
 | `SKILLS_PATH` | none | none | The directories that hold skills, separated by `:` (see [Skills](#skills)). A relative entry resolves against the current directory |
-| `MAX_TURNS` | `30` | `30` | The most turns a session takes: a positive whole number |
+| `MAX_STEPS` | `30` | `30` | The most steps a session takes: a positive whole number. It was `MAX_TURNS` until it was renamed, and the server refuses the old name |
 
 For example, to use OpenAI instead, with `MODEL_API_KEY=sk-…` in `.env`:
 
@@ -178,7 +178,7 @@ bun run mutation       # Stryker mutation testing on Bun, which fails below 100%
 - **Functions never change their arguments.**
   - A parameter can't be reassigned, nor its properties assigned (`no-param-reassign`).
   - Every typed parameter must be readonly all the way down (`typescript/prefer-readonly-parameter-types`), so TypeScript rejects a write or a `push` through it. The code's own object types are readonly for that reason.
-  - Types from other packages can't be made readonly, so `.oxlintrc.json` allows them by name. The `openai` SDK's request type is readonly only on top, and `runTurn`'s parameter for it is exempt inline.
+  - Types from other packages can't be made readonly, so `.oxlintrc.json` allows them by name. The `openai` SDK's request type is readonly only on top, and `callModel`'s parameter for it is exempt inline.
 - **Linting uses type information,** through `oxlint-tsgolint`. That also turns on the type-aware rules in the enabled categories, such as `no-floating-promises`. Two of them are adjusted:
   - Tests may use type assertions (`no-unsafe-type-assertion` is off there), since they build malformed values on purpose.
   - `consistent-return` is off: TypeScript's `noImplicitReturns` checks the same thing, and knows when a switch covers every case.

@@ -9,7 +9,7 @@ const OPENAI: Config = {
     model: 'gpt-test',
     reasoningEffort: undefined,
     skillsPath: undefined,
-    maxTurns: 30,
+    maxSteps: 30,
 };
 
 describe('resolveModel', () => {

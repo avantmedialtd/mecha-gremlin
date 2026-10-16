@@ -1,5 +1,5 @@
 import type { Fields, Json } from '../log/log.ts';
-import type { TurnStats } from '../session/session.ts';
+import type { StepStats } from '../session/session.ts';
 
 /** Arguments that parse are logged as data; the rest as the model sent them. */
 export const parsed = (raw: string): Json => {
@@ -10,9 +10,9 @@ export const parsed = (raw: string): Json => {
     }
 };
 
-export const turnFields = ({ number, usage, seconds }: TurnStats): Fields => {
+export const modelCallFields = ({ number, usage, seconds }: StepStats): Fields => {
     return {
-        number,
+        step: number,
         inputTokens: usage?.input_tokens,
         cachedTokens: usage?.input_tokens_details?.cached_tokens,
         outputTokens: usage?.output_tokens,

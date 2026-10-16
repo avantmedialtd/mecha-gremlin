@@ -12,7 +12,7 @@ describe('loadConfig', () => {
                 model: undefined,
                 reasoningEffort: 'none',
                 skillsPath: undefined,
-                maxTurns: 30,
+                maxSteps: 30,
             },
         });
     });
@@ -60,7 +60,7 @@ describe('loadConfig', () => {
                 model: 'gpt-test',
                 reasoningEffort: undefined,
                 skillsPath: undefined,
-                maxTurns: 30,
+                maxSteps: 30,
             },
         });
     });
@@ -136,14 +136,16 @@ describe('loadConfig', () => {
             loadConfig({
                 MODEL_BASE_URL: 'nope',
                 MODEL_REASONING_EFFORT: 'extreme',
-                MAX_TURNS: 'lots',
+                MAX_STEPS: 'lots',
+                MAX_TURNS: '5',
             }),
         ).toEqual({
             ok: false,
             error: [
                 expect.stringContaining('MODEL_BASE_URL'),
                 expect.stringContaining('MODEL_REASONING_EFFORT'),
-                expect.stringContaining('MAX_TURNS'),
+                expect.stringContaining('MAX_STEPS must be'),
+                'MAX_TURNS is now MAX_STEPS; rename it in your settings.',
             ],
         });
     });
@@ -165,29 +167,49 @@ describe('loadConfig', () => {
         ['12', 12],
         ['007', 7],
         [' 5 ', 5],
-    ])('MAX_TURNS=%j is a turn limit of %d', (value, turns) => {
-        expect(loadConfig({ MAX_TURNS: value })).toMatchObject({
+    ])('MAX_STEPS=%j is a step limit of %d', (value, steps) => {
+        expect(loadConfig({ MAX_STEPS: value })).toMatchObject({
             ok: true,
-            value: { maxTurns: turns },
+            value: { maxSteps: steps },
         });
     });
 
     test.each(['0', '-1', '2.5', 'lots', '+12', '1e3', '0x10', '2.0'])(
-        'MAX_TURNS=%j is refused',
+        'MAX_STEPS=%j is refused',
         (value) => {
-            expect(loadConfig({ MAX_TURNS: value })).toEqual({
+            expect(loadConfig({ MAX_STEPS: value })).toEqual({
                 ok: false,
-                error: [`MAX_TURNS must be a positive whole number, such as 30; got "${value}".`],
+                error: [`MAX_STEPS must be a positive whole number, such as 30; got "${value}".`],
             });
         },
     );
 
-    test("an unknown provider doesn't hide an invalid MAX_TURNS", () => {
-        expect(loadConfig({ MODEL_PROVIDER: 'anthropic', MAX_TURNS: '0' })).toEqual({
+    test("an unknown provider doesn't hide an invalid MAX_STEPS", () => {
+        expect(loadConfig({ MODEL_PROVIDER: 'anthropic', MAX_STEPS: '0' })).toEqual({
             ok: false,
             error: [
                 'MODEL_PROVIDER must be one of lmstudio, openai; got "anthropic".',
-                'MAX_TURNS must be a positive whole number, such as 30; got "0".',
+                'MAX_STEPS must be a positive whole number, such as 30; got "0".',
+            ],
+        });
+    });
+
+    test.each([
+        ['alone', { MAX_TURNS: '5' }],
+        ['beside a valid MAX_STEPS', { MAX_TURNS: '5', MAX_STEPS: '12' }],
+    ])('MAX_TURNS is refused, set %s', (_where, env) => {
+        expect(loadConfig(env)).toEqual({
+            ok: false,
+            error: ['MAX_TURNS is now MAX_STEPS; rename it in your settings.'],
+        });
+    });
+
+    test("an unknown provider doesn't hide MAX_TURNS", () => {
+        expect(loadConfig({ MODEL_PROVIDER: 'anthropic', MAX_TURNS: '5' })).toEqual({
+            ok: false,
+            error: [
+                'MODEL_PROVIDER must be one of lmstudio, openai; got "anthropic".',
+                'MAX_TURNS is now MAX_STEPS; rename it in your settings.',
             ],
         });
     });

@@ -7,10 +7,10 @@ import type {
 } from 'openai/resources/responses/responses';
 import { type Err, type Result, err, ok } from './result.ts';
 
-/** A Responses API request. `runTurn` always streams it, so `stream` is not part of it. */
-export type TurnRequest = Readonly<Omit<ResponseCreateParamsStreaming, 'stream'>>;
+/** A Responses API request. `callModel` always streams it, so `stream` is not part of it. */
+export type ModelCallRequest = Readonly<Omit<ResponseCreateParamsStreaming, 'stream'>>;
 
-export type TurnErrorKind =
+export type ModelCallErrorKind =
     | 'unreachable'
     | 'timeout'
     | 'auth'
@@ -22,22 +22,22 @@ export type TurnErrorKind =
     | 'aborted'
     | 'fatal';
 
-export type TurnError = {
-    readonly kind: TurnErrorKind;
+export type ModelCallError = {
+    readonly kind: ModelCallErrorKind;
     readonly detail: string;
     readonly status?: number;
 };
 
-export type TurnResult = Result<
+export type ModelCallResult = Result<
     {
         readonly text: string;
         readonly response: Response;
         readonly usage: ResponseUsage | undefined;
     },
-    TurnError
+    ModelCallError
 >;
 
-export type TurnOptions = {
+export type ModelCallOptions = {
     readonly signal?: AbortSignal;
 };
 
@@ -60,8 +60,8 @@ const outputText = (response: Response): string => {
     return text;
 };
 
-const aborted = (): Err<TurnError> => {
-    return err({ kind: 'aborted', detail: 'the turn was aborted' });
+const aborted = (): Err<ModelCallError> => {
+    return err({ kind: 'aborted', detail: 'the model call was aborted' });
 };
 
 /** `Object()` wraps anything thrown, null and strings too, so reading from it can't fail. */
@@ -97,10 +97,13 @@ const describe = (error: unknown): string => {
 };
 
 /**
- * Classifies a failure to start the turn. Uses the HTTP status and the error's class name
+ * Classifies a failure to start the model call. Uses the HTTP status and the error's class name
  * rather than `instanceof`, so it still works if the caller's `openai` is a different copy.
  */
-const classifyRequestError = (error: unknown, signal: AbortSignal | undefined): Err<TurnError> => {
+const classifyRequestError = (
+    error: unknown,
+    signal: AbortSignal | undefined,
+): Err<ModelCallError> => {
     // The SDK throws APIUserAbortError only once this signal is aborted.
     if (signal?.aborted) {
         return aborted();
@@ -109,7 +112,7 @@ const classifyRequestError = (error: unknown, signal: AbortSignal | undefined): 
     const status = statusOf(error);
 
     if (status !== undefined) {
-        const kind: TurnErrorKind =
+        const kind: ModelCallErrorKind =
             status === 401 || status === 403
                 ? 'auth'
                 : status === 429
@@ -132,18 +135,14 @@ const classifyRequestError = (error: unknown, signal: AbortSignal | undefined): 
     return err({ kind: 'fatal', detail: describe(error) });
 };
 
-/**
- * Runs one model turn over the Responses API. The request is always streamed, and stored
- * only if the caller sets `store: true`. Model, HTTP and transport failures come back as
- * `err` values; this function does not throw for them.
- */
-export const runTurn = async (
+export const callModel = async (
     client: OpenAI,
-    // The SDK's request types hold mutable arrays, so `TurnRequest` can only be readonly on top.
+    // The SDK's request types hold mutable arrays, so `ModelCallRequest` can only be
+    // readonly on top.
     // oxlint-disable-next-line typescript/prefer-readonly-parameter-types
-    request: TurnRequest,
-    options: TurnOptions = {},
-): Promise<TurnResult> => {
+    request: ModelCallRequest,
+    options: ModelCallOptions = {},
+): Promise<ModelCallResult> => {
     const { signal } = options;
 
     let stream: AsyncIterable<ResponseStreamEvent>;
@@ -191,8 +190,8 @@ export const runTurn = async (
             return aborted();
         }
 
-        // The stream had started, so the endpoint was reachable: whatever broke it is a failed turn.
-        // That includes an SSE `error` event, which the SDK throws as an APIError.
+        // The stream had started, so the endpoint was reachable: whatever broke it is a failed
+        // model call. That includes an SSE `error` event, which the SDK throws as an APIError.
         return err({ kind: 'failed', detail: describe(error) });
     }
 

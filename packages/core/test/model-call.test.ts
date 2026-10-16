@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, test, vi } from 'vitest';
 import OpenAI from 'openai';
-import { runTurn } from '../src/turn.ts';
+import { callModel } from '../src/model-call.ts';
 
 type Handler = (url: string, init: RequestInit | undefined) => Response | Promise<Response>;
 
@@ -75,8 +75,8 @@ const usage = {
 const created = { type: 'response.created', response: responseObject({ status: 'in_progress' }) };
 const request = { model: 'test-model', input: 'Hi!' };
 
-describe('runTurn', () => {
-    test('a completed turn returns the reply text and usage', async () => {
+describe('Return the reply text and usage when the call completes', () => {
+    test('a completed call returns the reply text and usage', async () => {
         const { client } = makeClient(() =>
             sse(
                 created,
@@ -88,7 +88,7 @@ describe('runTurn', () => {
             ),
         );
 
-        const result = await runTurn(client, request);
+        const result = await callModel(client, request);
 
         expect(result).toMatchObject({
             ok: true,
@@ -114,7 +114,7 @@ describe('runTurn', () => {
             }),
         );
 
-        const result = await runTurn(client, request);
+        const result = await callModel(client, request);
 
         expect(result).toMatchObject({ ok: true, value: { text: 'Hi!' } });
     });
@@ -142,11 +142,13 @@ describe('runTurn', () => {
             }),
         );
 
-        const result = await runTurn(client, request);
+        const result = await callModel(client, request);
 
         expect(result).toMatchObject({ ok: true, value: { text: 'Partly.' } });
     });
+});
 
+describe('Call the model once, streamed and stateless', () => {
     test('the request is streamed and not stored by default', async () => {
         const { client, bodies } = makeClient(() =>
             sse(created, {
@@ -155,7 +157,7 @@ describe('runTurn', () => {
             }),
         );
 
-        await runTurn(client, request);
+        await callModel(client, request);
 
         expect(bodies[0]).toMatchObject({
             model: 'test-model',
@@ -173,11 +175,13 @@ describe('runTurn', () => {
             }),
         );
 
-        await runTurn(client, { ...request, store: true });
+        await callModel(client, { ...request, store: true });
 
         expect(bodies[0]).toMatchObject({ store: true, stream: true });
     });
+});
 
+describe("Classify a call's failures as values", () => {
     test.each([
         [400, 'bad_request'],
         [401, 'auth'],
@@ -187,7 +191,7 @@ describe('runTurn', () => {
     ])('HTTP %i is %s', async (status, kind) => {
         const { client } = makeClient(() => jsonError(status, 'boom'));
 
-        const result = await runTurn(client, request);
+        const result = await callModel(client, request);
 
         expect(result).toEqual({ ok: false, error: { kind, status, detail: `${status} boom` } });
     });
@@ -197,7 +201,7 @@ describe('runTurn', () => {
             throw new TypeError('fetch failed');
         });
 
-        const result = await runTurn(client, request);
+        const result = await callModel(client, request);
 
         expect(result).toEqual({
             ok: false,
@@ -211,7 +215,7 @@ describe('runTurn', () => {
             throw new TypeError('fetch failed', { cause: new Error('Connect Timeout Error') });
         });
 
-        const result = await runTurn(client, request);
+        const result = await callModel(client, request);
 
         expect(result).toMatchObject({ ok: false, error: { kind: 'timeout' } });
     });
@@ -230,12 +234,12 @@ describe('runTurn', () => {
         const { client } = makeClient(() => sse(created));
         vi.spyOn(client.responses, 'create').mockRejectedValue(thrown);
 
-        const result = await runTurn(client, request);
+        const result = await callModel(client, request);
 
         expect(result).toEqual({ ok: false, error: { kind: 'fatal', detail } });
     });
 
-    test('response.incomplete is incomplete, with the reason', async () => {
+    test('a response that ends incomplete is incomplete, with the reason', async () => {
         const { client } = makeClient(() =>
             sse(created, {
                 type: 'response.incomplete',
@@ -246,7 +250,7 @@ describe('runTurn', () => {
             }),
         );
 
-        const result = await runTurn(client, request);
+        const result = await callModel(client, request);
 
         expect(result).toMatchObject({
             ok: false,
@@ -254,7 +258,7 @@ describe('runTurn', () => {
         });
     });
 
-    test('response.incomplete without a reason is still incomplete', async () => {
+    test('a response that ends incomplete without a reason is still incomplete', async () => {
         const { client } = makeClient(() =>
             sse(created, {
                 type: 'response.incomplete',
@@ -262,7 +266,7 @@ describe('runTurn', () => {
             }),
         );
 
-        const result = await runTurn(client, request);
+        const result = await callModel(client, request);
 
         expect(result).toEqual({
             ok: false,
@@ -270,7 +274,7 @@ describe('runTurn', () => {
         });
     });
 
-    test('response.failed is failed, with the error message', async () => {
+    test('a response that fails mid-stream is failed, with the error message', async () => {
         const { client } = makeClient(() =>
             sse(created, {
                 type: 'response.failed',
@@ -281,7 +285,7 @@ describe('runTurn', () => {
             }),
         );
 
-        const result = await runTurn(client, request);
+        const result = await callModel(client, request);
 
         expect(result).toMatchObject({
             ok: false,
@@ -289,7 +293,7 @@ describe('runTurn', () => {
         });
     });
 
-    test('response.failed without an error is still failed', async () => {
+    test('a response that fails mid-stream without an error is still failed', async () => {
         const { client } = makeClient(() =>
             sse(created, {
                 type: 'response.failed',
@@ -297,7 +301,7 @@ describe('runTurn', () => {
             }),
         );
 
-        const result = await runTurn(client, request);
+        const result = await callModel(client, request);
 
         expect(result).toEqual({
             ok: false,
@@ -315,7 +319,7 @@ describe('runTurn', () => {
             }),
         );
 
-        const result = await runTurn(client, request);
+        const result = await callModel(client, request);
 
         expect(result).toMatchObject({
             ok: false,
@@ -328,7 +332,7 @@ describe('runTurn', () => {
             sse(created, { type: 'response.output_text.delta', delta: 'Hel' }),
         );
 
-        const result = await runTurn(client, request);
+        const result = await callModel(client, request);
 
         expect(result).toEqual({
             ok: false,
@@ -341,11 +345,11 @@ describe('runTurn', () => {
         const controller = new AbortController();
         controller.abort();
 
-        const result = await runTurn(client, request, { signal: controller.signal });
+        const result = await callModel(client, request, { signal: controller.signal });
 
         expect(result).toEqual({
             ok: false,
-            error: { kind: 'aborted', detail: 'the turn was aborted' },
+            error: { kind: 'aborted', detail: 'the model call was aborted' },
         });
     });
 
@@ -372,7 +376,7 @@ describe('runTurn', () => {
             });
             const controller = new AbortController();
 
-            const pending = runTurn(client, request, { signal: controller.signal });
+            const pending = callModel(client, request, { signal: controller.signal });
             setTimeout(() => controller.abort(), 20);
 
             expect(await pending).toMatchObject({ ok: false, error: { kind: 'aborted' } });
@@ -382,7 +386,7 @@ describe('runTurn', () => {
 
 // That core never reads the environment, writes to the console or uses Bun APIs is enforced by
 // oxlint (the packages/core/src override in .oxlintrc.json), not by scanning source text here.
-describe('core boundaries', () => {
+describe('Core stays free of configuration and side effects', () => {
     test('openai is a peer dependency', async () => {
         const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
 

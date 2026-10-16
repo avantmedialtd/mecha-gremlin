@@ -8,8 +8,8 @@ import type { ToolOutcome } from './tools.ts';
 
 /**
  * Keep every item exactly as received, reasoning and calls included. With `store: false` the
- * whole history is replayed on every turn (Brief C1), and a request can fail when items are
- * missing.
+ * whole history is replayed on every model call (Brief C1), and a request can fail when items
+ * are missing.
  */
 export type HistoryItem = ResponseInputItemLike;
 

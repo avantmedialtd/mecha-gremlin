@@ -16,8 +16,8 @@ const REASONING_EFFORTS = [
 
 const PROVIDERS = ['lmstudio', 'openai'] as const;
 
-// Room for about a dozen page actions, at two turns each.
-const DEFAULT_MAX_TURNS = 30;
+// Room for about a dozen page actions, at two steps each.
+const DEFAULT_MAX_STEPS = 30;
 
 /**
  * Which kind of OpenAI-compatible service serves the model. It only changes how the model is
@@ -49,7 +49,7 @@ export type Config = {
     readonly reasoningEffort: Effort | undefined;
     // The skills roots, separated by `:` as in PATH. Undefined loads no skill.
     readonly skillsPath: string | undefined;
-    readonly maxTurns: number;
+    readonly maxSteps: number;
 };
 
 export type Env = Readonly<Record<string, string | undefined>>;
@@ -125,16 +125,23 @@ const checkModel = (
 };
 
 // Digits only: Number() would also take 1e3, 0x10 and 2.0.
-const checkMaxTurns = (raw: string | undefined): Result<number, string> => {
+const checkMaxSteps = (raw: string | undefined): Result<number, string> => {
     if (raw === undefined) {
-        return ok(DEFAULT_MAX_TURNS);
+        return ok(DEFAULT_MAX_STEPS);
     }
 
     if (!/^\d+$/.test(raw) || Number(raw) < 1) {
-        return err(`MAX_TURNS must be a positive whole number, such as 30; got "${raw}".`);
+        return err(`MAX_STEPS must be a positive whole number, such as 30; got "${raw}".`);
     }
 
     return ok(Number(raw));
+};
+
+// An ignored MAX_TURNS would quietly put the step limit back to its default.
+const checkFormerName = (raw: string | undefined): Result<undefined, string> => {
+    return raw === undefined
+        ? ok(undefined)
+        : err('MAX_TURNS is now MAX_STEPS; rename it in your settings.');
 };
 
 const problemsOf = (checks: readonly Result<unknown, string>[]): string[] => {
@@ -168,14 +175,15 @@ export const loadWorkDir = (env: Env): string | undefined => {
 
 /** Reads and validates the server's settings. Pure: it touches nothing but `env`. */
 export const loadConfig = (env: Env): Result<Config, string[]> => {
-    // Checked whatever the provider, so an unknown provider doesn't hide its error.
-    const maxTurns = checkMaxTurns(read(env, 'MAX_TURNS'));
+    // Checked whatever the provider, so an unknown provider doesn't hide their errors.
+    const maxSteps = checkMaxSteps(read(env, 'MAX_STEPS'));
+    const formerName = checkFormerName(read(env, 'MAX_TURNS'));
     const rawProvider = read(env, 'MODEL_PROVIDER') ?? 'lmstudio';
 
     if (!isProvider(rawProvider)) {
         return err([
             `MODEL_PROVIDER must be one of ${PROVIDERS.join(', ')}; got "${rawProvider}".`,
-            ...problemsOf([maxTurns]),
+            ...problemsOf([maxSteps, formerName]),
         ]);
     }
 
@@ -186,8 +194,8 @@ export const loadConfig = (env: Env): Result<Config, string[]> => {
     const model = checkModel(provider, read(env, 'MODEL'));
     const effort = checkEffort(read(env, 'MODEL_REASONING_EFFORT') ?? defaults.reasoningEffort);
 
-    if (!baseUrl.ok || !apiKey.ok || !model.ok || !effort.ok || !maxTurns.ok) {
-        return err(problemsOf([baseUrl, apiKey, model, effort, maxTurns]));
+    if (!baseUrl.ok || !apiKey.ok || !model.ok || !effort.ok || !maxSteps.ok || !formerName.ok) {
+        return err(problemsOf([baseUrl, apiKey, model, effort, maxSteps, formerName]));
     }
 
     return ok({
@@ -197,6 +205,6 @@ export const loadConfig = (env: Env): Result<Config, string[]> => {
         model: model.value,
         reasoningEffort: effort.value,
         skillsPath: read(env, 'SKILLS_PATH'),
-        maxTurns: maxTurns.value,
+        maxSteps: maxSteps.value,
     });
 };

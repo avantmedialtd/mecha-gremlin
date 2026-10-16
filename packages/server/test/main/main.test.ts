@@ -31,6 +31,7 @@ const SETTINGS = [
     'MODEL_REASONING_EFFORT',
     'WORK_DIR',
     'SKILLS_PATH',
+    'MAX_STEPS',
     'MAX_TURNS',
 ] as const;
 type Settings = Readonly<Partial<Record<(typeof SETTINGS)[number], string>>>;
@@ -78,11 +79,11 @@ afterAll(async () => {
     await rm(skillsRoot, { recursive: true, force: true });
 });
 
-// The servers this file starts, and the turns it holds open. A test that fails midway mustn't
-// leave a server suspended, with its signal handlers installed, for the next test: after each
-// test, held turns are released and servers awaited, for at most 10 s.
+// The servers this file starts, and the model calls it holds open. A test that fails midway
+// mustn't leave a server suspended, with its signal handlers installed, for the next test: after
+// each test, held model calls are released and servers awaited, for at most 10 s.
 const startedServers: Promise<unknown>[] = [];
-const heldTurns: ((output: readonly ResponseOutputItem[]) => Promise<void>)[] = [];
+const heldModelCalls: ((output: readonly ResponseOutputItem[]) => Promise<void>)[] = [];
 
 const within = (ms: number): Promise<unknown> => {
     return new Promise((resolve) => {
@@ -91,7 +92,9 @@ const within = (ms: number): Promise<unknown> => {
 };
 
 afterEach(async () => {
-    const released = heldTurns.splice(0).map((release) => release([message('The test ended.')]));
+    const released = heldModelCalls
+        .splice(0)
+        .map((release) => release([message('The test ended.')]));
 
     await Promise.race([
         Promise.allSettled([...released, ...startedServers.splice(0)]),
@@ -109,7 +112,7 @@ const parseRecords = (output: string): LogRecord[] => {
         .map((line) => JSON.parse(line) as LogRecord);
 };
 
-const turnsOf = (requests: readonly RecordedRequest[]): RecordedRequest[] => {
+const modelCallsOf = (requests: readonly RecordedRequest[]): RecordedRequest[] => {
     return requests.filter((request) => request.url.endsWith('/v1/responses'));
 };
 
@@ -128,7 +131,7 @@ const startServer = (env: Settings = {}, server: FakeServer = {}, args: readonly
     const { fetch, requests } = fakeFetch(server);
     vi.stubGlobal('fetch', fetch);
     vi.spyOn(process, 'cwd').mockReturnValue(cwd);
-    // Every reading of the clock is 1.5 s after the last, so each turn takes 1.5 s.
+    // Every reading of the clock is 1.5 s after the last, so each model call takes 1.5 s.
     let clock = 0;
     vi.spyOn(performance, 'now').mockImplementation(() => (clock += 1500));
     const runId = freshRunId();
@@ -156,7 +159,7 @@ const startServer = (env: Settings = {}, server: FakeServer = {}, args: readonly
         done,
         runId,
         requests,
-        turns: () => turnsOf(requests),
+        modelCalls: () => modelCallsOf(requests),
         output: () => output,
         records: () => (settings.LOG_FORMAT === 'json' ? parseRecords(output) : []),
     };
@@ -169,15 +172,15 @@ const runServer = async (
 ) => {
     const started = startServer(env, server, args);
     await started.done;
-    const turns = started.turns();
+    const modelCalls = started.modelCalls();
 
     return {
         code: process.exitCode,
         output: started.output(),
         records: started.records(),
         requests: started.requests,
-        turns,
-        turn: turns[0],
+        modelCalls,
+        modelCall: modelCalls[0],
         runId: started.runId,
     };
 };
@@ -218,8 +221,8 @@ const readThenAnswer: FakeServer = {
     ),
 };
 
-// A turn that stays open until it's released with the model's output, once.
-const heldTurn = () => {
+// A model call that stays open until it's released with the model's output, once.
+const heldModelCall = () => {
     const stream = new TransformStream<Uint8Array, Uint8Array>();
     const writer = stream.writable.getWriter();
     let released = false;
@@ -233,7 +236,7 @@ const heldTurn = () => {
         await writer.close();
     };
 
-    heldTurns.push(release);
+    heldModelCalls.push(release);
 
     return {
         response: () =>
@@ -242,51 +245,55 @@ const heldTurn = () => {
     };
 };
 
-describe('Carry out a task and log the answer', { timeout: 15_000 }, () => {
+describe('Carry out a task through the agent loop, and log the answer', { timeout: 15_000 }, () => {
     test('the default task', async () => {
-        const { turn } = await runServer();
+        const { modelCall } = await runServer();
 
-        expect(turn?.body?.input).toEqual([
+        expect(modelCall?.body?.input).toEqual([
             { role: 'developer', content: expect.any(String) },
             { role: 'user', content: DEFAULT_TASK },
         ]);
     });
 
     test('a task from the arguments', async () => {
-        const { turn } = await runServer({}, {}, ['Which', 'runtime', 'does README.md describe?']);
+        const { modelCall } = await runServer({}, {}, [
+            'Which',
+            'runtime',
+            'does README.md describe?',
+        ]);
 
-        expect(turn?.body?.input).toContainEqual({
+        expect(modelCall?.body?.input).toContainEqual({
             role: 'user',
             content: 'Which runtime does README.md describe?',
         });
     });
 
     test('without skills: read_file and shell, and a developer item that mentions no skills', async () => {
-        const { turn } = await runServer();
+        const { modelCall } = await runServer();
 
-        expect(turn?.body?.tools).toEqual([
+        expect(modelCall?.body?.tools).toEqual([
             expect.objectContaining({ type: 'function', name: 'read_file', strict: true }),
             expect.objectContaining({ type: 'function', name: 'shell', strict: true }),
         ]);
-        expect(developerItem(turn)).toBe(
+        expect(developerItem(modelCall)).toBe(
             `You carry out tasks on this computer. You have a shell, and read_file for reading text files. The working directory is ${realCwd}, and paths that commands print are relative to it. Keep your final answer brief.`,
         );
     });
 
     test('with skills: activate_skill too, and the catalog ends the developer item', async () => {
-        const { turn } = await runServer({ SKILLS_PATH: skillsRoot });
+        const { modelCall } = await runServer({ SKILLS_PATH: skillsRoot });
 
-        expect(toolNames(turn)).toEqual(['read_file', 'shell', 'activate_skill']);
-        expect(developerItem(turn)).toMatch(
+        expect(toolNames(modelCall)).toEqual(['read_file', 'shell', 'activate_skill']);
+        expect(developerItem(modelCall)).toMatch(
             /^You carry out tasks on this computer\..*Keep your final answer brief\.\n\nSkills give you instructions/s,
         );
-        expect(developerItem(turn)).toMatch(
+        expect(developerItem(modelCall)).toMatch(
             /<available_skills>\n<skill>\n<name>browser<\/name>\n.*<name>pdf<\/name>\n<description>Work with PDFs\.<\/description>\n<\/skill>\n<\/available_skills>$/s,
         );
     });
 
     test("activate_skill gives a skill's instructions, and read_file its files", async () => {
-        const { turns } = await runServer(
+        const { modelCalls } = await runServer(
             { SKILLS_PATH: skillsRoot },
             {
                 responses: script(
@@ -304,7 +311,7 @@ describe('Carry out a task and log the answer', { timeout: 15_000 }, () => {
             },
         );
 
-        expect(callOutputs(turns[1])).toEqual([
+        expect(callOutputs(modelCalls[1])).toEqual([
             expect.stringMatching(/^<skill_content name="pdf">\n# PDF\n\nSkill directory: /),
             '---\nname: pdf\ndescription: Work with PDFs.\n---\n# PDF\n',
         ]);
@@ -317,7 +324,7 @@ describe('Carry out a task and log the answer', { timeout: 15_000 }, () => {
         await symlink(real, join(base, 'link'));
 
         try {
-            const { records, turn, turns } = await runServer(
+            const { records, modelCall, modelCalls } = await runServer(
                 { WORK_DIR: join(base, 'link') },
                 {
                     responses: script(
@@ -331,9 +338,9 @@ describe('Carry out a task and log the answer', { timeout: 15_000 }, () => {
                 },
             );
 
-            expect(developerItem(turn)).toContain(`The working directory is ${real},`);
+            expect(developerItem(modelCall)).toContain(`The working directory is ${real},`);
             expect(find(records, 'asking')).toMatchObject({ workDir: real });
-            expect(callOutputs(turns[1])).toEqual(['hello', `exit code: 0\nstdout:\n${real}`]);
+            expect(callOutputs(modelCalls[1])).toEqual(['hello', `exit code: 0\nstdout:\n${real}`]);
         } finally {
             await rm(base, { recursive: true, force: true });
         }
@@ -348,7 +355,7 @@ describe('Carry out a task and log the answer', { timeout: 15_000 }, () => {
     });
 
     test('an answer after running a command', async () => {
-        const { code, records, turns } = await runServer(
+        const { code, records, modelCalls } = await runServer(
             {},
             {
                 responses: script(
@@ -359,7 +366,7 @@ describe('Carry out a task and log the answer', { timeout: 15_000 }, () => {
         );
 
         expect(code).toBe(0);
-        expect(turns[1]?.body?.input).toContainEqual({
+        expect(modelCalls[1]?.body?.input).toContainEqual({
             type: 'function_call_output',
             call_id: 'call_1',
             output: 'exit code: 0\nstdout:\n42',
@@ -367,9 +374,9 @@ describe('Carry out a task and log the answer', { timeout: 15_000 }, () => {
         expect(find(records, 'answer')).toMatchObject({ level: 'info', text: 'It printed 42.' });
     });
 
-    test('the turn limit comes from MAX_TURNS', async () => {
-        const { code, records, turns } = await runServer(
-            { MAX_TURNS: '3' },
+    test('the step limit comes from the settings', async () => {
+        const { code, records, modelCalls } = await runServer(
+            { MAX_STEPS: '3' },
             {
                 responses: (n) =>
                     completed([call('read_file', { path: 'package.json' }, `call_${n}`)]),
@@ -377,14 +384,14 @@ describe('Carry out a task and log the answer', { timeout: 15_000 }, () => {
         );
 
         expect(code).toBe(1);
-        expect(turns).toHaveLength(3);
+        expect(modelCalls).toHaveLength(3);
         expect(errors(records)).toEqual([
-            "The model didn't answer within 3 turns: it was still calling tools. Try a narrower task, or raise MAX_TURNS.",
+            "The model didn't answer within 3 steps: it was still calling tools. Try a narrower task, or raise MAX_STEPS.",
         ]);
     });
 
-    test('the default turn limit is 30', async () => {
-        const { turns } = await runServer(
+    test('the default step limit is 30', async () => {
+        const { modelCalls } = await runServer(
             {},
             {
                 responses: (n) =>
@@ -392,7 +399,7 @@ describe('Carry out a task and log the answer', { timeout: 15_000 }, () => {
             },
         );
 
-        expect(turns).toHaveLength(30);
+        expect(modelCalls).toHaveLength(30);
     });
 });
 
@@ -413,11 +420,11 @@ const daemonOf = (request: RecordedRequest | undefined): number => {
 
 describe("Stop the session's processes when the server ends", { timeout: 15_000 }, () => {
     test('a process left behind is stopped, once', async () => {
-        const { code, records, turns } = await runServer(
+        const { code, records, modelCalls } = await runServer(
             {},
             leaveDaemon(() => completed([message('Started it.')])),
         );
-        const daemon = daemonOf(turns[1]);
+        const daemon = daemonOf(modelCalls[1]);
 
         expect(code).toBe(0);
         expect(all(records, 'stopped')).toEqual([
@@ -432,15 +439,15 @@ describe("Stop the session's processes when the server ends", { timeout: 15_000 
         ['SIGHUP', 129],
     ] as const)('%s during the session', async (signal, code) => {
         const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
-        const pending = heldTurn();
+        const pending = heldModelCall();
         const started = startServer({}, leaveDaemon(pending.response));
         await vi.waitFor(
             () => {
-                expect(started.turns()).toHaveLength(2);
+                expect(started.modelCalls()).toHaveLength(2);
             },
             { timeout: 4000, interval: 20 },
         );
-        const daemon = daemonOf(started.turns()[1]);
+        const daemon = daemonOf(started.modelCalls()[1]);
 
         process.emit(signal, signal);
         await vi.waitFor(
@@ -465,11 +472,11 @@ describe("Stop the session's processes when the server ends", { timeout: 15_000 
 
     test('Ctrl-C twice', async () => {
         const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
-        const pending = heldTurn();
+        const pending = heldModelCall();
         const started = startServer({}, { responses: pending.response });
         await vi.waitFor(
             () => {
-                expect(started.turns()).toHaveLength(1);
+                expect(started.modelCalls()).toHaveLength(1);
             },
             { timeout: 4000, interval: 20 },
         );
@@ -544,7 +551,7 @@ describe("Stop the session's processes when the server ends", { timeout: 15_000 
     });
 });
 
-describe('Log each tool call and turn', () => {
+describe('Log each model call and tool call', () => {
     test('the records of a tool round trip', async () => {
         const { records, runId } = await runServer({}, readThenAnswer);
 
@@ -560,8 +567,8 @@ describe('Log each tool call and turn', () => {
             },
             {
                 level: 'info',
-                message: 'turn',
-                number: 1,
+                message: 'model call',
+                step: 1,
                 inputTokens: 349,
                 cachedTokens: 256,
                 outputTokens: 26,
@@ -580,7 +587,7 @@ describe('Log each tool call and turn', () => {
                 tool: 'read_file',
                 bytes: Buffer.byteLength(PACKAGE_JSON),
             },
-            { level: 'info', message: 'turn', number: 2 },
+            { level: 'info', message: 'model call', step: 2 },
             { level: 'info', message: 'answer', text: 'It runs the checks.' },
         ]);
         expect(records).toHaveLength(6);
@@ -706,7 +713,7 @@ describe('Log each tool call and turn', () => {
         expect(find(records, 'tool call')).toMatchObject({ arguments: '{"path": "package.json"' });
     });
 
-    test('a turn without usage still reports its time', async () => {
+    test('a model call without usage still reports its time', async () => {
         const noUsage = new Response(
             `event: response.completed\ndata: ${JSON.stringify({
                 type: 'response.completed',
@@ -721,11 +728,11 @@ describe('Log each tool call and turn', () => {
         );
         const { records } = await runServer({}, { responses: () => noUsage });
 
-        expect(find(records, 'turn')).toEqual({
+        expect(find(records, 'model call')).toEqual({
             time: expect.any(String),
             level: 'info',
-            message: 'turn',
-            number: 1,
+            message: 'model call',
+            step: 1,
             seconds: 1.5,
         });
     });
@@ -738,11 +745,11 @@ describe('Log each tool call and turn', () => {
             { responses: () => completed([message('Hi.')], totals) },
         );
 
-        expect(find(records, 'turn')).toEqual({
+        expect(find(records, 'model call')).toEqual({
             time: expect.any(String),
             level: 'info',
-            message: 'turn',
-            number: 1,
+            message: 'model call',
+            step: 1,
             inputTokens: 10,
             outputTokens: 5,
             seconds: 1.5,
@@ -758,10 +765,10 @@ describe('Formatted output by default', () => {
         expect(lines.every((line) => /^\d\d:\d\d:\d\d (INFO |WARN |ERROR) /.test(line))).toBe(true);
         expect(lines.map((line) => line.slice(9))).toEqual([
             `INFO  asking model=prism-ml/bonsai-27b baseUrl=http://127.0.0.1:1234/v1 run=${runId} workDir=${realCwd} task="${DEFAULT_TASK}"`,
-            'INFO  turn number=1 inputTokens=349 cachedTokens=256 outputTokens=26 reasoningTokens=12 seconds=1.5',
+            'INFO  model call step=1 inputTokens=349 cachedTokens=256 outputTokens=26 reasoningTokens=12 seconds=1.5',
             'INFO  tool call tool=read_file arguments={"path":"package.json"}',
             `INFO  tool result tool=read_file bytes=${Buffer.byteLength(PACKAGE_JSON)}`,
-            'INFO  turn number=2 inputTokens=349 cachedTokens=256 outputTokens=26 reasoningTokens=12 seconds=1.5',
+            'INFO  model call step=2 inputTokens=349 cachedTokens=256 outputTokens=26 reasoningTokens=12 seconds=1.5',
             'INFO  answer text="It runs the checks."',
         ]);
     });
@@ -783,16 +790,36 @@ describe('Formatted output by default', () => {
             .split('\n')
             .map((line) => (JSON.parse(line) as LogRecord).message);
 
-        expect(messages).toEqual(['asking', 'turn', 'tool call', 'tool result', 'turn', 'answer']);
+        expect(messages).toEqual([
+            'asking',
+            'model call',
+            'tool call',
+            'tool result',
+            'model call',
+            'answer',
+        ]);
     });
 });
 
-describe('Configuration from the environment, validated at start-up', () => {
-    test.each(['0', '-1', '2.5', 'lots'])('an invalid turn limit: %j', async (value) => {
-        const { code, records, requests } = await runServer({ MAX_TURNS: value });
+describe('Read the configuration from the environment, and validate it at start-up', () => {
+    test.each(['0', '-1', '2.5', 'lots'])('an invalid step limit: %j', async (value) => {
+        const { code, records, requests } = await runServer({ MAX_STEPS: value });
 
         expect(code).toBe(1);
-        expect(errors(records)).toEqual([expect.stringContaining('MAX_TURNS')]);
+        expect(errors(records)).toEqual([expect.stringContaining('MAX_STEPS')]);
+        expect(requests).toHaveLength(0);
+    });
+
+    test.each([
+        ['without MAX_STEPS', { MAX_TURNS: '5' }],
+        ['with MAX_STEPS', { MAX_TURNS: '5', MAX_STEPS: '12' }],
+    ])("the step limit's former name, %s", async (_with, env) => {
+        const { code, records, requests } = await runServer(env);
+
+        expect(code).toBe(1);
+        expect(errors(records)).toEqual([
+            'MAX_TURNS is now MAX_STEPS; rename it in your settings.',
+        ]);
         expect(requests).toHaveLength(0);
     });
 
@@ -825,7 +852,7 @@ describe('Configuration from the environment, validated at start-up', () => {
     });
 });
 
-describe('Actionable failures', () => {
+describe('Actionable failure messages', () => {
     test('no answer', async () => {
         const { code, records } = await runServer(
             {},
@@ -835,7 +862,7 @@ describe('Actionable failures', () => {
         expect(code).toBe(1);
         expect(find(records, 'answer')).toBeUndefined();
         expect(errors(records)).toEqual([
-            'The model gave no answer: its turn had neither text nor tool calls. Try again, or rephrase the task.',
+            'The model gave no answer: its reply had neither text nor tool calls. Try again, or rephrase the task.',
         ]);
     });
 
@@ -856,7 +883,7 @@ describe('Actionable failures', () => {
         ]);
     });
 
-    test('a failed turn', async () => {
+    test('a failed model call', async () => {
         const { code, records } = await runServer(
             {},
             { responses: () => httpError(500, 'model crashed') },
@@ -865,11 +892,11 @@ describe('Actionable failures', () => {
         expect(code).toBe(1);
         expect(find(records, 'answer')).toBeUndefined();
         expect(errors(records)).toEqual([
-            'The model server at http://127.0.0.1:1234/v1 failed the turn (500 model crashed). Try again; if it keeps failing, check its logs or status page.',
+            'The model server at http://127.0.0.1:1234/v1 failed the request (500 model crashed). Try again; if it keeps failing, check its logs or status page.',
         ]);
     });
 
-    test('a rate-limited turn', async () => {
+    test('a rate-limited model call', async () => {
         const { code, records } = await runServer(
             {},
             { responses: () => httpError(429, 'slow down') },
@@ -881,7 +908,7 @@ describe('Actionable failures', () => {
         ]);
     });
 
-    test('a failed turn without a status', async () => {
+    test('a failed model call without a status', async () => {
         const { code, records } = await runServer(
             {},
             {
@@ -904,7 +931,7 @@ describe('Actionable failures', () => {
 
         expect(code).toBe(1);
         expect(errors(records)).toEqual([
-            'The model server at http://127.0.0.1:1234/v1 failed the turn (server_error: it broke). Try again; if it keeps failing, check its logs or status page.',
+            'The model server at http://127.0.0.1:1234/v1 failed the request (server_error: it broke). Try again; if it keeps failing, check its logs or status page.',
         ]);
     });
 
@@ -943,14 +970,14 @@ describe('Actionable failures', () => {
 
 describe('run with LM Studio (the default provider)', () => {
     test('asks the loaded model and logs its answer', async () => {
-        const { code, records, turn } = await runServer();
+        const { code, records, modelCall } = await runServer();
 
         expect(code).toBe(0);
         expect(find(records, 'answer')).toMatchObject({ text: 'Hi there!' });
         // With one model loaded there's no note about the choice: the first record is the task.
         expect(records[0]).toMatchObject({ message: 'asking', model: 'prism-ml/bonsai-27b' });
-        expect(turn?.url).toBe('http://127.0.0.1:1234/v1/responses');
-        expect(turn?.body).toMatchObject({
+        expect(modelCall?.url).toBe('http://127.0.0.1:1234/v1/responses');
+        expect(modelCall?.body).toMatchObject({
             model: 'prism-ml/bonsai-27b',
             reasoning: { effort: 'none' },
             stream: true,
@@ -959,10 +986,10 @@ describe('run with LM Studio (the default provider)', () => {
     });
 
     test('passes the configured reasoning effort through', async () => {
-        const { code, turn } = await runServer({ MODEL_REASONING_EFFORT: 'low' });
+        const { code, modelCall } = await runServer({ MODEL_REASONING_EFFORT: 'low' });
 
         expect(code).toBe(0);
-        expect(turn?.body).toMatchObject({ reasoning: { effort: 'low' } });
+        expect(modelCall?.body).toMatchObject({ reasoning: { effort: 'low' } });
     });
 
     test('invalid config fails before any network call', async () => {
@@ -1001,14 +1028,16 @@ describe('run with LM Studio (the default provider)', () => {
         ]);
     });
 
-    test("a configured model that isn't loaded sends no turn", async () => {
-        const { code, records, turn } = await runServer({ MODEL: 'qwen2.5-0.5b-instruct-mlx' });
+    test("a configured model that isn't loaded isn't called", async () => {
+        const { code, records, modelCall } = await runServer({
+            MODEL: 'qwen2.5-0.5b-instruct-mlx',
+        });
 
         expect(code).toBe(1);
         expect(errors(records)).toEqual([
             expect.stringContaining('lms load qwen2.5-0.5b-instruct-mlx'),
         ]);
-        expect(turn).toBeUndefined();
+        expect(modelCall).toBeUndefined();
     });
 
     test('with several models loaded, says which it chose and how to choose another', async () => {
@@ -1026,7 +1055,7 @@ describe('run with LM Studio (the default provider)', () => {
                 },
             ],
         };
-        const { code, records, turn } = await runServer(
+        const { code, records, modelCall } = await runServer(
             {},
             { models: () => Response.json(twoLoaded) },
         );
@@ -1037,7 +1066,7 @@ describe('run with LM Studio (the default provider)', () => {
             message:
                 'Using prism-ml/bonsai-27b, the first of 2 loaded models (prism-ml/bonsai-27b, qwen2.5-0.5b-instruct-mlx). Set MODEL to choose another.',
         });
-        expect(turn?.body).toMatchObject({ model: 'prism-ml/bonsai-27b' });
+        expect(modelCall?.body).toMatchObject({ model: 'prism-ml/bonsai-27b' });
     });
 });
 
@@ -1045,17 +1074,17 @@ describe('run with another OpenAI-compatible provider', () => {
     const openai = { MODEL_PROVIDER: 'openai', MODEL_API_KEY: 'sk-test', MODEL: 'gpt-test' };
 
     test("uses the named model without asking LM Studio, and the model's own reasoning default", async () => {
-        const { code, records, requests, turn } = await runServer(openai);
+        const { code, records, requests, modelCall } = await runServer(openai);
 
         expect(code).toBe(0);
         expect(find(records, 'answer')).toMatchObject({ text: 'Hi there!' });
         expect(requests.some((request) => request.url.endsWith('/api/v1/models'))).toBe(false);
-        expect(turn).toMatchObject({
+        expect(modelCall).toMatchObject({
             url: 'https://api.openai.com/v1/responses',
             authorization: 'Bearer sk-test',
             body: { model: 'gpt-test' },
         });
-        expect(turn?.body).not.toHaveProperty('reasoning');
+        expect(modelCall?.body).not.toHaveProperty('reasoning');
     });
 
     test('needs MODEL and MODEL_API_KEY, and fails before any network call', async () => {

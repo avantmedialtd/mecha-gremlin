@@ -51,7 +51,7 @@ export const usage = (inputTokens = 349): ResponseUsage => {
 
 export const completed = (
     output: readonly ResponseOutputItem[],
-    turnUsage: ResponseUsage = usage(),
+    callUsage: ResponseUsage = usage(),
 ): Response => {
     const response = {
         id: 'resp_1',
@@ -60,7 +60,7 @@ export const completed = (
         error: null,
         incomplete_details: null,
         output,
-        usage: turnUsage,
+        usage: callUsage,
     };
     const event = { type: 'response.completed', response };
 
@@ -73,8 +73,8 @@ export const httpError = (status: number, errorMessage: string): Response => {
     return Response.json({ error: { message: errorMessage } }, { status });
 };
 
-export const script = (...turns: ReadonlyArray<() => Response>): ((n: number) => Response) => {
-    return (n) => turns[n]?.() ?? httpError(500, `the script has no turn ${n + 1}`);
+export const script = (...replies: ReadonlyArray<() => Response>): ((n: number) => Response) => {
+    return (n) => replies[n]?.() ?? httpError(500, `the script has no reply ${n + 1}`);
 };
 
 export const loadedBonsai = {
@@ -101,7 +101,7 @@ export type RecordedRequest = {
 
 export const fakeFetch = (server: FakeServer = {}) => {
     const requests: RecordedRequest[] = [];
-    let turns = 0;
+    let modelCalls = 0;
     const fetch: Fetch = async (input, init) => {
         const url = input instanceof Request ? input.url : String(input);
         requests.push({
@@ -115,7 +115,7 @@ export const fakeFetch = (server: FakeServer = {}) => {
         }
 
         if (url.endsWith('/v1/responses')) {
-            const n = turns++;
+            const n = modelCalls++;
 
             return server.responses?.(n) ?? completed([message('Hi there!')]);
         }
@@ -123,10 +123,10 @@ export const fakeFetch = (server: FakeServer = {}) => {
         return new Response('not found', { status: 404 });
     };
 
-    const turnBodies = () =>
+    const modelCallBodies = () =>
         requests
             .filter((request) => request.url.endsWith('/v1/responses'))
             .map((request) => request.body);
 
-    return { fetch, requests, turnBodies };
+    return { fetch, requests, modelCallBodies };
 };
