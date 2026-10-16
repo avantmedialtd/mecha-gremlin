@@ -16,6 +16,9 @@ The Brief already decides most of this change's shape:
   - An explicit `snapshot` prints the whole tree to stdout: 48,250 bytes for Hacker News' front page. That's despite SKILL.md's comment that it saves to a file.
 - **An idle backstop.** The CLI sets its daemon's idle timeout from `PLAYWRIGHT_MCP_IDLE_TIMEOUT`, in milliseconds. The default is an hour.
 - **Parsing skills.** `yaml` 2.9.1 parsed the frontmatter of all five skills installed on this machine. That included a nested, flow-style `metadata` with trailing commas, a non-standard `homepage` key, and a 1,008-character description. With its default options, `yaml` sends warnings such as an unresolved tag to `process.emitWarning`, which prints to stderr.
+- **On Bun, where the tests now run** (`tests-on-bun`; checked on 2026-10-16 with Bun 1.4.3):
+  - Wrapping `ChildProcess.prototype.spawn` sees every child that `spawn` and `execFile` start, as on Node. The test-side safety net in decision 10 can rely on it.
+  - Inside Vitest, `yaml` keeps all its exports, so it needs no `server.deps.inline` entry, unlike `zod`. Its namespace differs from Node's only by the `module.exports` key Node adds to CommonJS modules imported from ESM.
 
 **Constraints:**
 - tests and mutation testing run on Bun, the production runtime, once the `tests-on-bun` change is in, which this change builds on. `core`'s tests also run on Node, because `core` must work there;
