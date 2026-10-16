@@ -6,8 +6,8 @@
     ],
     "type": "module",
     "scripts": {
-        "hello": "bun packages/server/src/main/main.ts",
-        "hello:node": "node --env-file-if-exists=.env packages/server/src/main/main.ts",
+        "server": "bun packages/server/src/main/main.ts",
+        "server:node": "node --env-file-if-exists=.env packages/server/src/main/main.ts",
         "test": "TEST_RUNTIME=bun bunx --bun vitest run",
         "test:watch": "TEST_RUNTIME=bun bunx --bun vitest",
         "test:node": "TEST_RUNTIME=node vitest run",

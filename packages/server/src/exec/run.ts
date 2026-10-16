@@ -44,7 +44,7 @@ export const signalGroup = (pgid: number, signal: NodeJS.Signals): void => {
     } catch {
         // ESRCH when the group has ended. EPERM, when all that's left is a process this user can't
         // signal, such as a setuid program, can't be helped here, and a throw from a timer would
-        // end the hello.
+        // end the server.
     }
 };
 
@@ -159,7 +159,7 @@ export const runCommand = async (
     // Background jobs don't outlive the command.
     kill();
 
-    // In this order: unref() frees the hello only once both streams are cancelled, and a process
+    // In this order: unref() frees the server only once both streams are cancelled, and a process
     // that left the group may still hold a pipe.
     await Promise.all([stdout.cancel(), stderr.cancel()]);
 

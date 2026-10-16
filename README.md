@@ -30,19 +30,28 @@ No package has index files: every import names the file it uses. The `package.js
 ## Prerequisites
 
 - [Bun](https://bun.com) 1.4 or later.
-- [Node.js](https://nodejs.org) 26 or later, for `bun run hello:node` and `bun run test:node`, and so for `bun run check`.
+- [Node.js](https://nodejs.org) 26 or later, for `bun run server:node` and `bun run test:node`, and so for `bun run check`.
 - An OpenAI-compatible model server. By default that's a local [LM Studio](https://lmstudio.ai), with its server running (`lms server start`) and **a model loaded** (`lms load <model>`, or load one in the app). The server never makes LM Studio load a model on demand. A browsing task needs the model loaded with a larger context than LM Studio's default: see [Set up for browsing](#set-up-for-browsing).
+- For the default task, [playwright-cli](https://www.npmjs.com/package/@playwright/cli) (`npm install -g @playwright/cli`) and [Google Chrome](https://www.google.com/chrome/), which playwright-cli drives by default.
 
 ## Run
 
+Once, before the first run, install the dependencies, and set `SKILLS_PATH` in `.env` to playwright-cli's skills. Without it, the default task's skill isn't loaded, and the model has only the shell and `read_file`.
+
 ```sh
 bun install
-bun run hello                                                 # asks what package.json's check script runs
-bun run hello 'Which runtime does README.md describe?'        # a task of your own, quoted
-bun run hello:node 'Which runtime does README.md describe?'   # the same, on Node
+echo "SKILLS_PATH=$(npm root -g)/@playwright/cli/skills" >> .env
 ```
 
-The command is `bun run hello [task…]` on Bun, or `bun run hello:node [task…]` on Node, with the same arguments and settings. The arguments, joined with spaces, are the task. With none, the hello asks what exact command the `check` script in `package.json` runs.
+Then:
+
+```sh
+bun run server                                                # finds example.com's title with the playwright-cli skill
+bun run server 'Which runtime does README.md describe?'       # a task of your own, quoted
+bun run server:node 'Which runtime does README.md describe?'  # the same, on Node
+```
+
+The command is `bun run server [task…]` on Bun, or `bun run server:node [task…]` on Node, with the same arguments and settings. The arguments, joined with spaces, are the task. With none, the server uses the playwright-cli skill to find the title of https://example.com.
 
 **Quote the task,** in single quotes unless it holds one. The shell reads `?`, `*`, `&`, `;`, `!` and `$` itself: in zsh, macOS's default shell, an unquoted `?` stops the command with "no matches found" before Bun runs.
 
@@ -57,15 +66,22 @@ Everything is logged to stdout as structured records, one per line:
 - the processes stopped when the session ends, if there were any;
 - errors.
 
-The default output is formatted for reading:
+The default output is formatted for reading. This is the default task on a local 9B model:
 
 ```text
-08:12:01 INFO  asking model=prism-ml/bonsai-27b baseUrl=http://127.0.0.1:1234/v1 run=3f9a1c2e workDir=/Users/you/mecha-gremlin task="What exact command does the check script in package.json run? Quote it."
-08:12:13 INFO  turn number=1 inputTokens=376 cachedTokens=256 outputTokens=26 reasoningTokens=0 seconds=11.3
-08:12:13 INFO  tool call tool=read_file arguments={"path":"package.json"}
-08:12:13 INFO  tool result tool=read_file bytes=814
-08:12:20 INFO  turn number=2 inputTokens=710 cachedTokens=512 outputTokens=21 reasoningTokens=0 seconds=6.7
-08:12:20 INFO  answer text="`bun run format:check && bun run lint && bun run typecheck && bun run test`"
+18:06:36 INFO  skills names=["playwright-cli"]
+18:06:36 INFO  asking model=ornith-1.5-9b-mlx baseUrl=http://127.0.0.1:1234/v1 run=ce0c67ab workDir=/Users/you/gremlin-work task="Use the playwright-cli skill to find the title of https://example.com"
+18:06:45 INFO  turn number=1 inputTokens=813 cachedTokens=0 outputTokens=49 reasoningTokens=33 seconds=9.1
+18:06:45 INFO  tool call tool=activate_skill arguments={"name":"playwright-cli"}
+18:06:45 INFO  tool result tool=activate_skill bytes=15906
+18:07:15 INFO  turn number=2 inputTokens=4829 cachedTokens=891 outputTokens=107 reasoningTokens=86 seconds=28.7
+18:07:15 INFO  tool call tool=shell arguments={"command":"playwright-cli open https://example.com"}
+18:07:15 INFO  tool result tool=shell bytes=296
+18:07:21 INFO  turn number=3 inputTokens=5097 cachedTokens=4970 outputTokens=63 reasoningTokens=22 seconds=5.9
+18:07:21 INFO  tool call tool=shell arguments={"command":"playwright-cli close"}
+18:07:21 INFO  tool result tool=shell bytes=54
+18:07:23 INFO  turn number=4 inputTokens=5226 cachedTokens=5190 outputTokens=15 reasoningTokens=10 seconds=1.3
+18:07:23 INFO  answer text="**Example Domain**"
 ```
 
 `LOG_FORMAT=json` writes each record as a JSON object instead, with its time in ISO 8601.
@@ -88,10 +104,10 @@ It returns at most 32 KiB of a file, and notes when it cut the file short. Every
 - **A command gets 120 seconds.** Then its process group gets SIGTERM, and SIGKILL 2 seconds later.
 - **Each output stream keeps its first and last 16 KiB.** When it cuts, the model is told how to see the rest: write the output to a file, then search it with `grep`, or print a part with `sed -n` or `tail -c`.
 - **Background jobs end with the command,** once bash has exited and the command's output has closed, or after a second. A process that leaves the command's process group keeps running, as playwright-cli's browser does.
-- **The session's processes are stopped when it ends,** whether it answers, fails, or gets Ctrl-C, SIGTERM or a hangup. Every command carries the run's ID in `GREMLIN_RUN_ID`, and every process that `ps` shows carrying it gets SIGTERM, then SIGKILL 2 seconds later. A match that looks wrong, more than 32 processes, pid 1 or below, or the hello itself or its parent, gets no signal at all, and the log says why; so does a `ps` that can't show environments or takes over 10 seconds. Signals are ignored while the processes are stopped. On macOS, `ps` hides the environment of Apple's own programs, and if the hello itself is killed with SIGKILL nothing is stopped: playwright-cli's browser then closes after 15 minutes idle.
+- **The session's processes are stopped when it ends,** whether it answers, fails, or gets Ctrl-C, SIGTERM or a hangup. Every command carries the run's ID in `GREMLIN_RUN_ID`, and every process that `ps` shows carrying it gets SIGTERM, then SIGKILL 2 seconds later. A match that looks wrong, more than 32 processes, pid 1 or below, or the server itself or its parent, gets no signal at all, and the log says why; so does a `ps` that can't show environments or takes over 10 seconds. Signals are ignored while the processes are stopped. On macOS, `ps` hides the environment of Apple's own programs, and if the server itself is killed with SIGKILL nothing is stopped: playwright-cli's browser then closes after 15 minutes idle.
 - **The environment is built from scratch:** `PATH`, `HOME`, `USER`, `LOGNAME`, `TMPDIR`, `LANG` and `LC_ALL` from yours, fixed values against prompts, pagers and colour codes, the run's ID, and a playwright-cli session of the run's own.
 
-**What the shell can reach: anything your account can.** A model steered by a web page can read your files, run programs and send data out. Building the environment from scratch keeps your other variables, and `.env`'s, out of what commands inherit and print by accident, such as an environment dump or a log. It doesn't stop a command that goes looking: `ps -E -p $PPID` shows the hello's own environment on macOS, and `.env` is a readable file. Run it attended, against sites you choose.
+**What the shell can reach: anything your account can.** A model steered by a web page can read your files, run programs and send data out. Building the environment from scratch keeps your other variables, and `.env`'s, out of what commands inherit and print by accident, such as an environment dump or a log. It doesn't stop a command that goes looking: `ps -E -p $PPID` shows the server's own environment on macOS, and `.env` is a readable file. Run it attended, against sites you choose.
 
 ### Skills
 
@@ -103,13 +119,13 @@ For example, to browse with Microsoft's playwright-cli skill, which ships with t
 npm install -g @playwright/cli
 mkdir -p ~/gremlin-work
 WORK_DIR=~/gremlin-work SKILLS_PATH=$(npm root -g)/@playwright/cli/skills \
-    bun run hello 'Use the playwright-cli skill to find the title of https://example.com'
+    bun run server 'Use the playwright-cli skill to find the title of https://example.com'
 ```
 
 ### Set up for browsing
 
 - **Load the model with at least 32k of context.** The skill's instructions are about 4k tokens, and one page's snapshot can be 8k, while LM Studio loads models with 8k unless told otherwise: `lms load <model> --context-length 32768`, then check the loaded context with `lms ps`.
-- **Give the hello a working directory of its own,** outside the repository, such as `~/gremlin-work` above. Commands run there, and playwright-cli writes its snapshots there, in `.playwright-cli/`. With `WORK_DIR` unset it's the current directory; in this repository, `.playwright/` and `.playwright-cli/` are gitignored.
+- **Give the server a working directory of its own,** outside the repository, such as `~/gremlin-work` above. Commands run there, and playwright-cli writes its snapshots there, in `.playwright-cli/`. With `WORK_DIR` unset it's the current directory; in this repository, `.playwright/` and `.playwright-cli/` are gitignored.
 - **Turn on LM Studio's token auth:** "Require Authentication" in its server settings, with one of its tokens in `.env` as `MODEL_API_KEY`. It keeps other local processes and web pages away from LM Studio's API, though not this shell.
 - **Keep keys in `.env`, not on the command line,** where a command could read them with `ps -E -p $PPID`. Neither this nor a dedicated `WORK_DIR` stops a command that goes looking.
 
@@ -117,7 +133,7 @@ WORK_DIR=~/gremlin-work SKILLS_PATH=$(npm root -g)/@playwright/cli/skills \
 
 Settings come from the environment, and from a local `.env` file, which is gitignored. Each value is trimmed, and a blank one counts as unset.
 - **On Bun,** `.env` is read along with `.env.local`, and a file for `NODE_ENV` (`.env.development` when it's unset).
-- **On Node,** only `.env` is read, through the `--env-file-if-exists` flag in `hello:node`. Without a `.env`, Node prints ".env not found. Continuing without it." to stderr, and carries on.
+- **On Node,** only `.env` is read, through the `--env-file-if-exists` flag in `server:node`. Without a `.env`, Node prints ".env not found. Continuing without it." to stderr, and carries on.
 
 | Variable | Default with `lmstudio` | Default with `openai` | Meaning |
 |---|---|---|---|
@@ -134,7 +150,7 @@ Settings come from the environment, and from a local `.env` file, which is gitig
 For example, to use OpenAI instead, with `MODEL_API_KEY=sk-…` in `.env`:
 
 ```sh
-MODEL_PROVIDER=openai MODEL=gpt-5.5 bun run hello
+MODEL_PROVIDER=openai MODEL=gpt-5.5 bun run server
 ```
 
 ## Develop
@@ -184,7 +200,7 @@ GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) builds e
 1. **Check and test:**
    - a frozen install, then the format check, lint and typecheck;
    - the tests on Bun (failures are annotated on the PR), then the whole suite again on Node;
-   - the hello, started on Node against a port where nothing listens. It must exit with 1, saying it can't reach LM Studio. The tests load the code through Vite, so this is the one check that Node itself loads the server;
+   - the server, started on Node against a port where nothing listens. It must exit with 1, saying it can't reach LM Studio. The tests load the code through Vite, so this is the one check that Node itself loads it;
    - `bun audit`, report only: the step shows as failed when there are advisories, but the job still passes.
 2. **Mutation testing:** once the checks pass, Stryker runs on Bun and uploads its HTML report as the `mutation-report` artifact. The job fails if any mutant survives. It sets up only Bun, not Node.
 
