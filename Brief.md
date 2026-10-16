@@ -15,6 +15,7 @@
 > - **Since revision 2, 2026-10-12:** R11 records the first pass of spike S2, a tool loop on LM Studio. C1, Q3 and the spikes table point to it.
 > - **2026-10-15:** R12 records the research for loading skills and using the playwright-cli skill. C12 weighs where the shell runs before M1, and D18 records the choice. Q12–Q17 list the skills questions still to settle.
 > - **2026-10-16:** R13 records how the tests and mutation testing run on Bun, the runtime the app uses. The change `tests-on-bun` moves them there.
+> - **2026-10-16, later:** R14 records what it takes to keep the server running on Node as well as Bun, and D19 records the choice to do so. Two small packages use Bun's built-ins on Bun and Node's modules elsewhere, and the change `bun-or-node` adds them.
 
 ---
 
@@ -46,7 +47,7 @@ Primary goal: solve my own problem. Secondary: the core may become an open-sourc
 | Deployment and isolation | Docker / docker compose | Same artefact for my machine and any future client box. |
 | Repo | Single public monorepo with workspaces | See layering. No two-repo split, no symlinks. |
 
-▸ How each settled decision stands after research: 3.0. None has been changed.
+▸ How each settled decision stands after research: 3.0. None has been reversed. One has been widened: the server runs on Bun or Node (D19, 2026-10-16).
 
 ## Layering
 
@@ -695,17 +696,66 @@ All **[H]**, measured on 2026-10-16 with Bun 1.4.3, Node 26.11, Vitest 4.1.11 an
 
 **Sources:** github.com/oven-sh/bun/issues/41151; github.com/stryker-mutator/stryker-js/issues/6210; `@babel/core` 8.0.7's lib/errors/rewrite-stack-trace.js; Vite 8.3.4's bundled `CustomError`; zod 4.6.7's package exports.
 
+## R14. Running the server on Bun or Node
+
+All **[H]**, measured on 2026-10-16 with Bun 1.4.3, Node 26.11 and `yaml` 2.9.1, for D19. Skills need YAML parsing and process spawning, which Bun has built in (`Bun.YAML`, `Bun.spawn`) and Node doesn't, or not in the same form.
+- **The server already runs on Node.**
+  - Node's own type stripping loads it. Pointed at a port where nothing listens, it got as far as "Can't reach LM Studio".
+  - 171 of its 172 tests pass on Node. The one failure is R13's runtime test, which asserts Bun.
+  - Vitest runs the code through Vite's transform, so passing tests on Node don't show that Node itself can load the server. Only starting it there does.
+  - Node 26 accepts `--env-file-if-exists=.env`, which reads that one file. Without it, Node prints ".env not found. Continuing without it." to stderr. Bun also reads `.env.local`, and a file for `NODE_ENV`.
+- **YAML: `Bun.YAML` and the `yaml` package.** With `yaml`'s options set as below, both gave equal values, keys in the same order, for the frontmatter of every skill installed on the development Mac.
+  - **They agree on:**
+    - an empty text, which gives `null`;
+    - mappings, sequences and scalars;
+    - flow collections with trailing commas;
+    - a custom tag, which gives the text after it;
+    - anchors;
+    - YAML 1.2's scalars: `yes`, `on` and dates stay strings.
+  - **With `yaml`'s defaults they differ on two plausible inputs:**
+    - a repeated key: Bun keeps the last value, `yaml` throws;
+    - a merge key `<<`: Bun merges, `yaml` keeps it as a key.
+
+    `uniqueKeys: false` and `merge: true` close both gaps.
+  - **Still different:**
+    - several documents in one text: Bun returns an array, `yaml` throws;
+    - a collection used as a key: `a,b` against `[ a, b ]`;
+    - a key that overrides a merged one: the same values, but Bun lists the overriding key first;
+    - error messages. Bun's are one terse line, and `yaml`'s give the position, then a code frame.
+  - **Warnings:** `yaml`'s go to `process.emitWarning`, so to stderr, unless `logLevel` is `'error'`. Errors still throw then.
+  - **Under Vitest on Bun,** `yaml` keeps all its exports, unlike `zod` (R13).
+- **Spawning: `Bun.spawn`, and `node:child_process` on Bun and on Node.**
+  - **All three paths agree on:**
+    - exit codes;
+    - signals, reported by name with a null exit code;
+    - an environment holding only what's passed;
+    - the working directory;
+    - looking a program up in the given `PATH`;
+    - stdin at end-of-file;
+    - process groups with `detached`;
+    - an exit reported while a background child still holds stdout. Cancelling a stream then resolves at once, and closes the pipe: the child's next write fails with `EPIPE`.
+  - **They differ** in their messages, and in how a failed start is reported. `Bun.spawn` throws. `node:child_process` mostly emits `error`, but throws when the working directory is a file.
+  - **Letting the runtime exit.** While a `sleep` held unread pipes:
+    - `unref()` alone kept the runtime running until the `sleep` ended, on every path;
+    - cancelling both streams and then calling `unref()` let it exit at once, on every path.
+- **Tests can't hide the `Bun` global.** `globalThis.Bun` is neither writable nor configurable. `Bun.YAML.parse` and `Bun.spawn` are writable, so tests can wrap them.
+- **Export conditions don't help a test run.** Vite 8.3.4 resolves with `module`, `node` and `development|production`, never `bun`.
+- **`engines` isn't enforced.** A workspace package declaring `"bun": ">=99.0.0"` installed and ran on Bun 1.4.3 without a warning.
+- **Keeping Node** also keeps C7's fallback, running the app on Node, within reach.
+
+**Sources:** `yaml` 2.9.1's documented options (`logLevel`, `uniqueKeys`, `merge`); Vite 8.3.4's `DEFAULT_SERVER_CONDITIONS`; Node's `child_process` and `stream` documentation.
+
 ---
 
 # Part 3: Where the brief stands, and challenges
 
 ## 3.0 Status of the original brief
 
-**Settled decisions.** No decision has been changed.
+**Settled decisions.** None has been reversed. One has been widened since: the runtime (D19, 2026-10-16).
 
 | Area | Status after research |
 |---|---|
-| Language/runtime | Holds. Bun 1.4.3 is current (2026-10-10). Watch out: Bun reads the `tsconfig.json` of the directory it's started from (R6.2, C7). It has built-in cron (R8), which bears on D6. |
+| Language/runtime | Holds. Bun 1.4.3 is current (2026-10-10). Watch out: Bun reads the `tsconfig.json` of the directory it's started from (R6.2, C7). It has built-in cron (R8), which bears on D6. **Widened by D19 (2026-10-16):** the server runs on Bun or Node, through two small packages that use Bun's built-ins on Bun (R14). |
 | Database | Holds. Everything the scheduler needs is reachable from TypeORM: `FOR UPDATE SKIP LOCKED`, partial unique indexes, `ON CONFLICT DO NOTHING`, `jsonb` and native `vector` columns (R6.3, R10). |
 | ORM | Holds, with conditions. TypeORM 1.1.2 is healthy, but its CI doesn't run on Bun. Four transpiler gotchas are verified on Bun 1.4.3, and the migration and minify items are [M] (R6.2). See C7 and S1. |
 | LLM client | Holds: the `openai` SDK covers the Responses API natively. Two qualifications. LM Studio should always run with token auth (C3, 4.9), so "a dummy key locally" becomes a real token. SIWC's namespace rule for function tools may need its own code path (C2, S4). The separate Known-risks premise, "stick to mainstream chat-completions", has shifted: on OpenAI, Chat Completions can't call tools on GPT-5.4+ with reasoning (R2.2), while the LM Studio pass on its own still recommends it there (R5.8). See C1; D1 is open. |
@@ -1012,6 +1062,10 @@ mecha-gremlin/                          public repo
 ├── packages/
 │   ├── core/                           @mecha-gremlin/core: stateless functions, publishable;
 │   │                                   `openai` as a peerDependency, plus one JSON Schema validator
+│   ├── yaml/                           @mecha-gremlin/yaml: Bun.YAML on Bun, the yaml package
+│   │                                   elsewhere (D19)
+│   ├── process/                        @mecha-gremlin/process: Bun.spawn on Bun,
+│   │                                   node:child_process elsewhere (D19)
 │   ├── app/                            entities, migrations, scheduler, loop, app tools, CLI `gremlin`
 │   │   ├── tsconfig.json               "extends": "../../tsconfig.json"; Bun reads the tsconfig of
 │   │   │                               the directory it starts in, not the file's nearest (R6.2)
@@ -1034,6 +1088,8 @@ mecha-gremlin/                          public repo
 Run gitleaks on the private repo too. If you'd rather version the secrets, encrypt the env files (sops/age) instead of committing them in plain text.
 
 `core` is one package with subpath exports (`@mecha-gremlin/core/turn`, `…/compaction`, and so on) rather than six micro-packages. The app imports `core` only through those public exports, so the boundary stays real.
+
+`yaml` and `process` are packages of their own (D19). Each adapts one thing to the runtime, so `core` stays free of runtime APIs and of the `yaml` dependency.
 
 ## 4.3 Core library (signatures)
 
@@ -1506,6 +1562,7 @@ The `migrate` service also runs `gremlin prune` on demand: `docker compose run -
 | D16 | Meaning of overlap `queue` | Coalesce (fire once after the active run) · a real depth-1 queue (needs two partial indexes) | **Coalesce** (4.8) | open |
 | D17 | Isolating skill secrets | Visible workspace-wide (documented) · per-task uid in the workspace | **Workspace-wide for now**; revisit with Q5. Per-task uids edge toward the non-goal | open |
 | D18 | Where the shell runs before M1 | Host shell (A) · host shell in a Seatbelt fence (A+) · workspace container through `docker exec` (B-lite) · C3's workspace and exec server, built early (B) | **B**, narrowly over B-lite (C12) | **decided 2026-10-15: A**, a host shell. D3 still governs M1 |
+| D19 | Which runtimes the server runs on | Bun only, declared in `engines` and checked at start-up · Bun or Node, through `@mecha-gremlin/yaml` and `@mecha-gremlin/process`, which use Bun's built-ins on Bun and Node's modules elsewhere (R14) | **Bun only**, declared and checked | **decided 2026-10-16: Bun or Node.** The tests run on both |
 
 ## Open questions
 
