@@ -37,6 +37,7 @@ The agent's next step is to use Agent Skills, starting with Microsoft's playwrig
 
 ## Impact
 
+- **Depends on `tests-on-bun`,** which runs the tests and mutation testing on Bun. The shell's process-control tests then run on the runtime production uses.
 - **Code:**
   - `packages/core/src`: new `skills` and `output` modules, exported by name.
   - `packages/server/src`: new `skills/` and `exec/` folders, `tools/shell.ts` and `tools/activate-skill.ts`; changes to `tools/read-file.ts`, `config/config.ts` and `main/`.

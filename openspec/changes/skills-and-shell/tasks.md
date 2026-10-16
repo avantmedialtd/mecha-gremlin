@@ -1,3 +1,5 @@
+This change builds on `tests-on-bun`, which runs the tests and mutation testing on Bun. Implement that first.
+
 ## 1. Core: skills (`skills`, `tool-calls`)
 
 - [ ] 1.1 Add `yaml` at its newest version (2.9.1 or later) to `packages/core`'s `dependencies`, and check that `bun.lock` holds a single copy. Update `tools.test.ts`'s package test to tool-calls' scenario "No schema library in core": it now expects exactly `['yaml', 'openai']`, dependencies first
@@ -111,7 +113,7 @@
   - every member of a process group whose leader was spawned during the test. The setup file records each spawned pid by wrapping `ChildProcess.prototype.spawn`.
 
   Signal 0 always passes.
-- [ ] 5.6 Tests with real processes under Vitest on Node, which run on macOS locally and on ubuntu in CI, for every `shell-tool` scenario:
+- [ ] 5.6 Tests with real processes under Vitest on Bun, which run on macOS locally and on ubuntu in CI, for every `shell-tool` scenario:
   - **the command:** the working directory, stdin, exit codes, a signal, a failed spawn, a deleted working directory, the cut-output line;
   - **the environment:** a variable set in the test's environment doesn't reach the command;
   - **the group:**

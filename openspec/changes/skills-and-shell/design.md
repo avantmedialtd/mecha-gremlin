@@ -18,7 +18,7 @@ The Brief already decides most of this change's shape:
 - **Parsing skills.** `yaml` 2.9.1 parsed the frontmatter of all five skills installed on this machine. That included a nested, flow-style `metadata` with trailing commas, a non-standard `homepage` key, and a 1,008-character description. With its default options, `yaml` sends warnings such as an unresolved tag to `process.emitWarning`, which prints to stderr.
 
 **Constraints:**
-- tests run in Vitest on Node, so process code uses `node:child_process`, not `Bun.spawn`;
+- tests and mutation testing run on Bun, the production runtime, once the `tests-on-bun` change is in, which this change builds on. `core`'s tests also run on Node, because `core` must work there;
 - Stryker's score must stay at 100%;
 - parameters are readonly and failures are `Result` values;
 - code lives in folders by concern, with no index files;
@@ -75,7 +75,7 @@ The Brief already decides most of this change's shape:
 - **Alternatives:**
   - YAML parsed in the server, with `core` taking the parsed object. That splits one job across two packages.
   - A hand-written parser. It would fail on quoting, block scalars and flow maps.
-  - `Bun.YAML`. `core` may not use `Bun` (lint), and tests run on Node.
+  - `Bun.YAML`. `core` may not use `Bun` (lint): it must work on Node too, and its tests run there as well.
   - The guide's retry for unquoted colons. None of the skills here needed it, and a skill that fails to parse is reported by name.
 
 **3. The catalog goes in the developer item, and a skill is activated with `activate_skill`.**
@@ -146,7 +146,7 @@ The Brief already decides most of this change's shape:
 - **Spawn:** `node:child_process`'s `spawn('bash', ['-c', command], { cwd: workDir, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })`:
   - `detached: true` gives the command a process group of its own, so one signal reaches everything it started that stayed in the group (R8). Ctrl-C's SIGINT goes to the terminal's foreground group and so misses it; decision 8 handles that.
   - stdin is `/dev/null`, so a command that reads input gets end-of-file instead of waiting (C3).
-  - `node:child_process`, not `Bun.spawn`, so the same code runs under Bun and under Vitest. Both runtimes behaved the same on every primitive used here in the review's experiments.
+  - `node:child_process` rather than `Bun.spawn`. It behaves the same on Bun and on Node for every primitive used here (the review's experiments), so M1's exec server can reuse the runner on either runtime.
   - The outcome settles once, on `error` or `exit`, never on `close` alone. Node fires `close` with code -2 after a spawn error.
 - **Environment, built from scratch, never from `process.env`.** Bun fills `process.env` from `.env` and the user's shell, and children inherit it (C12). bash is started with only:
   - from the CLI's own environment, when set: `PATH`, `HOME`, `USER`, `LOGNAME`, `TMPDIR`, `LANG` and `LC_ALL`;
@@ -188,7 +188,7 @@ The Brief already decides most of this change's shape:
   - commands run on this computer as the user, so it should stop only what it started. A playwright-cli browser closes with `playwright-cli close`, never `kill-all` or `close-all`, which reach other tools' browsers. The session's processes are stopped when it ends anyway.
 - **Alternatives:**
   - A persistent shell, as in OpenHands and SWE-ReX. It keeps `cd` and variables between calls, but needs prompt sentinels and process control of its own.
-  - `Bun.spawn`, which Vitest on Node can't run.
+  - `Bun.spawn`. With the tests on Bun it could be tested, but it would tie the runner to Bun, and `node:child_process` already does everything needed.
   - One pipe for both streams. That needs a wrapper around the command, and two sections read just as well.
   - A timeout the model chooses.
 
@@ -289,7 +289,7 @@ The Brief already decides most of this change's shape:
   - links, names that collide across roots and within one, a missing root;
   - YAML that can't be parsed, hidden files, a skill under a hidden directory.
 - **`read_file`:** absolute paths inside a skill directory; a link out of a skill directory; `.env` inside a skill directory.
-- **The shell runner and the sweep:** real processes under Vitest on Node, locally on macOS and on CI's ubuntu, with the limits passed in milliseconds. The rules:
+- **The shell runner and the sweep:** real processes under Vitest on Bun, the production runtime, locally on macOS and on CI's ubuntu, with the limits passed in milliseconds. The rules:
   - **Assert outcomes and signals, never elapsed time.** Timing assertions flake under Stryker's concurrent runs.
   - **Wait for helpers.** A helper process prints `ready` once it has installed its handler, and the test waits for that line before signalling it. Where a command must first run `trap` or print, the timeout stays well above process start-up, about 1 s.
   - **Tagged processes are `node`, never `sleep`,** because macOS hides an Apple binary's environment from `ps`. For example: `node -e "require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' }).unref()"`.
