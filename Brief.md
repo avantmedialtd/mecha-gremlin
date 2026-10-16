@@ -14,6 +14,7 @@
 >   - Anything still unverified is marked [M] or [L], or listed as a spike.
 > - **Since revision 2, 2026-10-12:** R11 records the first pass of spike S2, a tool loop on LM Studio. C1, Q3 and the spikes table point to it.
 > - **2026-10-15:** R12 records the research for loading skills and using the playwright-cli skill. C12 weighs where the shell runs before M1, and D18 records the choice. Q12–Q17 list the skills questions still to settle.
+> - **2026-10-16:** R13 records how the tests and mutation testing run on Bun, the runtime the app uses. The change `tests-on-bun` moves them there.
 
 ---
 
@@ -675,6 +676,24 @@ Researched on 2026-10-15 for the next step: loading skills, with enough tools to
 - **Trust:** project-level skills can come from an untrusted repository.
 
 **Sources:** the installed @playwright/cli 0.1.22 (README.md, skillCheck.js, and playwright-core's lib/tools/cli-client/ and coreBundle.js); agentskills.io/client-implementation/adding-skills-support; github.com/moby/moby/issues/9098; github.com/SWE-agent/mini-swe-agent and SWE-agent/SWE-ReX; github.com/OpenHands/OpenHands at 0.59.0; github.com/openai/codex issues #21292, #31560 and #34474, and codex-rs/exec-server; github.com/anthropics/sandbox-runtime and its issue #210; Docker Sandboxes (docker/docs, `sbx`); mcr.microsoft.com/playwright tags; Google's arm64 apt index; simonwillison.net/2025/Jun/16/the-lethal-trifecta.
+
+## R13. Running the tests and mutation testing on Bun
+
+All **[H]**, measured on 2026-10-16 with Bun 1.4.3, Node 26.11, Vitest 4.1.11 and Stryker 10.0.0. Vitest's and Stryker's command-line scripts start Node, so until now the tests ran on Node while the app runs on Bun.
+- **Vitest under Bun** (`bunx --bun vitest run`) runs the tests on Bun.
+  - One thing broke: inside Vitest, Bun's import of `zod` came back without its `z` export (258 of 260 exports), so 55 server tests failed.
+  - Plain Bun imports `zod` whole.
+  - Inlining `zod` in Vitest's config (`server.deps.inline`) made all 228 tests pass on Bun.
+- **Stryker under Bun** failed to load its Vitest runner: "First argument must be an Error object".
+  - Stryker loads Babel 8, whose stack-trace rewriter wraps Bun's native `Error.prepareStackTrace`.
+  - Vite then calls `Error.captureStackTrace` on an object that isn't an `Error`, which V8 accepts and Bun's native function rejects. This is oven-sh/bun#41151, open.
+  - A preload that installs a lenient `prepareStackTrace` first fixes it, in Stryker's process and in the test runners it forks.
+- **Stryker's Vitest runner** then found no "related" test files under Bun. `related: false` fixes that, and per-test coverage still picks each mutant's tests.
+- **Result:** the full mutation run on Bun killed or timed out all 879 mutants, a 100% score, in 30 s. On Node it scores the same in 36 s.
+- **A trap:** a Vitest config with an absolute `root` makes Stryker test the unmutated files. Every mutant "survives", and the score reads 0% while the run looks healthy.
+- **Vitest 5** (5.0.5) still breaks Stryker's Vitest runner: stryker-js#6210, open. The 4.x pin stays.
+
+**Sources:** github.com/oven-sh/bun/issues/41151; github.com/stryker-mutator/stryker-js/issues/6210; `@babel/core` 8.0.7's lib/errors/rewrite-stack-trace.js; Vite 8.3.4's bundled `CustomError`; zod 4.6.7's package exports.
 
 ---
 
