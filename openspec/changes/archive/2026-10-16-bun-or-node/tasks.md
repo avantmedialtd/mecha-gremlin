@@ -109,7 +109,7 @@
     - its comment says it's the one check that Node's own type stripping loads the server, because the tests go through Vite.
 
   Push with gh's credential, `git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push`, because the keychain's token can't push workflow files.
-- [ ] 6.2 CI passes on the branch: both jobs, with the mutation job at 100%
+- [x] 6.2 CI passes on the branch: both jobs, with the mutation job at 100%
 
 ## 7. Docs
 
@@ -130,7 +130,7 @@
 
 ## 8. After archiving
 
-- [ ] 8.1 After `openspec archive`, which is the archiving session's step, not the implementer's (design decision 9):
+- [x] 8.1 After `openspec archive`, which is the archiving session's step, not the implementer's (design decision 9):
   - replace the placeholder Purposes of `openspec/specs/yaml-parsing/spec.md` and `openspec/specs/process-spawning/spec.md`;
   - move "The tests run on Bun and on Node" to the top of `dev-checks`;
   - add to `model-hello`'s Purpose that the hello runs on Bun or Node;
