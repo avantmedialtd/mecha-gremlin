@@ -2,10 +2,8 @@
 
 ## Purpose
 
-The core library's pure contract for tool calling over the Responses API: tool definitions and their `FunctionTool` form, classifying a turn's output, validating call arguments, building call outputs, and turning chat history into request input.
-
+The core library's pure contract for tool calling over the Responses API: tool definitions and their `FunctionTool` form, classifying a model call's output, validating call arguments, building call outputs, and turning chat history into request input.
 ## Requirements
-
 ### Requirement: Tools are defined by a name, a description and a Standard Schema
 The `core` package SHALL provide a `Tool<Args>` type made of a `name`, a `description` and a `schema`. The schema SHALL be any object implementing both the Standard Schema v1 interface (`~standard.validate`) and the Standard JSON Schema interface (`~standard.jsonSchema`). `core` SHALL declare these interfaces itself, as types, and SHALL NOT depend on a schema library.
 
@@ -28,8 +26,8 @@ The `core` package SHALL provide a `Tool<Args>` type made of a `name`, a `descri
 - **WHEN** `toFunctionTool` converts a tool
 - **THEN** it calls the schema's `~standard.jsonSchema.input` with `target` `draft-07`
 
-### Requirement: Classify a completed turn's output
-`classify(output)` SHALL classify the output items of a completed turn as exactly one of:
+### Requirement: Classify a model call's output
+`classify(output)` SHALL classify the output items of a completed model call, the model's reply, as exactly one of:
 - `calls`, when there is at least one `function_call` item: every `function_call` item, in output order, whatever text the output also holds;
 - otherwise, `final`, when the text is non-empty after trimming whitespace. The text is the concatenation, in order, of every `message` item's `output_text` and `refusal` parts. The result carries the trimmed text;
 - otherwise, `empty`.

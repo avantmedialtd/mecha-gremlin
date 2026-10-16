@@ -3,9 +3,7 @@
 ## Purpose
 
 The server's logger: records with a level, a message and JSON fields, written to stdout, formatted by default and as JSON lines on request.
-
 ## Requirements
-
 ### Requirement: Log structured records to stdout
 The server SHALL log through a structured logger of its own, with no logging library. A record SHALL have:
 - a time;
@@ -44,8 +42,8 @@ Unless `LOG_FORMAT` is `json`, each record SHALL be written formatted for readin
 A message that spans several lines SHALL keep its first line in place. Each of its other lines SHALL follow the record's line, indented by four spaces, before any block. Lines SHALL be split at `\n` and at `\r\n`, so no line keeps a `\r` at its end.
 
 #### Scenario: A record with fields
-- **WHEN** an `info` record "turn" is logged at 07:15:51 local time with the fields `number: 1`, `seconds: 1.5` and `file: "a.txt"`
-- **THEN** the line is `07:15:51 INFO  turn number=1 seconds=1.5 file=a.txt`
+- **WHEN** an `info` record "model call" is logged at 07:15:51 local time with the fields `step: 1`, `seconds: 1.5` and `file: "a.txt"`
+- **THEN** the line is `07:15:51 INFO  model call step=1 seconds=1.5 file=a.txt`
 
 #### Scenario: A string that could be misread
 - **WHEN** a field's value is `What runs?`
@@ -56,8 +54,8 @@ A message that spans several lines SHALL keep its first line in place. Each of i
 - **THEN** the record's line is followed by `  text:` and each of the two lines, indented by four spaces
 
 #### Scenario: A multi-line message
-- **WHEN** an `error` record's message is "The turn failed." and "Try again." on two lines, with the field `tool: "read_file"`
-- **THEN** the record's line is `HH:MM:SS ERROR The turn failed. tool=read_file`, and the next line is `    Try again.`
+- **WHEN** an `error` record's message is "The model call failed." and "Try again." on two lines, with the field `tool: "read_file"`
+- **THEN** the record's line is `HH:MM:SS ERROR The model call failed. tool=read_file`, and the next line is `    Try again.`
 
 #### Scenario: Windows line breaks
 - **WHEN** a field's value is "one\r\ntwo"
@@ -88,3 +86,4 @@ With `LOG_FORMAT` set to `json`, each record SHALL be written as one line holdin
 #### Scenario: Whitespace around the log format
 - **WHEN** `LOG_FORMAT` is " json "
 - **THEN** the records are written as JSON
+

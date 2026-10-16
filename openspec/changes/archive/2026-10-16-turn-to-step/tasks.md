@@ -57,12 +57,12 @@
 
 ## 5. Checks
 
-- [ ] 5.1 Only the expected "turn"s remain. `grep -rnoiE '[a-z_]*turn[a-z_]*' packages README.md openspec/specs | grep -viE ':[a-z_]*return[a-z_]*$'` lists only:
+- [x] 5.1 Only the expected "turn"s remain. `grep -rnoiE '[a-z_]*turn[a-z_]*' packages README.md openspec/specs | grep -viE ':[a-z_]*return[a-z_]*$'` lists only:
   - the verb: "Turn on LM Studio's token auth", "turns on the type-aware rules" and "turns the mutant off" in the README, "a later turn of its event loop" in `spawn.test.ts`, and "turned into input", "turn a history", "turning chat history" and "turns into a different string" in the specs;
   - `MAX_TURNS`, in `config.ts`, its tests, `main.test.ts`' `SETTINGS`, the README's note and the `server` spec;
   - the three Purposes that 7.1 updates.
 - [x] 5.2 `bun run check` passes, and `bun run mutation` reaches 100%
-- [ ] 5.3 CI passes on the branch: both jobs, with the mutation job at 100%
+- [x] 5.3 CI passes on the branch: both jobs, with the mutation job at 100%
 
 ## 6. Live check (the session's)
 
@@ -74,7 +74,7 @@
 
 ## 7. After archiving (the session's)
 
-- [ ] 7.1 After `openspec archive`:
+- [x] 7.1 After `openspec archive`:
   - **Purposes:**
     - `agent-loop`: "The server's loop that alternates model calls and tool calls until the model answers, with its step limit, call ordering and failure handling.";
     - `model-call`: "The core library's contract for calling the model once over an OpenAI-compatible Responses endpoint: streamed, stateless by default, and returning the reply text and usage or a classified error as a value.";

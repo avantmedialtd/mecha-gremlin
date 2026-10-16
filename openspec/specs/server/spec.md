@@ -4,12 +4,12 @@
 
 The server entry point that chooses a model by provider (the model loaded in LM Studio by default, or a named model from any OpenAI-compatible service), has it carry out a task through the agent loop with a shell, `read_file` and skills, and logs the answer, with its configuration, its failure behaviour, and how it stops the session's processes. It runs on Bun, with `bun run server`, or on Node, with `bun run server:node`.
 ## Requirements
-### Requirement: Carry out a task and log the answer
+### Requirement: Carry out a task through the agent loop, and log the answer
 Running the server entry point, `bun run server [task…]` from the repository root, SHALL:
 1. choose the model to use;
 2. take the task from the arguments, joined with spaces. With no arguments, the task SHALL be "Use the playwright-cli skill to find the title of https://example.com";
 3. load the skills `SKILLS_PATH` lists (`skills`);
-4. run the agent loop, with a turn limit of `MAX_TURNS`, with:
+4. run the agent loop, with a step limit of `MAX_STEPS`, with:
    - the tools `read_file`, rooted at the working directory with the loaded skills' directories, then `shell`, in the working directory, then `activate_skill` when any skill is loaded;
    - a starting `developer` item that:
      - says the model carries out tasks on this computer with a shell and `read_file`;
@@ -20,7 +20,7 @@ Running the server entry point, `bun run server [task…]` from the repository r
 5. log the trimmed answer as an `info` record `answer` with the field `text`;
 6. stop the session's processes, and exit with code 0.
 
-Every turn SHALL go to the OpenAI-compatible Responses endpoint at `{MODEL_BASE_URL}/responses` with the chosen model and, when one is configured, `reasoning.effort`.
+Every model call SHALL go to the OpenAI-compatible Responses endpoint at `{MODEL_BASE_URL}/responses` with the chosen model and, when one is configured, `reasoning.effort`.
 
 #### Scenario: Default task
 - **WHEN** the server runs with no arguments
@@ -43,26 +43,26 @@ Every turn SHALL go to the OpenAI-compatible Responses endpoint at `{MODEL_BASE_
 - **THEN** the `developer` item and the `asking` record give that directory's real path, `read_file` reads `notes.txt` there, and `shell` runs its commands there
 
 #### Scenario: Answer after running a command
-- **WHEN** the first turn calls `shell` with `{"command":"echo 42"}`, and the second turn answers "\n\nIt printed 42."
+- **WHEN** the model's first reply calls `shell` with `{"command":"echo 42"}`, and its second answers "\n\nIt printed 42."
 - **THEN** the second request carries the command's output in a `function_call_output`, the `answer` record's `text` is "It printed 42.", and the exit code is 0
 
-#### Scenario: The turn limit comes from the settings
-- **WHEN** `MAX_TURNS` is 3, and every turn calls a tool
+#### Scenario: The step limit comes from the settings
+- **WHEN** `MAX_STEPS` is 3, and every reply calls a tool
 - **THEN** exactly 3 requests are sent
 
-### Requirement: Log each tool call and turn
+### Requirement: Log each model call and tool call
 The server SHALL log, through the structured logger:
 - when at least one skill is loaded, an `info` record `skills` with the field `names`, the loaded skills' names in sorted order;
 - the `skill not loaded` and `skill warning` records that loading the skills produces (`skills`);
-- before the first turn, an `info` record `asking` with the fields `model`, `baseUrl`, `run` (the session's run ID), `workDir` (the working directory's real path) and `task`;
-- as each turn completes, an `info` record `turn`. Its fields are `number`, `seconds` (rounded to a tenth) and, when the server reports them, `inputTokens`, `cachedTokens`, `outputTokens` and `reasoningTokens`;
-- then, for each of the turn's tool calls:
+- before the first model call, an `info` record `asking` with the fields `model`, `baseUrl`, `run` (the session's run ID), `workDir` (the working directory's real path) and `task`;
+- as each step completes, an `info` record `model call`. Its fields are `step`, the step's number; `inputTokens`, `cachedTokens`, `outputTokens` and `reasoningTokens`, when the server reports them; and `seconds`, the model call's, rounded to a tenth;
+- then, for each of the step's tool calls:
   - an `info` record `tool call` with the fields `tool` and `arguments`. The arguments are logged as JSON when they parse, and as the model sent them otherwise;
   - then an `info` record `tool result` with the fields `tool` and `bytes`, or a `warn` record `tool failed` with the fields `tool` and `error`.
 
 #### Scenario: Records of a tool round trip
-- **WHEN** no skill is loaded, the first turn calls `read_file` for `package.json`, and the second turn answers
-- **THEN** the records are, in order: `asking`, `turn` 1 with its token counts, `tool call` with `arguments` `{ "path": "package.json" }`, `tool result` with the output's size in bytes, `turn` 2, and `answer`
+- **WHEN** no skill is loaded, the model's first reply calls `read_file` for `package.json`, and its second answers
+- **THEN** the records are, in order: `asking`, `model call` with `step` 1 and its token counts, `tool call` with `arguments` `{ "path": "package.json" }`, `tool result` with the output's size in bytes, `model call` with `step` 2, and `answer`
 
 #### Scenario: The asking record
 - **WHEN** the run ID is a fresh random ID, `WORK_DIR` names a directory, and the task is "Say hi"
@@ -89,7 +89,7 @@ The server SHALL choose the model according to `MODEL_PROVIDER`.
 
 #### Scenario: No model configured, one loaded
 - **WHEN** `MODEL_PROVIDER` is `lmstudio`, `MODEL` is unset, and exactly one LLM instance, `prism-ml/bonsai-27b`, is loaded
-- **THEN** the turn is sent with model `prism-ml/bonsai-27b`
+- **THEN** the requests name the model `prism-ml/bonsai-27b`
 
 #### Scenario: Several models loaded
 - **WHEN** `MODEL_PROVIDER` is `lmstudio`, `MODEL` is unset, and two LLM instances are loaded
@@ -97,15 +97,15 @@ The server SHALL choose the model according to `MODEL_PROVIDER`.
 
 #### Scenario: Configured model is loaded
 - **WHEN** `MODEL_PROVIDER` is `lmstudio` and `MODEL` names a loaded instance id or a loaded model key
-- **THEN** the turn is sent with that model
+- **THEN** the requests name that model
 
 #### Scenario: Configured model is not loaded
 - **WHEN** `MODEL_PROVIDER` is `lmstudio` and `MODEL` names a model that has no loaded instance
-- **THEN** no turn is sent, an `error` record lists the loaded models and suggests `lms load <model>`, and the exit code is 1
+- **THEN** the model isn't called, an `error` record lists the loaded models and suggests `lms load <model>`, and the exit code is 1
 
 #### Scenario: No model loaded
 - **WHEN** `MODEL_PROVIDER` is `lmstudio` and no LLM instance is loaded
-- **THEN** no turn is sent, an `error` record explains that a model must be loaded (suggesting `lms load <model>`), and the exit code is 1
+- **THEN** the model isn't called, an `error` record explains that a model must be loaded (suggesting `lms load <model>`), and the exit code is 1
 
 #### Scenario: Embedding models are ignored
 - **WHEN** `MODEL_PROVIDER` is `lmstudio` and only an embedding model is loaded
@@ -113,9 +113,9 @@ The server SHALL choose the model according to `MODEL_PROVIDER`.
 
 #### Scenario: Another provider uses the named model
 - **WHEN** `MODEL_PROVIDER` is `openai` and `MODEL` is `gpt-test`
-- **THEN** the turn is sent with model `gpt-test`, and no request goes to `/api/v1/models`
+- **THEN** the requests name the model `gpt-test`, and no request goes to `/api/v1/models`
 
-### Requirement: Configuration from the environment, validated at start-up
+### Requirement: Read the configuration from the environment, and validate it at start-up
 The server SHALL read `MODEL_PROVIDER` (`lmstudio` or `openai`; default `lmstudio`), `MODEL_BASE_URL`, `MODEL_API_KEY`, `MODEL` and `MODEL_REASONING_EFFORT`, with these defaults per provider:
 
 | Variable | `lmstudio` | `openai` |
@@ -132,15 +132,17 @@ The server SHALL read `MODEL_PROVIDER` (`lmstudio` or `openai`; default `lmstudi
 It SHALL also read, whatever the provider:
 - `WORK_DIR`, the working directory of `read_file` and `shell`. It defaults to the current directory, and a relative path resolves against the current directory. It SHALL name an existing directory, and SHALL be used by its real path, with symbolic links resolved.
 - `SKILLS_PATH`, the skills roots (`skills`). When it's unset, no skill is loaded.
-- `MAX_TURNS`, the session's turn limit: a positive whole number written in decimal digits, defaulting to 30.
+- `MAX_STEPS`, the session's step limit: a positive whole number written in decimal digits, defaulting to 30.
+
+`MAX_TURNS`, the step limit's former name, SHALL be invalid whenever it is set, whatever its value, with an `error` record saying that it is now `MAX_STEPS`.
 
 #### Scenario: Defaults apply
 - **WHEN** none of the variables is set
-- **THEN** the provider is `lmstudio`, the base URL is `http://127.0.0.1:1234/v1`, the key is `lm-studio`, no model is configured, the reasoning effort is `none`, the working directory is the current directory, no skill is loaded, and the turn limit is 30
+- **THEN** the provider is `lmstudio`, the base URL is `http://127.0.0.1:1234/v1`, the key is `lm-studio`, no model is configured, the reasoning effort is `none`, the working directory is the current directory, no skill is loaded, and the step limit is 30
 
 #### Scenario: Another provider's defaults
 - **WHEN** `MODEL_PROVIDER` is `openai` and `MODEL_API_KEY` and `MODEL` are set
-- **THEN** the base URL is `https://api.openai.com/v1`, and the turn is sent without `reasoning`
+- **THEN** the base URL is `https://api.openai.com/v1`, and the requests carry no `reasoning`
 
 #### Scenario: Required settings are missing
 - **WHEN** `MODEL_PROVIDER` is `openai` and neither `MODEL_API_KEY` nor `MODEL` is set
@@ -160,11 +162,15 @@ It SHALL also read, whatever the provider:
 
 #### Scenario: Reasoning effort is passed through
 - **WHEN** `MODEL_REASONING_EFFORT` is `low`
-- **THEN** the turn is sent with `reasoning.effort` equal to `low`
+- **THEN** the requests carry `reasoning.effort` equal to `low`
 
-#### Scenario: An invalid turn limit
-- **WHEN** `MAX_TURNS` is `0`, `-1`, `2.5` or `lots`
-- **THEN** no network call is made, an `error` record names `MAX_TURNS`, and the exit code is 1
+#### Scenario: An invalid step limit
+- **WHEN** `MAX_STEPS` is `0`, `-1`, `2.5` or `lots`
+- **THEN** no network call is made, an `error` record names `MAX_STEPS`, and the exit code is 1
+
+#### Scenario: The step limit's former name
+- **WHEN** `MAX_TURNS` is set, with or without `MAX_STEPS`
+- **THEN** no network call is made, an `error` record says that `MAX_TURNS` is now `MAX_STEPS`, and the exit code is 1
 
 #### Scenario: A working directory that doesn't exist
 - **WHEN** `WORK_DIR` names a path that doesn't exist, or a file
@@ -174,20 +180,20 @@ It SHALL also read, whatever the provider:
 - **WHEN** `MODEL_PROVIDER` is `openai` with neither `MODEL_API_KEY` nor `MODEL` set, and `WORK_DIR` doesn't exist
 - **THEN** no network call is made, three `error` records name `MODEL_API_KEY`, `MODEL` and `WORK_DIR`, and the exit code is 1
 
-### Requirement: Actionable failures
+### Requirement: Actionable failure messages
 The server SHALL exit with code 1 and log an `error` record whose message names the cause and a next step, in each of these cases:
 - the model server is unreachable;
 - the server rejects the API key;
 - LM Studio's models endpoint returns an unexpected shape;
-- a turn fails;
-- the model is still calling tools when the session's turn limit is reached;
+- a model call fails;
+- the model is still calling tools when the session's step limit is reached;
 - the model gives no answer.
 
 No `answer` record SHALL be logged in these cases.
 
-When a turn fails, the message SHALL include the failure's detail, such as the server's own message, and its next step SHALL depend on why the turn failed:
+When a model call fails, the message SHALL include the failure's detail, such as the server's own message, and its next step SHALL depend on why the call failed:
 
-| The turn failed because | Next step |
+| The model call failed because | Next step |
 |---|---|
 | the model server is unreachable | with `lmstudio`, start LM Studio's server (`lms server start`) or set `MODEL_BASE_URL`; otherwise, check `MODEL_BASE_URL` |
 | the server rejected the API key (HTTP 401 or 403) | set `MODEL_API_KEY`, as for a key rejected at start-up |
@@ -196,7 +202,7 @@ When a turn fails, the message SHALL include the failure's detail, such as the s
 | the server rejected the request (any other HTTP 4xx) | check that `MODEL` and `MODEL_REASONING_EFFORT` suit the server |
 | the server failed (HTTP 5xx), or the response failed or broke off | try again; if it keeps failing, check the model server |
 | the response is incomplete | narrow the task |
-| the turn was aborted | run the command again |
+| the model call was aborted | run the command again |
 | anything else | try again; if it keeps happening, report it as a bug |
 
 #### Scenario: LM Studio not running
@@ -204,7 +210,7 @@ When a turn fails, the message SHALL include the failure's detail, such as the s
 - **THEN** the error says LM Studio isn't reachable at the base URL and suggests starting its server (for example `lms server start`), and the exit code is 1
 
 #### Scenario: LM Studio stops during the session
-- **WHEN** `MODEL_PROVIDER` is `lmstudio`, LM Studio lists a loaded model, and then the connection for the first turn is refused
+- **WHEN** `MODEL_PROVIDER` is `lmstudio`, LM Studio lists a loaded model, and then the connection for the first model call is refused
 - **THEN** the error is the same as when LM Studio isn't running: it says LM Studio isn't reachable at the base URL and suggests `lms server start`
 
 #### Scenario: Another provider is unreachable
@@ -219,20 +225,20 @@ When a turn fails, the message SHALL include the failure's detail, such as the s
 - **WHEN** `MODEL_PROVIDER` is `openai` and the Responses endpoint answers HTTP 401
 - **THEN** the error names `MODEL_API_KEY` without mentioning LM Studio, and the exit code is 1
 
-#### Scenario: Turn fails
-- **WHEN** a turn of the agent loop fails, for any of the reasons in the table
+#### Scenario: A model call fails
+- **WHEN** a model call of the agent loop fails, for any of the reasons in the table
 - **THEN** the error names the cause, includes the failure's detail and gives that reason's next step, no `answer` record is logged, and the exit code is 1
 
 #### Scenario: Rate limited
 - **WHEN** the Responses endpoint answers HTTP 429 with the message "slow down"
 - **THEN** the error says the server is limiting requests, includes "429 slow down", and says to wait a minute and try again
 
-#### Scenario: Turn limit reached
-- **WHEN** the model is still calling tools after the loop's last allowed turn
-- **THEN** the error says the model didn't answer within the session's turn limit, names its number of turns, and suggests a narrower task or a higher `MAX_TURNS`; no `answer` record is logged, and the exit code is 1
+#### Scenario: Step limit reached
+- **WHEN** the model is still calling tools after the loop's last allowed step
+- **THEN** the error says the model didn't answer within the session's step limit, names its number of steps, and suggests a narrower task or a higher `MAX_STEPS`; no `answer` record is logged, and the exit code is 1
 
 #### Scenario: No answer
-- **WHEN** a turn returns neither tool calls nor text
+- **WHEN** a reply holds neither tool calls nor text
 - **THEN** the error says the model gave no answer, no `answer` record is logged, and the exit code is 1
 
 ### Requirement: Run the server on Bun or on Node
@@ -290,4 +296,3 @@ The server SHALL await the shell's `dispose()` before it exits, whether the sess
 #### Scenario: The sweep can't run
 - **WHEN** the model answers, and the sweep can't list processes
 - **THEN** a `warn` record `cleanup failed` gives the reason, and the exit code is 0
-
