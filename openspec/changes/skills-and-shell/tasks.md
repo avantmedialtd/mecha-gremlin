@@ -1,24 +1,23 @@
-This change builds on `tests-on-bun`, which runs the tests and mutation testing on Bun. Implement that first.
+This change builds on `tests-on-bun` and `bun-or-node`. `tests-on-bun` runs the tests and mutation testing on Bun. `bun-or-node` adds `@mecha-gremlin/yaml` and `@mecha-gremlin/process`, and runs every test on Node too. Implement both first.
 
-## 1. Core: skills (`skills`, `tool-calls`)
+## 1. Core: skills (`skills`)
 
-- [ ] 1.1 Add `yaml` at its newest version (2.9.1 or later) to `packages/core`'s `dependencies`, and check that `bun.lock` holds a single copy. Update `tools.test.ts`'s package test to tool-calls' scenario "No schema library in core": it now expects exactly `['yaml', 'openai']`, dependencies first
-- [ ] 1.2 `packages/core/src/skills.ts`: `parseSkill(directoryName, text)` (design decision 2):
-  - the text must start with a `---` line, and the frontmatter ends at the next `---` line, with CRLF accepted;
-  - `parse(frontmatter, { logLevel: 'error' })`, which must give a mapping. The `''` mutant of `'error'` behaves the same, so it gets a `// Stryker disable next-line StringLiteral` comment with that reason;
+- [ ] 1.1 `packages/core/src/skills.ts`: `splitFrontmatter(text)` (design decision 2): the text must start with a `---` line, and the frontmatter ends at the next `---` line, with CRLF accepted. It returns the frontmatter's text and the trimmed body, or a failure when there is no frontmatter
+- [ ] 1.2 `readSkill(directoryName, frontmatter, body)`, which takes the parsed frontmatter as `unknown` (design decision 2):
+  - a mapping, not an array or `null`, or a failure;
   - a description that isn't blank, or a failure;
   - the name, falling back to the directory's name when it's missing, not a string or blank;
   - the warnings: that fallback, a name that differs from the directory's, a name over 64 characters, a description over 1,024 characters;
   - every other key ignored.
+
+  `core` gains no dependency.
 - [ ] 1.3 `renderCatalog(skills)`: the instruction (a skill's own files, by absolute path), then `<available_skills>` sorted by name, with `&`, `<` and `>` escaped (decision 3)
 - [ ] 1.4 `renderActivation(skill, files)`: takes the skill and every file path below its directory, relative to it. It returns the `skill_content` element:
   - the body;
   - the `Skill directory:` line, and the line saying paths to the skill's own files are relative to it;
   - inside `<skill_resources>`, the files sorted, without `SKILL.md` at the top and without any path that has a segment starting with `.`;
   - at most 100, then a line giving how many more files there are, hidden ones not counted.
-- [ ] 1.5 Unit tests for every `skills` scenario about `parseSkill`, the catalog and the activation text. Include:
-  - frontmatter in the shapes seen in real skills: a flow-style nested `metadata` with trailing commas, a `homepage` key, and a quoted description holding backticks and colons;
-  - a custom tag (`!thing`) and a collection used as a key, asserting with a spy that `process.emitWarning` isn't called.
+- [ ] 1.5 Unit tests for every `skills` scenario about `splitFrontmatter`, `readSkill`, the catalog and the activation text. `readSkill` gets parsed objects: a mapping, an array, `null`, a string, and a mapping with extra keys.
 
 ## 2. Core: capped output (`shell-tool`)
 
@@ -38,7 +37,7 @@ This change builds on `tests-on-bun`, which runs the tests and mutation testing 
 
 - [ ] 3.1 `packages/server/src/skills/skills.ts`: `loadSkills(skillsPath, cwd)` (decision 1):
   - splits on `:`, skips empty entries, and resolves each root against `cwd`;
-  - reads each root's subdirectories in sorted order, each `SKILL.md` with `parseSkill`;
+  - reads each root's subdirectories in sorted order, and each `SKILL.md` with `splitFrontmatter`, then `parseYaml` from `@mecha-gremlin/yaml/parse`, then `readSkill`. A `parseYaml` failure becomes the reason that the frontmatter isn't valid YAML, quoting the parser's message;
   - records each skill's directory by its real path;
   - leaves out a skill whose name is already taken.
 
@@ -51,6 +50,13 @@ This change builds on `tests-on-bun`, which runs the tests and mutation testing 
   - **roots:** a root holding a skill, entries that aren't skills, a relative root with empty entries, a blank `SKILLS_PATH`, a missing root, a root that is a file, a linked skill directory;
   - **names:** two roots that collide, and two directories in one root that declare the same name;
   - **rejected and warned:** a `SKILL.md` without frontmatter, frontmatter that isn't valid YAML, and a skill whose name differs from its directory;
+  - **frontmatter in the shapes seen in real skills,** through `parseYaml`:
+    - a flow-style nested `metadata` with trailing commas;
+    - a `homepage` key;
+    - a quoted description holding backticks and colons;
+    - a custom tag (`!thing`).
+
+    Spies show that `process.emitWarning` isn't called and nothing is written to stdout or stderr;
   - **activation:** a skill under a hidden directory, `.DS_Store` and `.git/config` left out, 150 files plus a `.git` of 500, a second activation, an unknown name (the schema's error), and the closed schema with its enum.
 
 ## 4. Server: `read_file` reads the skills' directories (`read-file-tool`)
@@ -72,13 +78,13 @@ This change builds on `tests-on-bun`, which runs the tests and mutation testing 
 - [ ] 5.1 `packages/server/src/exec/env.ts`: `commandEnv(parentEnv, runId)`. It returns exactly the copied variables that are set, the fixed values (`PLAYWRIGHT_MCP_IDLE_TIMEOUT` included), `GREMLIN_RUN_ID` and `PLAYWRIGHT_CLI_SESSION` (decision 5). Its test asserts the exact object
 - [ ] 5.2 `packages/server/src/exec/run.ts`: `runCommand(command, options)`. The options are `cwd`, `env`, `timeoutMs`, `graceMs`, `pipeWaitMs` and `captureBytes`. It:
   - checks the working directory first, and fails naming it when it's gone;
-  - spawns `bash -c` with `node:child_process`, `detached: true` and stdin ignored;
-  - settles once, on `error` or `exit`, never on `close` alone;
+  - spawns `bash -c` with `spawnProcess` from `@mecha-gremlin/process/spawn`, with `detached: true`. A failed start fails the outcome with the reason;
+  - waits on `exited`, never on the streams' end alone;
   - reads both streams into captures;
   - on timeout, sends SIGTERM to the group, then SIGKILL when the grace ends, even if bash has exited;
   - without a timeout, waits up to `pipeWaitMs` after bash exits, then SIGKILLs the group;
   - signals a group only when it is an integer above 1, through `process.kill`, ignoring `ESRCH`;
-  - destroys both streams and clears every timer before it returns;
+  - before it returns, cancels both streams' readers, clears every timer, then calls the subprocess's `unref()`;
   - resolves to `ok({ exitCode or signal, timedOut, cut, stdout, stderr })`, or `err(reason)`;
   - exposes a way to kill the running command's group and wait for it to end, for `dispose()`.
 - [ ] 5.3 `packages/server/src/exec/sweep.ts`:
@@ -86,7 +92,7 @@ This change builds on `tests-on-bun`, which runs the tests and mutation testing 
   - a pure `checkMatches(matches, ownPid, parentPid)`: refuses a pid of 1 or below, the CLI's own pid or its parent, and more than 32 matches;
   - a pure `descendants(listing, pids)`, from the same listing;
   - `sweep(runId, { graceMs })`:
-    - runs `ps axeww -o pid=,ppid=,pgid=,command=` with `maxBuffer` of 64 MiB and the environment `PATH` and `LC_ALL=C`;
+    - runs `ps axeww -o pid=,ppid=,pgid=,command=` with `spawnProcess`, not detached, in the environment `PATH` and `LC_ALL=C`, and reads its stdout whole;
     - sends SIGTERM, then polls every 50 ms until the grace ends;
     - SIGKILLs the survivors and their descendants' groups, but only groups above 1 that aren't the CLI's own;
     - skips `ESRCH` and `EPERM`;
@@ -110,17 +116,17 @@ This change builds on `tests-on-bun`, which runs the tests and mutation testing 
   - its own descendants;
   - processes carrying a run ID it registered;
   - the descendants of either, remembered from every listing it made;
-  - every member of a process group whose leader was spawned during the test. The setup file records each spawned pid by wrapping `ChildProcess.prototype.spawn`.
+  - every member of a process group whose leader was spawned during the test. The setup file records each spawned pid by wrapping `Bun.spawn`, when the runtime has it, and `ChildProcess.prototype.spawn`. `spawnProcess` uses the first on Bun and the second on Node.
 
   Signal 0 always passes.
-- [ ] 5.6 Tests with real processes under Vitest on Bun, which run on macOS locally and on ubuntu in CI, for every `shell-tool` scenario:
+- [ ] 5.6 Tests with real processes, which run on Bun and on Node, on macOS locally and on ubuntu in CI, for every `shell-tool` scenario:
   - **the command:** the working directory, stdin, exit codes, a signal, a failed spawn, a deleted working directory, the cut-output line;
   - **the environment:** a variable set in the test's environment doesn't reach the command;
   - **the group:**
     - the timeout, SIGTERM ignored;
     - a child that finishes its cleanup within the grace after bash has exited. End the command with `; true` so bash doesn't exec the child;
     - a background job that closes both pipes, a job holding a pipe;
-    - a process in a session of its own, with and without holding stdout. After the one holding stdout, both streams are destroyed, and its next write fails with `EPIPE`;
+    - a process in a session of its own, with and without holding stdout. After the one holding stdout, both streams are cancelled, and its next write fails with `EPIPE`;
   - **the cap:** large output and NUL bytes;
   - **`findRunProcesses`:** recorded `ps` output from macOS and from procps, with another run's ID that only starts with this one, and an `OLD_GREMLIN_RUN_ID`;
   - **the guard:** 33 matches, the CLI's own pid and its parent;
@@ -182,16 +188,18 @@ This change builds on `tests-on-bun`, which runs the tests and mutation testing 
     - LM Studio's token auth;
     - keys in `.env`, not on the command line, where a command can read them with `ps -E -p $PPID`. The OpenAI example keeps `MODEL_API_KEY` in `.env` and passes only `MODEL_PROVIDER=openai MODEL=gpt-5.5` inline;
   - **other sections:** what `read_file` reads now, the layout table, and the Stryker-disable count.
-- [ ] 7.2 `packages/server/package.json`'s `description`: the app carries out a task with a shell, `read_file` and skills
+- [ ] 7.2 `packages/server/package.json`:
+  - `description`: the app carries out a task with a shell, `read_file` and skills;
+  - the dependencies `@mecha-gremlin/yaml` and `@mecha-gremlin/process`, `workspace:*`. Run `bun install`.
 - [ ] 7.3 `.gitignore`: add `.playwright/` and `.playwright-cli/`
 
 ## 8. Verification
 
-- [ ] 8.1 `bun run check` passes: format, lint, type-check and tests
+- [ ] 8.1 `bun run check` passes: format, lint, type-check, and the tests on Bun and on Node
 - [ ] 8.2 `bun run mutation` reaches 100%. Where a mutant can't be caught, simplify the code, or disable it with a `// Stryker disable` comment and its reason
 - [ ] 8.3 CI passes on ubuntu, including the shell and sweep tests against procps' `ps`
 - [ ] 8.4 Against the local LM Studio, after recording the loaded model's context with `lms ps`:
-  - `bun run hello` answers the default task by reading `package.json`;
+  - `bun run hello` answers the default task by reading `package.json`, and so does `bun run hello:node`, on Node;
   - with `SKILLS_PATH=$(npm root -g)/@playwright/cli/skills` and a dedicated `WORK_DIR`, `bun run hello 'Use the playwright-cli skill to find the title of https://example.com'` activates the skill, runs `playwright-cli`, answers "Example Domain", and exits 0;
   - afterwards `pgrep -fl gremlin-<run>` prints nothing, where `<run>` is the `asking` record's `run`. Either the model closed the browser itself, or the log shows `stopped`;
   - Ctrl-C during a long `sleep` leaves no `sleep` running, and the exit code is 130;

@@ -5,14 +5,14 @@ The agent's next step is to use Agent Skills, starting with Microsoft's playwrig
 ## What Changes
 
 - **`core`: skills as pure functions** (Brief 4.3):
-  - `parseSkill` reads a SKILL.md's YAML frontmatter and body leniently, as the Agent Skills client guide recommends (Brief R12.7). It rejects a skill only when its frontmatter can't be parsed or it has no description, and warns about the rest.
+  - `splitFrontmatter` and `readSkill` read a SKILL.md leniently, as the Agent Skills client guide recommends (Brief R12.7). The server parses the frontmatter's YAML in between, with `@mecha-gremlin/yaml`. A skill is rejected only when its frontmatter is missing or can't be parsed, or it has no description; the rest gets warnings.
   - `renderCatalog` and `renderActivation` build the skills section of the developer item and the text `activate_skill` returns.
-  - `core` gains its first runtime dependency, `yaml`.
+  - `core` stays free of dependencies.
 - **`core`: capped command output.** A head-and-tail reducer keeps the start and end of a stream within a byte limit, cuts on UTF-8 character boundaries, and makes NUL bytes visible. It is a streaming form of Brief 4.3's `truncateMiddle` and `normalizeOutput`, without their `binary` flag for now.
 - **`server`: skills.**
   - Skills are loaded from the directories listed in `SKILLS_PATH`, earlier directories taking precedence. With it unset, no skill is loaded.
   - The developer item lists the loaded skills. An `activate_skill` tool, whose `name` is an enum of them, returns a skill's instructions, its directory and a list of its files.
-- **`server`: a `shell` tool, on the host** (D18). It runs `bash -c` in the working directory with C3's process control: a process group of its own, a timeout that kills the group, closed stdin, an environment built from scratch, and capped output. When the session ends, whether it answers, fails, gets Ctrl-C, or is sent SIGTERM or a hangup, every process the session started is stopped if the group kill or the run-ID sweep can reach it. That includes processes that left the group, such as playwright-cli's browser.
+- **`server`: a `shell` tool, on the host** (D18). It runs `bash -c` in the working directory, through `@mecha-gremlin/process`, with C3's process control: a process group of its own, a timeout that kills the group, closed stdin, an environment built from scratch, and capped output. When the session ends, whether it answers, fails, gets Ctrl-C, or is sent SIGTERM or a hangup, every process the session started is stopped if the group kill or the run-ID sweep can reach it. That includes processes that left the group, such as playwright-cli's browser.
 - **`server`: `read_file` also reads files inside the loaded skills' directories,** by absolute path, so the model can read a skill's references.
 - **BREAKING: the hello carries out a task instead of answering a question about a file.**
   - The command becomes `bun run hello [task…]`. With no task, it still asks what the `check` script in `package.json` runs.
@@ -33,16 +33,19 @@ The agent's next step is to use Agent Skills, starting with Microsoft's playwrig
 ### Modified Capabilities
 - `read-file-tool`: it may also read files inside the loaded skills' directories, by absolute path. Its other limits stay.
 - `model-hello`: it carries out a task with the shell, `read_file` and the skills, instead of answering a question about a file. It gains three settings, logs the skills it loaded, and stops the session's processes when it ends.
-- `tool-calls`: `core` may depend on `yaml`, which isn't a schema library. `core` still declares the Standard Schema interfaces itself.
 
 ## Impact
 
-- **Depends on `tests-on-bun`,** which runs the tests and mutation testing on Bun. The shell's process-control tests then run on the runtime production uses.
+- **Depends on `tests-on-bun` and `bun-or-node`.**
+  - `tests-on-bun` runs the tests and mutation testing on Bun.
+  - `bun-or-node` adds `@mecha-gremlin/yaml` and `@mecha-gremlin/process`, and runs every test on Node as well.
+
+  The server keeps running on both runtimes, and the shell's process-control tests run on both.
 - **Code:**
   - `packages/core/src`: new `skills` and `output` modules, exported by name.
   - `packages/server/src`: new `skills/` and `exec/` folders, `tools/shell.ts` and `tools/activate-skill.ts`; changes to `tools/read-file.ts`, `config/config.ts` and `main/`.
   - Tests for all of it, the README and `.gitignore`.
-- **Dependencies:** `yaml` 2.9 in `core`.
+- **Dependencies:** none outside the workspace. The server gains `@mecha-gremlin/yaml` and `@mecha-gremlin/process`.
 - **Security:** the shell runs as you, on the host (D18). A model steered by a web page can reach anything your account can, so `read_file`'s confinement no longer bounds what the agent can read. Its refusals stay as a guard on that tool alone.
   - **What building the environment from scratch does:** it keeps secrets out of what commands inherit and print by accident, such as environment dumps, daemons and logs.
   - **What it doesn't do:** stop a command from reading them. A command can read the hello's environment from its parent process, and `.env` is a readable file.

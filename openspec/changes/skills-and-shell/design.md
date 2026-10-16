@@ -15,13 +15,28 @@ The Brief already decides most of this change's shape:
   - Action commands such as `open`, `goto` and `click` print about 250 B, and write the page's snapshot to `.playwright-cli/page-….yml` in the working directory.
   - An explicit `snapshot` prints the whole tree to stdout: 48,250 bytes for Hacker News' front page. That's despite SKILL.md's comment that it saves to a file.
 - **An idle backstop.** The CLI sets its daemon's idle timeout from `PLAYWRIGHT_MCP_IDLE_TIMEOUT`, in milliseconds. The default is an hour.
-- **Parsing skills.** `yaml` 2.9.1 parsed the frontmatter of all five skills installed on this machine. That included a nested, flow-style `metadata` with trailing commas, a non-standard `homepage` key, and a 1,008-character description. With its default options, `yaml` sends warnings such as an unresolved tag to `process.emitWarning`, which prints to stderr.
-- **On Bun, where the tests now run** (`tests-on-bun`; checked on 2026-10-16 with Bun 1.4.3):
-  - Wrapping `ChildProcess.prototype.spawn` sees every child that `spawn` and `execFile` start, as on Node. The test-side safety net in decision 10 can rely on it.
-  - Inside Vitest, `yaml` keeps all its exports, so it needs no `server.deps.inline` entry, unlike `zod`. Its namespace differs from Node's only by the `module.exports` key Node adds to CommonJS modules imported from ESM.
+
+**YAML and processes come from `bun-or-node`,** which this change builds on (Brief R14, D19). The server runs on Bun or Node:
+- **`@mecha-gremlin/yaml`'s `parseYaml`** uses `Bun.YAML` on Bun and the `yaml` package on Node, and returns a `Result`.
+  - Both parsers gave equal values, keys in the same order, for the frontmatter of every skill installed on this machine. That included a nested, flow-style `metadata` with trailing commas, a non-standard `homepage` key, and a 1,008-character description.
+  - Both agree on everything frontmatter uses, a custom tag such as `!thing` included, which reads as plain text.
+  - Invalid YAML is a failure holding the parser's first line, which on Bun is terse: "YAML Parse error: Unexpected token".
+  - Neither writes to stdout or stderr.
+- **`@mecha-gremlin/process`'s `spawnProcess`** uses `Bun.spawn` on Bun and `node:child_process` on Node, with one shape on both, measured on both:
+  - with `detached: true`, the command leads a process group of its own;
+  - stdin is always empty, so a read gets end-of-file at once;
+  - the environment holds only what's passed, plus bash's own `PWD`, `SHLVL` and `_`;
+  - `exited` resolves to `{ exitCode, signal }`. When a signal ended bash, `signal` names it (for example `'SIGTERM'`) and `exitCode` is null;
+  - `exited` resolves as soon as bash exits, even while a background child holds the stdout pipe. Cancelling the stream's reader resolves at once, and closes the pipe, so the child's next write fails with `EPIPE`;
+  - once both streams are cancelled, `unref()` lets the hello exit.
+- **When bash can't be started, `spawnProcess` resolves to a failure:**
+  - a missing working directory gives a message that blames `bash`, on both runtimes;
+  - a missing executable gives a message naming it.
+- **Spawn hooks:** `Bun.spawn` is writable, and a wrapper put in its place sees every call. Wrapping `ChildProcess.prototype.spawn` likewise sees what `node:child_process` starts, on Bun and on Node.
 
 **Constraints:**
-- tests and mutation testing run on Bun, the production runtime, once the `tests-on-bun` change is in, which this change builds on. `core`'s tests also run on Node, because `core` must work there;
+- this change builds on `tests-on-bun` and `bun-or-node`: every test runs on Bun and on Node, and mutation testing runs on Bun;
+- the server runs on Bun or Node (D19). It parses YAML and spawns processes only through `@mecha-gremlin/yaml` and `@mecha-gremlin/process`. `core` stays free of `Bun` (lint);
 - Stryker's score must stay at 100%;
 - parameters are readonly and failures are `Result` values;
 - code lives in folders by concern, with no index files;
@@ -33,7 +48,7 @@ The Brief already decides most of this change's shape:
 - With `SKILLS_PATH` pointing at playwright-cli's skills, `bun run hello '<task>'` can carry out a browsing task: activate the skill, run `playwright-cli` commands, read what they print and the snapshot files they write, and answer.
 - Skills are loaded as the Agent Skills spec and client guide describe, leniently enough for skills written for other clients.
 - A host shell with C3's process control. When a session ends, whether by an answer, a failure, Ctrl-C, SIGTERM or a hangup, every process the group kill or the run-ID sweep can reach is stopped.
-- Everything is testable without a model server. The shell is tested with real processes, on the Mac and on CI's ubuntu, without a test that can hurt the developer's own processes, even under mutation.
+- Everything is testable without a model server. The shell is tested with real processes, on Bun and on Node, on the Mac and on CI's ubuntu, without a test that can hurt the developer's own processes, even under mutation.
 
 **Non-Goals:**
 - **The workspace container** (C3, D3). It comes in M1, and the process-control code moves into its exec server then.
@@ -60,25 +75,33 @@ The Brief already decides most of this change's shape:
   - A copy made with `playwright-cli install --skills`, which goes stale.
   - The `skills:` list of a TASK.md (4.7), which needs tasks first.
 
-**2. `core` parses SKILL.md leniently.**
-- **`parseSkill(directoryName, text)`** returns a `Result`. It holds `{ name, description, body, warnings }`, or the reason the skill can't be used.
-  1. The text must start with a `---` line, and the frontmatter ends at the next `---` line. CRLF line endings are accepted. Without frontmatter, the skill can't be used.
-  2. The frontmatter is parsed with `yaml`'s `parse(frontmatter, { logLevel: 'error' })`, and must be a mapping. Otherwise the skill can't be used, and the reason quotes the parser's first line.
-     - With its default `logLevel`, `yaml` sends warnings to `process.emitWarning`, which prints to stderr, and `core` must not write there (model-turn).
-     - `'silent'` would also stop errors from throwing.
-     - Under `'error'`, an unresolved tag such as `!thing` simply reads as a string.
-  3. `description` must be a string that isn't blank once trimmed; otherwise the skill can't be used. The guide treats a description as essential, because it's all the model sees before activation.
-  4. `name` is the trimmed string. When it's missing, not a string, or blank, the directory's name is used, with a warning. A name that differs from the directory's, or is longer than 64 characters, gets a warning and is used anyway.
-  5. A description longer than 1,024 characters gets a warning and is used whole.
-  6. The body is the text after the closing `---`, trimmed.
-  7. Every other key is ignored: `license`, `compatibility`, `metadata`, `allowed-tools` and any unknown one. `allowed-tools` would need a permission system, and per-skill settings come later.
+**2. Reading a SKILL.md: `core` splits and checks it, the server parses its YAML with `@mecha-gremlin/yaml`.**
+- **In `core`,** two pure functions, each returning a `Result`:
+  - **`splitFrontmatter(text)`:**
+    - the text must start with a `---` line, and the frontmatter ends at the next `---` line, with CRLF line endings accepted;
+    - it returns the frontmatter's text and the body, trimmed;
+    - without frontmatter, the skill can't be used.
+  - **`readSkill(directoryName, frontmatter, body)`:** takes the parsed frontmatter as `unknown`, and returns `{ name, description, body, warnings }` or the reason the skill can't be used:
+    1. the frontmatter must be a mapping: a plain object, not an array or `null`;
+    2. `description` must be a string that isn't blank once trimmed. The guide treats a description as essential, because it's all the model sees before activation;
+    3. `name` is the trimmed string. When it's missing, not a string or blank, the directory's name is used, with a warning. A name that differs from the directory's, or is longer than 64 characters, gets a warning and is used anyway;
+    4. a description longer than 1,024 characters gets a warning and is used whole;
+    5. every other key is ignored: `license`, `compatibility`, `metadata`, `allowed-tools` and any unknown one. `allowed-tools` would need a permission system, and per-skill settings come later.
+- **In the server,** skill loading (decision 1) reads each SKILL.md, then:
+  1. splits it with `splitFrontmatter`;
+  2. parses the frontmatter with `parseYaml` from `@mecha-gremlin/yaml/parse`. A failure means the skill can't be used, and the reason says the frontmatter isn't valid YAML, quoting the parser's message;
+  3. checks the result with `readSkill`.
+- **Why `@mecha-gremlin/yaml`:**
+  - it uses each runtime's parser, `Bun.YAML` on Bun, behind one `Result`, and the server runs on both (D19);
+  - both parsers read every real skill here, the awkward ones included, and agree on everything frontmatter uses (Context);
+  - it writes nothing to stdout or stderr.
+- **Why the checks stay in `core`:** they're pure, data in and data out, and Brief 4.3 puts skill parsing there. `core` can't use `Bun` (lint), because it must also work on Node. So `core` takes the parsed object and stays free of dependencies, `yaml` included.
 - **Why lenient:** the client guide asks for it (R12.7), and real skills stray from the spec. `browser-use` here has a nested `metadata` and a `homepage` key.
-- **Why in `core`:** it's pure, data in and data out, and Brief 4.3 puts `parseSkill` there.
-- **`yaml` becomes `core`'s first runtime dependency.** It has no dependencies of its own, runs anywhere `core` does, and is at its newest version, 2.9.1. tool-calls' "no schema library" scenario now allows it by name.
 - **Alternatives:**
-  - YAML parsed in the server, with `core` taking the parsed object. That splits one job across two packages.
-  - A hand-written parser. It would fail on quoting, block scalars and flow maps.
-  - `Bun.YAML`. `core` may not use `Bun` (lint): it must work on Node too, and its tests run there as well.
+  - The `yaml` package, with all the parsing in `core`, the first version of this design. It made `yaml` `core`'s first runtime dependency. `@mecha-gremlin/yaml` now holds it, with the options that keep its warnings off stderr.
+  - `Bun.YAML` called from the server, the second version. It tied the server to Bun.
+  - All of the reading in the server. The checks are pure and belong in `core`.
+  - A hand-written YAML parser. It would fail on quoting, block scalars and flow maps.
   - The guide's retry for unquoted colons. None of the skills here needed it, and a skill that fails to parse is reported by name.
 
 **3. The catalog goes in the developer item, and a skill is activated with `activate_skill`.**
@@ -145,13 +168,16 @@ The Brief already decides most of this change's shape:
 **5. `shell` runs `bash -c` on the host, with C3's process control.**
 - **Schema:** `z.strictObject({ command: z.string() })`. The model can't choose a timeout. Strict mode would need a required, nullable field, and nothing in this change needs more than the fixed limit.
 - **Limits are parameters:** `createShell` takes `limits`, made of `timeoutMs`, `graceMs`, `pipeWaitMs` and `captureBytes`, which default to 120 s, 2 s, 1 s and 32 KiB. The description, the `timed out after N s` line and `dispose()`'s grace all come from them, so tests can use milliseconds.
-- **Before spawning,** the runner checks that the working directory still exists. If it doesn't, the outcome fails with an error naming the directory. Otherwise both runtimes would report `spawn bash ENOENT`, which reads as if bash were missing.
-- **Spawn:** `node:child_process`'s `spawn('bash', ['-c', command], { cwd: workDir, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })`:
+- **Before spawning,** the runner checks that the working directory still exists. If it doesn't, the outcome fails with an error naming the directory. Otherwise the spawn would fail with a message that blames `bash`, on either runtime (Context).
+- **Spawn:** `spawnProcess(['bash', '-c', command], { cwd: workDir, env, detached: true })` from `@mecha-gremlin/process/spawn`, which uses `Bun.spawn` on Bun and `node:child_process` on Node:
   - `detached: true` gives the command a process group of its own, so one signal reaches everything it started that stayed in the group (R8). Ctrl-C's SIGINT goes to the terminal's foreground group and so misses it; decision 8 handles that.
   - stdin is `/dev/null`, so a command that reads input gets end-of-file instead of waiting (C3).
-  - `node:child_process` rather than `Bun.spawn`. It behaves the same on Bun and on Node for every primitive used here (the review's experiments), so M1's exec server can reuse the runner on either runtime.
-  - The outcome settles once, on `error` or `exit`, never on `close` alone. Node fires `close` with code -2 after a spawn error.
-- **Environment, built from scratch, never from `process.env`.** Bun fills `process.env` from `.env` and the user's shell, and children inherit it (C12). bash is started with only:
+  - The subprocess has the same shape on both runtimes:
+    - the two streams are web `ReadableStream`s, read chunk by chunk into `core`'s capture;
+    - `exited` resolves when bash exits, and its `signal` names the signal when one ended it.
+  - When bash can't be started, `spawnProcess` resolves to a failure, and the outcome fails with the reason; nothing is signalled. The working-directory check above catches the misleading case.
+  - Neither runtime's own `timeout` or `maxBuffer` is used, and the package doesn't offer them. A runtime's timeout kills only the direct child, and `maxBuffer` kills the command rather than truncating its output (R8). The runner's own timer and capture do both jobs.
+- **Environment, built from scratch, never from `process.env`.** `process.env` holds the user's shell's environment, plus `.env`, which Bun reads by itself and `bun run hello:node` reads on Node. Children inherit it (C12). bash is started with only:
   - from the CLI's own environment, when set: `PATH`, `HOME`, `USER`, `LOGNAME`, `TMPDIR`, `LANG` and `LC_ALL`;
   - fixed values:
     - C3's list: `CI=1`, `PAGER=cat`, `GIT_PAGER=cat`, `GIT_TERMINAL_PROMPT=0` and `DEBIAN_FRONTEND=noninteractive`;
@@ -162,11 +188,11 @@ The Brief already decides most of this change's shape:
   bash adds its own variables, such as `PWD`, `SHLVL` and `_`, to what the command sees.
 - **Limits:**
   - **Timeout:** at `timeoutMs`, the group gets SIGTERM. Once the timeout has fired, the grace governs: the group gets SIGKILL when `graceMs` ends, even if bash has already exited, so a child shutting down cleanly gets the whole grace (C3).
-  - **After bash exits** (without a timeout), the runner waits up to `pipeWaitMs` for stdout and stderr to close, then SIGKILLs the whole group and returns what it read. A background child can't hang the call by holding a pipe (R10), and background jobs don't outlive the command.
+  - **After bash exits** (without a timeout), the runner waits up to `pipeWaitMs` for both readers to reach the end of their streams, then SIGKILLs the whole group, cancels both readers and returns what it read. `exited` resolves at once even while a background child holds a pipe (Context), so a background child can't hang the call by holding a pipe (R10), and background jobs don't outlive the command.
   - **A process that leaves the command's process group isn't stopped this way.** It can leave by starting a session of its own, as playwright-cli's daemon does, through job control such as `set -m`, or through a tool that makes its own group, such as GNU `timeout`.
   - When the session ends, the sweep stops it if `ps` shows its run ID (decision 7). On macOS, an Apple binary's run ID doesn't show.
-  - **Group kills** go only to an integer process group above 1. After a failed spawn, `child.pid` is undefined, and `-(pid ?? 0)` would be `kill(0)`, the CLI's own group.
-  - **Handles:** when the runner returns, it destroys both streams and clears every timer it set. A child that left the group may still hold a pipe, and the hello must not wait for it before exiting.
+  - **Group kills** go only to an integer process group above 1, through `process.kill(-pgid, signal)`. A wrong value such as 0 would reach the CLI's own group.
+  - **Handles:** when the runner returns, it has cancelled both readers, cleared every timer it set, and called the subprocess's `unref()`, in that order: `unref()` frees the hello only once both streams are cancelled (Context). A child that left the group may still hold a pipe, and the hello must not wait for it before exiting.
   - **Output cap:** each stream keeps its first 16 KiB and its last 16 KiB through `core`'s capture (decision 6). That's the same 32 KiB as `read_file`, so a typical page's snapshot arrives whole. Memory stays flat whatever the command writes, because the streams are read and the middle discarded, never buffered (C3).
 - **What the model gets back** is an `ok` outcome whatever the exit code:
   ```
@@ -191,7 +217,7 @@ The Brief already decides most of this change's shape:
   - commands run on this computer as the user, so it should stop only what it started. A playwright-cli browser closes with `playwright-cli close`, never `kill-all` or `close-all`, which reach other tools' browsers. The session's processes are stopped when it ends anyway.
 - **Alternatives:**
   - A persistent shell, as in OpenHands and SWE-ReX. It keeps `cd` and variables between calls, but needs prompt sentinels and process control of its own.
-  - `Bun.spawn`. With the tests on Bun it could be tested, but it would tie the runner to Bun, and `node:child_process` already does everything needed.
+  - `node:child_process` or `Bun.spawn` called directly, the earlier versions of this design. Each ties the runner to one API's events or fields, and `Bun.spawn` ties the server to Bun. `spawnProcess` gives the runner `Bun.spawn`'s `exited` promise and web streams on both runtimes.
   - One pipe for both streams. That needs a wrapper around the command, and two sections read just as well.
   - A timeout the model chooses.
 
@@ -216,7 +242,7 @@ The Brief already decides most of this change's shape:
      - Killing the running command resumes the session, which goes straight on to its next call or turn while the sweep is still running. Without the closed state, a new command could start after the listing and outlive the run.
      - The handler checks the state immediately before `spawn`, after its own awaits (the working-directory check and the `.playwright/` folder). A call that began before `dispose()` therefore can't start a command after it.
   2. **Kills the running command,** if there is one, with SIGKILL to its group, and waits for it to end. Its dying processes then don't show up in the listing, and the count is deterministic.
-  3. **Lists processes** in one call, `ps axeww -o pid=,ppid=,pgid=,command=`, with a large output limit (64 MiB) and a fixed environment (`PATH`, `LC_ALL=C`). A process matches when its line holds `GREMLIN_RUN_ID=<run id>`, preceded by a space and followed by a space or the end of the line. The match runs over the command line and the environment as `ps` prints them, so a process whose arguments name this run's ID matches too.
+  3. **Lists processes** in one call, `ps axeww -o pid=,ppid=,pgid=,command=`, run with `spawnProcess` in a fixed environment (`PATH`, `LC_ALL=C`) and not detached, its output read whole, however long. A process matches when its line holds `GREMLIN_RUN_ID=<run id>`, preceded by a space and followed by a space or the end of the line. The match runs over the command line and the environment as `ps` prints them, so a process whose arguments name this run's ID matches too.
   4. **Guards against a wide match.** The sweep signals nothing, and reports why, when a match is pid 1 or below, is the CLI's own process or its parent, or there are more than 32 matches. Stryker activates one mutant at a time, so a mutant that widens the matcher can't also remove this guard, which has tests of its own.
   5. **Signals.** Before signalling, it records each match's descendants from the same listing. It sends each match SIGTERM, then polls every 50 ms until they've all exited or the grace ends.
   6. **Escalates.** When the grace ends, it SIGKILLs the matches still running, and the process groups of their descendants still running. A daemon killed this way would otherwise leave Chrome, which leads its own group and hides its environment, beyond any sweep. A group kill goes only to a group above 1 that isn't the CLI's own, the runner's rule, so a parsing slip can't reach the hello's group or every process the user owns.
@@ -281,18 +307,20 @@ The Brief already decides most of this change's shape:
 
 **10. Tests.**
 - **`core`:**
-  - `parseSkill`'s cases, including frontmatter that makes `yaml` warn: a custom tag, and a collection used as a key. They assert that `process.emitWarning` isn't called;
+  - `splitFrontmatter`'s and `readSkill`'s cases, with parsed objects as `readSkill`'s input;
   - the catalog's order and escaping;
   - activation's wrapping, file list and cap;
   - the capture's boundaries, notes and decoding.
 
-  All are pure unit tests. `logLevel: 'error'` turned into `''` behaves the same, so that one mutant gets a `// Stryker disable next-line StringLiteral` comment with the reason.
+  All are pure unit tests.
 - **Skill loading and `activate_skill`:** real temporary directories with:
   - roots, relative and empty entries, a blank `SKILLS_PATH`;
   - links, names that collide across roots and within one, a missing root;
-  - YAML that can't be parsed, hidden files, a skill under a hidden directory.
+  - YAML that can't be parsed, hidden files, a skill under a hidden directory;
+  - frontmatter in the shapes real skills use, read through `parseYaml` and so through each runtime's parser: a nested flow-style `metadata` with trailing commas, a `homepage` key, a quoted description holding backticks and colons, and a custom tag. Nothing is written to stdout or stderr.
 - **`read_file`:** absolute paths inside a skill directory; a link out of a skill directory; `.env` inside a skill directory.
-- **The shell runner and the sweep:** real processes under Vitest on Bun, the production runtime, locally on macOS and on CI's ubuntu, with the limits passed in milliseconds. The rules:
+- **Every test runs on Bun and on Node** (`bun-or-node`), so the runner and the sweep are tested through both of `spawnProcess`'s implementations. Mutation testing runs on Bun.
+- **The shell runner and the sweep:** real processes, locally on macOS and on CI's ubuntu, with the limits passed in milliseconds. The rules:
   - **Assert outcomes and signals, never elapsed time.** Timing assertions flake under Stryker's concurrent runs.
   - **Wait for helpers.** A helper process prints `ready` once it has installed its handler, and the test waits for that line before signalling it. Where a command must first run `trap` or print, the timeout stays well above process start-up, about 1 s.
   - **Tagged processes are `node`, never `sleep`,** because macOS hides an Apple binary's environment from `ps`. For example: `node -e "require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' }).unref()"`.
@@ -308,7 +336,7 @@ The Brief already decides most of this change's shape:
     - its own descendants;
     - processes carrying a run ID it registered;
     - the descendants of either, remembered from every listing it made during the test;
-    - every member of a process group whose leader was spawned during the test. The file records each spawned child's pid by wrapping `ChildProcess.prototype.spawn`. That covers the runner's group kills after bash has exited, when the group's remaining members have been reparented and, on macOS, hide their environment.
+    - every member of a process group whose leader was spawned during the test. The file records each spawned child's pid by wrapping `Bun.spawn`, when the runtime has it, and `ChildProcess.prototype.spawn`. `spawnProcess` uses the first on Bun and the second on Node, and test helpers may use the second on either (both measured: Context). That covers the runner's group kills after bash has exited, when the group's remaining members have been reparented and, on macOS, hide their environment.
 
     Signal 0 delivers nothing, so the wrapper always lets it through. The shell and the sweep call `process.kill` through the `process` object, so the wrapper sees every signal.
 - **The hello:**
@@ -316,7 +344,7 @@ The Brief already decides most of this change's shape:
   - `WORK_DIR`, `SKILLS_PATH` and `MAX_TURNS` join `main.test.ts`' `SETTINGS`, so a developer's own settings can't leak into the tests;
   - the signal tests emit the signal on `process` while a turn is pending, stub `process.exit`, and wait for it with `vi.waitFor`;
   - a test checks that `process` ends with as many signal listeners as it started with.
-- **Live, by hand:** with LM Studio and the playwright-cli skill, a browsing task answers. Afterwards no process of the run's session is left.
+- **Live, by hand:** with LM Studio and the playwright-cli skill, a browsing task answers. Afterwards no process of the run's session is left. On Node, `bun run hello:node` answers the default task through the shell.
 - **Stryker:** 100%, as before. A `// Stryker disable` comment needs its reason above it.
 
 **11. Documentation.**
@@ -330,7 +358,7 @@ The Brief already decides most of this change's shape:
   - keys go in `.env`, not on the command line, where a command can read them with `ps -E -p $PPID`. The OpenAI example keeps `MODEL_API_KEY` in `.env` and passes only `MODEL_PROVIDER=openai MODEL=gpt-5.5` inline. Neither this nor a dedicated `WORK_DIR` stops a command that goes looking;
   - LM Studio's token auth;
   - the Stryker-disable count.
-- **`packages/server/package.json`'s description** stops saying the app asks about a file.
+- **`packages/server/package.json`:** its description stops saying the app asks about a file, and it gains the dependencies `@mecha-gremlin/yaml` and `@mecha-gremlin/process` (`workspace:*`).
 - **`.gitignore`** gains `.playwright/` and `.playwright-cli/`, for runs whose working directory is the repository.
 
 ## Risks / Trade-offs
@@ -354,7 +382,8 @@ The Brief already decides most of this change's shape:
 - **`bash -c` with a command over 128 KiB fails on Linux.** → That affects CI only. On the Mac the limit is 1 MiB, and a failed spawn comes back as an error.
 - **`ps` output differs between systems.** → The sweep matches only the `GREMLIN_RUN_ID=<id>` word, and its tests run on macOS and ubuntu.
 - **`.playwright/` and `.playwright-cli/` appear in the working directory,** which is the repository when `WORK_DIR` is unset. → Both are gitignored, and the README recommends a dedicated `WORK_DIR`.
-- **`yaml` is `core`'s first runtime dependency.** → It has no dependencies of its own and is at its newest version. tool-calls' package scenario names it.
+- **The shell's process control runs on two implementations,** `Bun.spawn` and `node:child_process`. → `bun-or-node` holds both to the same expectations, and the runner's and the sweep's own tests run on both runtimes.
+- **On Bun, YAML errors are terse** ("YAML Parse error: Unexpected token"). → The `skill not loaded` record names the file and says its frontmatter isn't valid YAML, which any YAML linter can then pinpoint.
 
 ## Migration Plan
 

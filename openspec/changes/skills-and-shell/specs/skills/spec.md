@@ -43,7 +43,12 @@ The server SHALL load skills from the skills roots that `SKILLS_PATH` lists, sep
 - **THEN** no skill is loaded
 
 ### Requirement: Read SKILL.md leniently
-`core` SHALL provide `parseSkill(directoryName, text)`, returning a `Result`. The text SHALL start with a `---` line, and its frontmatter SHALL end at the next `---` line; CRLF line endings SHALL be accepted. The frontmatter SHALL be parsed as YAML, without writing anything to stdout or stderr. `parseSkill` SHALL fail, with a reason, when:
+Reading a skill's SKILL.md SHALL take three steps:
+1. `core`'s `splitFrontmatter(text)` splits it. The text SHALL start with a `---` line, and its frontmatter SHALL end at the next `---` line; CRLF line endings SHALL be accepted.
+2. The server SHALL parse the frontmatter with `parseYaml` from `@mecha-gremlin/yaml/parse`, which writes nothing to stdout or stderr.
+3. `core`'s `readSkill(directoryName, frontmatter, body)` checks the parsed frontmatter.
+
+`splitFrontmatter` and `readSkill` SHALL return `Result`s. Reading SHALL fail, with a reason, when:
 - there is no frontmatter;
 - the frontmatter isn't valid YAML, or isn't a mapping;
 - `description` is missing, isn't a string, or is blank once trimmed.
@@ -58,7 +63,7 @@ Otherwise it SHALL succeed with:
   - a name longer than 64 characters;
   - a description longer than 1,024 characters.
 
-Every other key SHALL be ignored, `allowed-tools` included. When the server finds a skill that `parseSkill` rejects, it SHALL skip it with a `warn` record `skill not loaded`, giving the skill's path and the reason. For each warning about a skill it loads, it SHALL log a `warn` record `skill warning` with the fields `skill` and `warning`.
+Every other key SHALL be ignored, `allowed-tools` included. When the server finds a skill it can't read, it SHALL skip it with a `warn` record `skill not loaded`, giving the skill's path and the reason. For each warning about a skill it loads, it SHALL log a `warn` record `skill warning` with the fields `skill` and `warning`.
 
 #### Scenario: A skill as the spec describes it
 - **WHEN** the text is a `---` line, `name: pdf`, `description: Work with PDFs.`, a `---` line, then `# PDF` and a blank line, in the directory `pdf`
