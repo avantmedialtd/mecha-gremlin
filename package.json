@@ -7,14 +7,15 @@
     "type": "module",
     "scripts": {
         "hello": "bun packages/server/src/main/main.ts",
-        "test": "vitest run",
-        "test:watch": "vitest",
-        "mutation": "stryker run",
+        "test": "bunx --bun vitest run",
+        "test:watch": "bunx --bun vitest",
+        "test:node": "vitest run packages/core",
+        "mutation": "bun --bun --preload ./stryker.preload.ts node_modules/.bin/stryker run",
         "typecheck": "tsc --noEmit",
         "lint": "oxlint --deny-warnings",
         "format": "oxfmt",
         "format:check": "oxfmt --check",
-        "check": "bun run format:check && bun run lint && bun run typecheck && bun run test"
+        "check": "bun run format:check && bun run lint && bun run typecheck && bun run test && bun run test:node"
     },
     "devDependencies": {
         "@stryker-mutator/core": "^10.0.0",

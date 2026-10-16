@@ -87,16 +87,23 @@ MODEL_PROVIDER=openai MODEL_API_KEY=sk-… MODEL=gpt-5.5 bun run hello
 ## Develop
 
 ```sh
-bun run test           # unit tests (Vitest); no LM Studio needed. test:watch for watch mode
+bun run test           # unit tests (Vitest) on Bun; no LM Studio needed. test:watch for watch mode
+bun run test:node      # core's tests again, on Node
 bun run typecheck      # tsc --noEmit over the whole workspace
 bun run lint           # oxlint, with type information; warnings fail too
 bun run format         # oxfmt: 4-space indentation, single quotes; format:check only checks
-bun run check          # format:check, lint, typecheck and test, as CI would run them
-bun run mutation       # Stryker mutation testing, which fails below 100%; report in reports/mutation/
+bun run check          # format:check, lint, typecheck, test and test:node, as CI would run them
+bun run mutation       # Stryker mutation testing on Bun, which fails below 100%; report in reports/mutation/
 ```
 
 - **Formatting.** oxfmt formats code and config files. Markdown, `openspec/`, `.claude/` and `.opencode/` are excluded in `.oxfmtrc.json`, so prose documents and generated command files keep their layout.
-- **Tests run on Node.** Vitest runs the tests on Node, not Bun, so Bun-specific behaviour (decorators, `Bun.spawn`) needs checks run with `bun` itself.
+- **Tests run on Bun,** the runtime the app runs on, so server code can use Bun's APIs and still be tested.
+  - Vitest's and Stryker's command-line scripts start Node, so `package.json`'s scripts start them with `--bun`. A server test, `runtime.test.ts`, fails when the tests run on anything else.
+  - `core`'s tests also run on Node, with `bun run test:node`, because `core` is meant to be used from Node. That needs Node installed: without it, Bun stands in for `node`, and the tests run on Bun again.
+  - Three workarounds keep the tests and mutation testing working on Bun. Each is commented where it's applied:
+    - `vitest.config.ts` inlines `zod`: under Bun, Vitest's own import of `zod` comes back without its `z` export. The line can go once the tests pass on Bun without it.
+    - `bun run mutation` preloads `stryker.preload.ts`, for a Bun bug ([oven-sh/bun#41151](https://github.com/oven-sh/bun/issues/41151)) that otherwise stops Stryker loading its Vitest runner. The file and the `--preload` flag go once the bug is fixed.
+    - `stryker.config.mjs` gives Stryker's Vitest runner `related: false`: under Bun, it finds no test files related to the mutated files, so no test would run. Per-test coverage still picks the tests each mutant runs. The option can go once the runner finds those files under Bun.
 - **Lint rules beyond oxlint's defaults.** Every if/loop body needs braces (`curly`), and a `let` that is never reassigned must be a `const` (`prefer-const`). Functions are arrow functions assigned to a `const` (`func-style`, `prefer-arrow-callback`); a generator, which can't be an arrow, is a `function*` expression. A `const` can't be used before its line has run, so everything is defined before it's used (`no-use-before-define`): helpers come first, and a file reads bottom-up. Object types are `type` aliases, never interfaces (`typescript/consistent-type-definitions`).
 - **Functions never change their arguments.**
   - A parameter can't be reassigned, nor its properties assigned (`no-param-reassign`).
@@ -110,7 +117,7 @@ bun run mutation       # Stryker mutation testing, which fails below 100%; repor
   - Stryker fails below a 100% mutation score, so a new branch or message needs a test that would notice it changing.
   - A mutant that behaves exactly like the original code, or sits in code that can't run, is usually better removed by simplifying the code.
   - Where the code can't reasonably change, a `// Stryker disable next-line` comment turns the mutant off, with the reason on the line above. There are two: `main.ts`' final `throw`, and how far `read_file` reads.
-- **Vitest is pinned to 4.x.** Stryker's Vitest runner silently stops working on Vitest 5 (see `stryker.config.mjs`).
+- **Vitest is pinned to 4.x** until [stryker-js#6210](https://github.com/stryker-mutator/stryker-js/issues/6210) is fixed: Stryker's Vitest runner silently stops working on Vitest 5 (see `stryker.config.mjs`).
 - **Tests fake the app's globals.** The app reads the environment, `fetch`, the clock and `console` directly, with nothing injected. Tests fake them with `vi.stubEnv`, `vi.stubGlobal` and `vi.spyOn`, and Vitest undoes every fake after each test. Importing `main.ts` runs it, so its tests import it only after faking, and never statically.
 
 ## CI
@@ -118,8 +125,9 @@ bun run mutation       # Stryker mutation testing, which fails below 100%; repor
 GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) builds every pushed branch, and pull requests from forks. It runs two jobs:
 
 1. **Check and test:**
-   - a frozen install, then the format check, lint, typecheck and tests (failures are annotated on the PR);
+   - a frozen install, then the format check, lint and typecheck;
+   - the tests on Bun (failures are annotated on the PR), then `core`'s tests on Node;
    - `bun audit`, report only: the step shows as failed when there are advisories, but the job still passes.
-2. **Mutation testing:** once the checks pass, Stryker runs and uploads its HTML report as the `mutation-report` artifact. The job fails if any mutant survives.
+2. **Mutation testing:** once the checks pass, Stryker runs on Bun and uploads its HTML report as the `mutation-report` artifact. The job fails if any mutant survives. It sets up only Bun, not Node.
 
 Actions are pinned to commit SHAs, and there is deliberately no dependency cache shared between builds.

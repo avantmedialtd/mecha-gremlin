@@ -12,7 +12,10 @@ export default {
     // them apart; resolving the runner from the project root works with any install layout.
     plugins: [import.meta.resolve('@stryker-mutator/vitest-runner')],
     testRunner: 'vitest',
-    vitest: { configFile: 'vitest.config.ts' },
+    // Under Bun, the runner finds no test files related to the mutated files, so no test would
+    // run; this can go once it does. Per-test coverage still picks the tests each mutant runs.
+    // The dry run runs every test, including the server's runtime test, which imports no source.
+    vitest: { configFile: 'vitest.config.ts', related: false },
     coverageAnalysis: 'perTest',
     mutate: ['packages/*/src/**/*.ts'],
     reporters: ['clear-text', 'progress', 'html'],
