@@ -67,6 +67,19 @@
             }
         },
         {
+            "files": ["packages/yaml/src/**", "packages/process/src/**"],
+            "rules": {
+                "no-console": "error",
+                "no-restricted-globals": [
+                    "error",
+                    {
+                        "name": "process",
+                        "message": "The runtime packages report only through their results, and a spawned process gets only the environment it's given: no env, stdout or stderr."
+                    }
+                ]
+            }
+        },
+        {
             "files": ["packages/*/test/**"],
             "rules": {
                 "typescript/no-unsafe-type-assertion": "off"

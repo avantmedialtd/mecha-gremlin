@@ -1,18 +1,18 @@
 ## 1. `@mecha-gremlin/yaml` (`yaml-parsing`)
 
-- [ ] 1.1 `packages/yaml`:
+- [x] 1.1 `packages/yaml`:
   - `package.json`: `@mecha-gremlin/yaml`, version `0.0.0`, a description, `"type": "module"`, exports `"./*": "./src/*.ts"`, and the dependencies `@mecha-gremlin/core` (`workspace:*`) and `yaml` (`^2.9.1`, the newest);
   - `tsconfig.json`, extending the root's like `core`'s.
 
   Run `bun install`, which updates `bun.lock`.
-- [ ] 1.2 `src/parse.ts` (design decisions 2 and 3):
+- [x] 1.2 `src/parse.ts` (design decisions 2 and 3):
   - `parseYamlWithBun(text)`: `Bun.YAML.parse`;
   - `parseYamlWithPackage(text)`: `parse(text, { logLevel: 'error', uniqueKeys: false, merge: true })` from `yaml`.
     - A comment above the options says why each is there.
     - The `'error'` line carries `// Stryker disable next-line StringLiteral`, and the comment above it says why: `''` behaves the same, because only `'silent'` stops errors.
   - one helper, shared by both, turns what was thrown into the failure's message: an `Error`'s message or any other value's text, its first line, without a trailing colon;
   - `chooseParser(globals)` and `parseYaml(text)`, which calls `chooseParser(globalThis)` on every call.
-- [ ] 1.3 `test/parse.test.ts`, covering every `yaml-parsing` scenario:
+- [x] 1.3 `test/parse.test.ts`, covering every `yaml-parsing` scenario:
   - **Each implementation:** the expectations are written once, as a function of the implementation, and run for each. `parseYamlWithBun`'s run sits under `describe.runIf(typeof Bun !== 'undefined')`.
   - **The choice:**
     - `chooseParser({ Bun: {} })` and `chooseParser({})`;
@@ -24,10 +24,10 @@
 
 ## 2. `@mecha-gremlin/process` (`process-spawning`)
 
-- [ ] 2.1 `packages/process`:
+- [x] 2.1 `packages/process`:
   - `package.json`: `@mecha-gremlin/process`, version `0.0.0`, a description, `"type": "module"`, exports `"./*": "./src/*.ts"`, and the dependency `@mecha-gremlin/core` (`workspace:*`);
   - `tsconfig.json`, extending the root's.
-- [ ] 2.2 `src/spawn.ts` (design decision 4):
+- [x] 2.2 `src/spawn.ts` (design decision 4):
   - the types `SpawnOptions` (`cwd`, `env`, `detached`), `Exit` (`exitCode`, and `signal` as text or null) and `Subprocess`;
   - `argv` typed as a non-empty list, the program first;
   - **`spawnWithBun`:** `Bun.spawn([...argv], …)` with stdin `'ignore'` and both outputs piped. A throw becomes the failure. `exited` maps `exitCode`, and `signal` from `signalCode === null ? null : String(signalCode)`;
@@ -39,7 +39,7 @@
     - `unref()` calls the child's `unref()`.
   - one helper, shared by both, turns what was thrown or emitted into the failure's message: an `Error`'s message, or any other value's text;
   - `chooseSpawner(globals)`, and `spawnProcess(argv, options)`, which calls `chooseSpawner(globalThis)` on every call.
-- [ ] 2.3 `test/spawn.test.ts`, covering every `process-spawning` scenario:
+- [x] 2.3 `test/spawn.test.ts`, covering every `process-spawning` scenario:
   - **Each implementation:** the expectations are written once and run for each, `spawnWithBun`'s under `describe.runIf(typeof Bun !== 'undefined')`.
   - **The choice:**
     - `chooseSpawner({ Bun: {} })` and `chooseSpawner({})`;
@@ -50,7 +50,7 @@
   - **Group kills:** a helper signals a group only when its id is above 1, it was spawned by the test, and `ps -o pgid= -p <pid>` shows it leading its group. An `afterEach` ends any group a test left running.
   - **Delegation, with spies:** `unref()` calls the Bun subprocess's `unref()`, through a wrapper on `Bun.spawn`, and the child process's, through `ChildProcess.prototype.unref`.
   - **Quiet:** spies on `process.emitWarning`, `process.stdout.write` and `process.stderr.write` show a failed start writes nothing.
-- [ ] 2.4 `test/unref-script.ts`, not a test file itself:
+- [x] 2.4 `test/unref-script.ts`, not a test file itself:
   - takes `bun` or `node` as its argument;
   - spawns `sleep 5` with that implementation, with `detached` true;
   - cancels both streams, calls `unref()`, prints the pid, and returns.
@@ -63,32 +63,32 @@
 
 ## 3. Lint
 
-- [ ] 3.1 `.oxlintrc.json`: an override for `packages/yaml/src/**` and `packages/process/src/**` that bans `console` and the `process` global.
+- [x] 3.1 `.oxlintrc.json`: an override for `packages/yaml/src/**` and `packages/process/src/**` that bans `console` and the `process` global.
   - The message for `process` says these packages report only through their results, and a spawned process gets only the environment it's given.
   - If `prefer-readonly-parameter-types` flags Bun's or Node's types, allow them by name, as `bun-types`' are now.
 
 ## 4. Tests on both runtimes (`dev-checks`)
 
-- [ ] 4.1 `package.json` scripts:
+- [x] 4.1 `package.json` scripts:
   - `test`: `TEST_RUNTIME=bun bunx --bun vitest run`;
   - `test:watch`: `TEST_RUNTIME=bun bunx --bun vitest`;
   - `test:node`: `TEST_RUNTIME=node vitest run`, the whole suite;
   - `mutation`: `TEST_RUNTIME=bun bun --bun --preload ./stryker.preload.ts node_modules/.bin/stryker run`;
   - `hello:node`: `node --env-file-if-exists=.env packages/server/src/main/main.ts`.
-- [ ] 4.2 `packages/server/test/runtime.test.ts`: the tests run on the runtime `TEST_RUNTIME` names.
+- [x] 4.2 `packages/server/test/runtime.test.ts`: the tests run on the runtime `TEST_RUNTIME` names.
   - When `TEST_RUNTIME` is unset or names something else, the test fails, saying to run the tests with `bun run test` or `bun run test:node`.
   - When it names the other runtime, the message names both.
   - Its comment keeps the reason: Vitest's and Stryker's command-line scripts name Node in their shebang, so a script that stops overriding it would quietly change the runtime.
-- [ ] 4.3 The test runs:
+- [x] 4.3 The test runs:
   - `bun run test` passes, with no test skipped;
   - `bun run test:node` runs every package's tests on Node, reports only the Bun-only tests as skipped, and passes;
   - the runtime test fails with `TEST_RUNTIME` unset (`bunx --bun vitest run packages/server/test/runtime.test.ts`), and with the other runtime's name.
-- [ ] 4.4 `bun run mutation` reaches 100%, and the report shows killed mutants in both new packages.
+- [x] 4.4 `bun run mutation` reaches 100%, and the report shows killed mutants in both new packages.
 
 ## 5. The server on Node (`model-hello`)
 
-- [ ] 5.1 `packages/server/package.json`: `"engines": { "bun": ">=1.4.3", "node": ">=26" }`
-- [ ] 5.2 Try `bun run hello:node`. Never write, move or delete a `.env` in the repository: a developer's own may be there.
+- [x] 5.1 `packages/server/package.json`: `"engines": { "bun": ">=1.4.3", "node": ">=26" }`
+- [x] 5.2 Try `bun run hello:node`. Never write, move or delete a `.env` in the repository: a developer's own may be there.
   - **No `.env`:** with `MODEL_BASE_URL=http://127.0.0.1:9/v1`:
     - stderr notes that `.env` wasn't found;
     - an `error` record says LM Studio can't be reached;
@@ -99,7 +99,7 @@
 
 ## 6. CI
 
-- [ ] 6.1 `.github/workflows/ci.yml`:
+- [x] 6.1 `.github/workflows/ci.yml`:
   - the `NODE_VERSION` comment says Node runs every test again, and starts the hello;
   - the comment on `bun run test:node` says the whole suite runs on Node, since the server runs there too;
   - **a new step after it, "Start the hello on Node":**
@@ -113,7 +113,7 @@
 
 ## 7. Docs
 
-- [ ] 7.1 README:
+- [x] 7.1 README:
   - **the layout table:** `packages/yaml` and `packages/process`, and what each uses on each runtime. "Neither package has index files" becomes "No package has index files";
   - **Prerequisites:** Node 26 or later, for `bun run hello:node`, `bun run test:node` and so `bun run check`;
   - **Run:** `bun run hello:node`;
