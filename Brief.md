@@ -757,7 +757,7 @@ All **[H]**, measured on 2026-10-16 with Bun 1.4.3, Node 26.11 and `yaml` 2.9.1,
 
 ## R15. Turns, steps and loop limits
 
-Two research agents read each project's docs and source on 2026-10-16, for C8 and D9, and quoted them. No independent fact-check has re-verified them yet. The questions: is one model request what others call a turn, and what do other agent loops do at their limit?
+Two research agents read each project's docs and source on 2026-10-16, for C8 and D9, and quoted them. No independent fact-check has re-verified them yet. R15.3 was measured on the development Mac. The questions: is one model request what others call a turn, and what do other agent loops do at their limit?
 
 **R15.1 Two meanings of "turn".**
 - **The whole exchange:** one user input, and everything the agent does until it answers. **[H]**
@@ -799,6 +799,13 @@ Two research agents read each project's docs and source on 2026-10-16, for C8 an
   - **the last step as it is,** which may hold no text: the AI SDK, Mastra;
   - **one more call without tools,** so the user still gets an answer: smolagents, Microsoft Agent Framework, AutoGen. LangChain's middleware and OpenAI's error handler return a canned or supplied output instead. C8's finalize turn is this pattern.
 - **Where the session stands.** It counts model requests, as OpenAI's Agents SDK does. With `MAX_TURNS` at N, it sends at most N requests and runs the calls of the first N − 1. Request N's calls don't run: each gets an output saying so, and the run fails without an answer. Of the loops above, only `create_react_agent` also drops them, and it answers instead of failing. In a live check, a Hacker News task (stories 10 to 12) took 29 turns, against the default limit of 30 (hello-to-server's design).
+
+**R15.3 LM Studio's `tool_choice:"none"` on `/v1/responses`.** **[H]** for one model: measured on 2026-10-16 with LM Studio 0.4.26 and `ornith-1.5-9b-mlx` (Qwen3.5 architecture, MLX, 4-bit). Each of three runs sent four non-streaming requests carrying the server's two tools and reasoning effort `none`.
+- **Accepted, by dropping the tools.** The same input counted 177–181 input tokens under `"none"` and 511–515 under `"auto"`: the tool definitions leave the prompt.
+- **So the KV prefix is lost.** Under `"none"`, `cached_tokens` was 0 every time. Under `"auto"`, the same input reused the 256-token chunk cached by the request before. A finalize turn sent with `"none"` would prefill the whole history again, the run's largest prompt.
+- **It doesn't stop a model that wants a tool.** Asked to read a file under `"none"`, the model wrote a call anyway, in its own syntax and with no definitions to follow, and LM Studio failed the request with HTTP 500 "Failed to parse tool call" in 2 of 3 runs. The third answered in text.
+- **An instruction does.** After a call whose output said it wasn't run, this user message got a text answer in 3 of 3 runs, under `"auto"` and under `"none"`: "You have run out of turns, so you can't call tools any more. Answer now: say what you did, what you found, and what remains."
+- **Not covered:** streaming, other models, and a long history, where the lost prefix would cost time.
 
 **Sources:** openai/openai-agents-python `src/agents/run.py` and openai.github.io/openai-agents-python/running_agents; openai/openai-agents-js `packages/agents-core/src/runner/turnPreparation.ts`; OAI /api/docs/guides/reasoning, /guides/conversation-state, /guides/function-calling and /guides/websocket-mode, and /cookbook/examples/responses_api/reasoning_items; openai-python `src/openai/types/shared/reasoning.py`; learn.chatgpt.com/docs/app-server; code.claude.com/docs/en/agent-sdk/agent-loop, /cli-reference, /glossary and /hooks; platform.claude.com/docs/en/api/messages and /agents-and-tools/tool-use/how-tool-use-works; ai.google.dev/gemini-api/docs/generate-content/thought-signatures; adk.dev/runtime/event-loop and /runtime/runconfig; google/adk-python 2.12.0 `flows/llm_flows/core/_model_call.py`; ai-sdk.dev/docs/ai-sdk-core/tools-and-tool-calling and /docs/agents/loop-control; vercel/ai 7.0.142 `generate-text.ts`; docs.langchain.com/oss/python/langgraph/graph-api; langchain-ai/langgraph 1.2.15 `_internal/_config.py`, and prebuilt 1.1.1 `chat_agent_executor.py`; langchain-ai/langchain 1.4.6 `agents/middleware/model_call_limit.py`; pydantic/pydantic-ai 2.57.0 `usage.py`, and pydantic.dev/docs/ai; huggingface/smolagents 1.26.0 `agents.py`; microsoft/agent-framework python-1.22.0 `_tools.py`; microsoft/autogen `_assistant_agent.py`; mastra.ai/reference/agents/generate; github.com/open-telemetry/semantic-conventions-genai; gorilla.cs.berkeley.edu/blogs/13_bfcl_v3_multi_turn.html; sierra-research/tau-bench `tool_calling_agent.py`; swe-agent.com/latest/usage/trajectories; lmstudio.ai/docs/typescript/agent/act.
 
@@ -938,7 +945,7 @@ These are **proposals, not decisions**. Each links to a decision in Part 5. "Bri
     - The API rejects a `function_call_output` whose `function_call` is missing.
     - Developers also report HTTP 400s for a `function_call` sent without its reasoning item, and for a reasoning item without the item that follows it.
     - So reasoning, call and output are kept or dropped as one unit. S3 tests a replay across a compaction boundary.
-  - **Use `tool_choice` to stop tool calls.** A forced final answer uses `tool_choice:"none"` rather than removing tools. OpenAI documents that this keeps the cached prefix (R3.4); S3 measures it.
+  - **Use `tool_choice` to stop tool calls.** A forced final answer uses `tool_choice:"none"` rather than removing tools. OpenAI documents that this keeps the cached prefix (R3.4); S3 measures it. LM Studio's `"none"` removes the tools itself, so the prefix is lost there (R15.3).
 - **Decision:** D11.
 
 ### C6. Task definitions: DB canonical, authored as TASK.md files
@@ -1015,12 +1022,19 @@ These are **proposals, not decisions**. Each links to a decision in Part 5. "Bri
 
     On OpenAI, request reasoning summaries so reasoning emits events; S4 checks that SIWC allows them.
   - **When a budget or the context check trips:**
-    - Make one last turn with `tool_choice:"none"`, sent as a user message so it ends an eligible cache breakpoint (R3.1), and sized to fit. It asks "what did you do and what remains".
+    - Make one last turn with `tool_choice:"none"` on OpenAI, sent as a user message so it ends an eligible cache breakpoint (R3.1), and sized to fit. It asks "what did you do and what remains". On LM Studio the message stands alone: `"none"` there drops the tools, and the KV prefix with them (R15.3).
     - That becomes the run's output and seeds the next run's state. Status: **`capped`**, not `failed`.
     - If even the finalize turn can't fit, returns calls anyway, or fails, end as `capped` with a synthesised "budget exceeded; no summary" output.
     - smolagents and Microsoft Agent Framework end their step limits this way. Most other agent loops run the last call's tools, then stop with an error (R15.2).
+  - **The turn limit first (2026-10-16).** The finalize turn needn't wait for the budgets. At its turn limit the session fails today with no answer, where most loops at least run the last calls (R15.2). With the turn limit as its only trigger:
+    - run the last turn's calls first, as nearly every loop in R15.2 does, so the finalize turn can report them. A budget or the context check skips them instead, since running them would overrun what tripped;
+    - then send the finalize turn as above: `tool_choice:"none"` on OpenAI, the message alone on LM Studio. The message alone kept a 9B model from calling tools in 3 of 3 tries (R15.3);
+    - if it still returns calls, or fails, end as `capped` with the synthesised output;
+    - the server logs the answer as capped, and exits with a code of its own, so a script can tell an answer, a capped answer and a failure apart.
+
+    `MAX_TURNS` at N then allows N turns with tools and at most one finalize turn: smolagents' and Microsoft Agent Framework's arithmetic. Decision: D20.
   - **Per-profile output cap:** the model-visible output cap is set per profile, smaller for local models.
-- **Check:** LM Studio supports `tool_choice:"none"` on Chat Completions (R5.2). Support on `/v1/responses` is unverified, so S2 checks it.
+- **Check:** LM Studio supports `tool_choice:"none"` on Chat Completions (R5.2). On `/v1/responses` it accepts it but drops the tools from the prompt, which loses the KV prefix (R15.3).
 - **Decision:** D9.
 
 ### C9. Narration fallback: nudge, don't execute
@@ -1369,7 +1383,7 @@ applyCompaction(items: ResponseInputItem[], plan: CompactionPlan,
 **Rules**
 - **Keep per-run data out of the developer item.** Never put the time, state or anything else that varies per run there.
 - **Freeze the request settings.** Never edit or reorder tools, or change `reasoning.effort`, `parallel_tool_calls`, `text.format`, verbosity, service tier or `prompt_cache_key` mid-run (R3.4).
-- **Use `tool_choice` to stop tools.** The finalize turn's `tool_choice:"none"` is the sanctioned way to disable tools: OpenAI documents it as keeping the prefix, and S3 measures it. On OpenAI, `allowed_tools` can also narrow them. LM Studio rejects object `tool_choice` on Chat Completions (R5.2); S2 checks `/v1/responses`.
+- **Use `tool_choice` to stop tools.** The finalize turn's `tool_choice:"none"` is the sanctioned way to disable tools: OpenAI documents it as keeping the prefix, and S3 measures it. On OpenAI, `allowed_tools` can also narrow them. LM Studio rejects object `tool_choice` on Chat Completions (R5.2); S2 checks it on `/v1/responses`. There, `"none"` drops the tools from the prompt and loses the prefix, so the finalize turn relies on its message (R15.3).
 - **Send nudges and the finalize prompt as user messages,** so they end an eligible breakpoint (R3.1).
 - **Compaction is rare, chunky, and cut at turn boundaries** (C5).
 - **Log cache use.** Every `model_call` event records cached and written tokens, so cache effectiveness is measured from day one.
@@ -1621,6 +1635,7 @@ The `migrate` service also runs `gremlin prune` on demand: `docker compose run -
 | D17 | Isolating skill secrets | Visible workspace-wide (documented) · per-task uid in the workspace | **Workspace-wide for now**; revisit with Q5. Per-task uids edge toward the non-goal | open |
 | D18 | Where the shell runs before M1 | Host shell (A) · host shell in a Seatbelt fence (A+) · workspace container through `docker exec` (B-lite) · C3's workspace and exec server, built early (B) | **B**, narrowly over B-lite (C12) | **decided 2026-10-15: A**, a host shell. D3 still governs M1 |
 | D19 | Which runtimes the server runs on | Bun only, declared in `engines` and checked at start-up · Bun or Node, through `@mecha-gremlin/yaml` and `@mecha-gremlin/process`, which use Bun's built-ins on Bun and Node's modules elsewhere (R14) | **Bun only**, declared and checked | **decided 2026-10-16: Bun or Node.** The tests run on both |
+| D20 | What the session does at its turn limit | Fail with no answer (today) · run the last turn's calls, then fail (most loops, R15.2) · run them, then a finalize turn, and end `capped` (smolagents, Microsoft Agent Framework) | **Finalize, ahead of M2's budgets** (C8) | open |
 
 ## Open questions
 
@@ -1668,6 +1683,8 @@ The change was implemented and archived on 2026-10-16, which settles them. Its l
 | S5 | Docker plumbing and the exec server | **Networking:** `host.docker.internal` reaches LM Studio on 127.0.0.1 (Docker Desktop only; on Linux, bind to the bridge IP), and internal-network reachability matches R10. **Process control:** the exec server kills process groups on timeout and on client disconnect; kills processes that escaped with `setsid` through `GREMLIN_RUN_ID`; on reset, kills everything except PID 1 and itself; returns promptly when a background grandchild holds the pipe; never blocks on stdin; reaps zombies under `init`. **Output:** `yes` with a 5-minute timeout returns head and tail within the cap while memory stays flat; binary, NUL and cut-emoji output is stored safely. **Ownership:** on a Linux host, files the agent writes are owned by the host user. | D3, 4.9 |
 
 **S2 status (2026-10-12).** On `prism-ml/bonsai-27b`, the first criterion passes: multi-turn function calls with client-held history. `cached_tokens` is reported too (R11). The other criteria are still open.
+
+**S2 status (2026-10-16).** On `ornith-1.5-9b-mlx`, `tool_choice:"none"` is accepted, but it drops the tools from the prompt: it doesn't keep the KV prefix, and it doesn't stop a model that wants a tool (R15.3). The other open criteria are unchanged.
 
 **S5 status (2026-10-15).** `docker exec` process control, same-path mounts and container networking were measured on Docker Desktop (R12.3). Still open: the exec server, ownership on a Linux host, a run-ID sweep as a non-root user, and the real playwright-cli with Chromium in a container (R12.4).
 
