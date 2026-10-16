@@ -87,7 +87,7 @@ Everything private (secrets, client specifics, my own skills and task definition
 
 ▸ **1. Scheduler.** Proposal: an in-process tick driven by the database (4.8, D6). Where task definitions live: C6, D5.
 
-▸ **2. Agent loop.** Draft in 4.5. Budgets and a context-fill check beyond the iteration cap: C8. Narration handling: C9, using LM Studio's own markers (R5.2).
+▸ **2. Agent loop.** Draft in 4.5. Budgets and a context-fill check beyond the iteration cap: C8. Narration handling: C9, using LM Studio's own markers (R5.2). What a turn is, and how other agent loops count and stop: R15.
 
 ▸ **3. Skills.** The SKILL.md spec has no typed tools (R7), so C4 proposes a different split. Storage: on disk (4.7). For the first skills change: R12, Q12–Q17.
 
@@ -755,6 +755,53 @@ All **[H]**, measured on 2026-10-16 with Bun 1.4.3, Node 26.11 and `yaml` 2.9.1,
 
 **Sources:** `yaml` 2.9.1's documented options (`logLevel`, `uniqueKeys`, `merge`); Vite 8.3.4's `DEFAULT_SERVER_CONDITIONS`; Node's `child_process` and `stream` documentation.
 
+## R15. Turns, steps and loop limits
+
+Two research agents read each project's docs and source on 2026-10-16, for C8 and D9, and quoted them. No independent fact-check has re-verified them yet. The questions: is one model request what others call a turn, and what do other agent loops do at their limit?
+
+**R15.1 Two meanings of "turn".**
+- **The whole exchange:** one user input, and everything the agent does until it answers. **[H]**
+  - **Codex's app-server** nests thread → turn → item. A turn is "A single user request and the agent work that follows". `turn/start` begins it with the user's input, and `turn/completed` ends it. The docs imply, without saying, that one turn spans several model calls.
+  - **Claude Code's glossary:** "A turn begins when you send a message and ends when Claude finishes responding, with any number of tool calls in between." Its hooks follow suit: `UserPromptSubmit`, `Stop` and `StopFailure` fire once per turn, `PreToolUse` and `PostToolUse` on every tool call.
+  - **Gemini:** "A "turn" is a single, complete exchange in a conversation between a user and a model", and "A "step" is a finer-grained action or operation performed by the model, often as part of a larger process to complete a turn". A user message holding only a `functionResponse` is still the same turn.
+  - **BFCL v3:** "Each function call and its result constitute a single step", and "Each turn may involve several steps."
+  - **Google ADK** calls the exchange an *invocation*: "everything that happens in response to a single user query".
+- **OpenAI's `reasoning.context` probably means the same.** `current_turn` "Makes reasoning from the active turn available, but does not render reasoning from earlier turns into the next sample" (R2.4). OpenAI doesn't define the turn there. Two passages point to the whole exchange: for consecutive function calls, the reasoning guide passes back every item "since the last `user` message", and the archived reasoning-items cookbook says "while this is another API call, we consider this as a single turn in the conversation". **[M]**
+- **One model call, with the tools it asked for,** is called: **[H]**
+  - a *turn* by OpenAI's Agents SDK ("A turn is defined as one AI invocation (including any tool calls that might occur)"), OpenAI's WebSocket-mode guide ("start each turn by sending a `response.create` event"), Claude's Agent SDK ("A turn is one round trip inside the loop"), SWE-agent and Pydantic AI's docs. Anthropic's Messages API calls each user or assistant message a turn;
+  - a *step* by Vercel's AI SDK ("A step includes one model generation and the execution of any local tools requested by that generation"), smolagents, BFCL, Gemini, tau-bench (`max_num_steps`) and mini-SWE-agent;
+  - an *LLM call* by ADK, an *iteration* by Microsoft Agent Framework, a *round trip* by Anthropic's tool-use docs, and a *round* by LM Studio's `.act()`.
+- **OpenTelemetry's GenAI conventions,** still in Development, have no turn. Their operations are `invoke_agent`, `chat` and `execute_tool`, and only `gen_ai.conversation.id` groups calls. **[H]**
+- **The split.** The sources that define the word use the whole exchange, and call one model call a step. The limits named "max turns" count model calls, against their own vendors' glossaries. They don't count alike either: OpenAI's counts the call that answers, and Claude's counts tool-use round trips only.
+- **Here.** The code and this brief say "turn" for one model request: `runTurn`, `MAX_TURNS`, the `turn` log record, C5's "model turn". Each request's result is already a `SessionStep`. A run has one user message, so all of its turns sit inside one of OpenAI's. The meanings would collide once a session takes a second user message (the `SessionStep` type plans one), once `reasoning.context` is set, and in compaction, which cuts at turn boundaries (C5) and keeps `keepLastTurns` (4.3).
+
+**R15.2 How agent loops limit and stop.** Versions current on 2026-10-16. **[H]** unless marked.
+
+| Framework | Unit | Counts | Default | At the limit | Last call's tools run |
+|---|---|---|---|---|---|
+| OpenAI Agents SDK (Python 0.24.0; JS alike) | turn | model calls, with their tools | 10 | raises `MaxTurnsExceeded` before call N+1. An optional `max_turns` error handler returns your own fallback output instead, with no model call | yes |
+| Claude Agent SDK, Claude Code | turn | tool-use round trips; the call that answers doesn't count | none | an `error_max_turns` result with no `result` field; `query()` raises after yielding it, and the CLI exits non-zero | yes |
+| Vercel AI SDK 7.0.142 | step | model calls, with their local tools | 1 (`generateText`, `streamText`); 20 (`ToolLoopAgent`) | stops and returns normally | yes |
+| Pydantic AI 2.57.0 | request | model responses acted on | 50 | raises `UsageLimitExceeded` before request N+1 | yes; a batch that would pass `tool_calls_limit` runs none |
+| Google ADK 2.12.0 | LLM call | LLM calls | 500 | raises `LlmCallsLimitExceededError` before call N+1 | yes |
+| smolagents 1.26.0 | step | model calls, with their actions | 20 | one more call, without tools, writes the answer: "An agent tried to answer a user query but it got stuck…" | yes |
+| Microsoft Agent Framework (Python 1.22.0) | iteration | LLM round trips | 40 | one more call with `tool_choice="none"` | yes |
+| AutoGen AgentChat (archived) | tool iteration | model calls, with their tools | 1 | a reflection call with `tool_choice="none"`, or a summary of the tool results | yes |
+| LangGraph 1.2.15 | super-step | graph rounds; the model and the tools are separate nodes | 10007 in the source, 1000 in the docs | raises `GraphRecursionError` | — |
+| LangGraph's `create_react_agent` (deprecated) | remaining steps | super-steps left | — | a reply with tool calls and fewer than 2 steps left becomes "Sorry, need more steps…", without an error | **no** |
+| LangChain's `create_agent` | — | — | recursion limit 9999; `ModelCallLimitMiddleware` is opt-in | a canned AI message and the end, or `ModelCallLimitExceededError` | yes |
+| Mastra 1.78.0 | step | model calls, with their tools | 5 | stops, like the AI SDK | yes **[M]**: the docs only |
+
+- **Nobody warns the model by default.** LangGraph's `RemainingSteps`, Pydantic AI's `ctx.usage_limits` and smolagents' planning prompts are opt-ins.
+- **Retries don't count.** Pydantic AI's limit "bounds the number of turns of the agent loop, not the number of requests sent to the provider".
+- **Three endings:**
+  - **an error:** OpenAI, Claude, Pydantic AI, ADK, LangGraph;
+  - **the last step as it is,** which may hold no text: the AI SDK, Mastra;
+  - **one more call without tools,** so the user still gets an answer: smolagents, Microsoft Agent Framework, AutoGen. LangChain's middleware and OpenAI's error handler return a canned or supplied output instead. C8's finalize turn is this pattern.
+- **Where the session stands.** It counts model requests, as OpenAI's Agents SDK does. With `MAX_TURNS` at N, it sends at most N requests and runs the calls of the first N − 1. Request N's calls don't run: each gets an output saying so, and the run fails without an answer. Of the loops above, only `create_react_agent` also drops them, and it answers instead of failing. In a live check, a Hacker News task (stories 10 to 12) took 29 turns, against the default limit of 30 (hello-to-server's design).
+
+**Sources:** openai/openai-agents-python `src/agents/run.py` and openai.github.io/openai-agents-python/running_agents; openai/openai-agents-js `packages/agents-core/src/runner/turnPreparation.ts`; OAI /api/docs/guides/reasoning, /guides/conversation-state, /guides/function-calling and /guides/websocket-mode, and /cookbook/examples/responses_api/reasoning_items; openai-python `src/openai/types/shared/reasoning.py`; learn.chatgpt.com/docs/app-server; code.claude.com/docs/en/agent-sdk/agent-loop, /cli-reference, /glossary and /hooks; platform.claude.com/docs/en/api/messages and /agents-and-tools/tool-use/how-tool-use-works; ai.google.dev/gemini-api/docs/generate-content/thought-signatures; adk.dev/runtime/event-loop and /runtime/runconfig; google/adk-python 2.12.0 `flows/llm_flows/core/_model_call.py`; ai-sdk.dev/docs/ai-sdk-core/tools-and-tool-calling and /docs/agents/loop-control; vercel/ai 7.0.142 `generate-text.ts`; docs.langchain.com/oss/python/langgraph/graph-api; langchain-ai/langgraph 1.2.15 `_internal/_config.py`, and prebuilt 1.1.1 `chat_agent_executor.py`; langchain-ai/langchain 1.4.6 `agents/middleware/model_call_limit.py`; pydantic/pydantic-ai 2.57.0 `usage.py`, and pydantic.dev/docs/ai; huggingface/smolagents 1.26.0 `agents.py`; microsoft/agent-framework python-1.22.0 `_tools.py`; microsoft/autogen `_assistant_agent.py`; mastra.ai/reference/agents/generate; github.com/open-telemetry/semantic-conventions-genai; gorilla.cs.berkeley.edu/blogs/13_bfcl_v3_multi_turn.html; sierra-research/tau-bench `tool_calling_agent.py`; swe-agent.com/latest/usage/trajectories; lmstudio.ai/docs/typescript/agent/act.
+
 ---
 
 # Part 3: Where the brief stands, and challenges
@@ -887,7 +934,7 @@ These are **proposals, not decisions**. Each links to a decision in Part 5. "Bri
   - OpenAI lists compaction as a cache-breaker (R3.4), and on GPT-5.6+ every rebuild is a write billed at 1.25× (R3.1).
 - **Proposal:**
   - **Compact rarely, in large blocks.** One large compaction when the context passes a threshold (say 70%) costs one cache rebuild. A sliding window that trims a little every turn misses the cache every turn, which is the worst case. `planCompaction` returns null until the threshold, then compacts one large block.
-  - **Cut only at turn boundaries.** That means after all outputs of one model turn, before the next reasoning, message or call group.
+  - **Cut only at turn boundaries.** That means after all outputs of one model turn, before the next reasoning, message or call group. Most sources call that unit a step, and keep "turn" for a user's whole exchange (R15.1).
     - The API rejects a `function_call_output` whose `function_call` is missing.
     - Developers also report HTTP 400s for a `function_call` sent without its reasoning item, and for a reasoning item without the item that follows it.
     - So reasoning, call and output are kept or dropped as one unit. S3 tests a replay across a compaction boundary.
@@ -971,6 +1018,7 @@ These are **proposals, not decisions**. Each links to a decision in Part 5. "Bri
     - Make one last turn with `tool_choice:"none"`, sent as a user message so it ends an eligible cache breakpoint (R3.1), and sized to fit. It asks "what did you do and what remains".
     - That becomes the run's output and seeds the next run's state. Status: **`capped`**, not `failed`.
     - If even the finalize turn can't fit, returns calls anyway, or fails, end as `capped` with a synthesised "budget exceeded; no summary" output.
+    - smolagents and Microsoft Agent Framework end their step limits this way. Most other agent loops run the last call's tools, then stop with an error (R15.2).
   - **Per-profile output cap:** the model-visible output cap is set per profile, smaller for local models.
 - **Check:** LM Studio supports `tool_choice:"none"` on Chat Completions (R5.2). Support on `/v1/responses` is unverified, so S2 checks it.
 - **Decision:** D9.
@@ -1562,7 +1610,7 @@ The `migrate` service also runs `gremlin prune` on demand: `docker compose run -
 | D6 | Scheduler (originally open) | In-process DB tick · cron/systemd invoking a CLI · `Bun.cron` timers | **In-process DB tick** (4.8) | open |
 | D7 | History storage | One row per item · a `jsonb` array per run | **Row per item** (C11) | open |
 | D8 | Narration fallback | Nudge · execute the parsed call | **Nudge; strict execute opt-in per profile** (C9) | open |
-| D9 | Run limits | Iteration cap only · budgets, context check and finalize turn | **Budgets, context check and finalize** (C8) | open |
+| D9 | Run limits | Iteration cap only · budgets, context check and finalize turn | **Budgets, context check and finalize** (C8, R15) | open |
 | D10 | Core packaging | One package with subpath exports · one package per library | **One package** (4.2) | open |
 | D11 | Compaction trigger | Threshold, chunky, at turn boundaries · sliding window | **Threshold at turn boundaries** (C5) | open |
 | D12 | Cron expressions | croner · `Bun.cron.parse` | **croner** (4.8) | open |
