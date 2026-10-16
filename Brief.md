@@ -16,6 +16,7 @@
 > - **2026-10-15:** R12 records the research for loading skills and using the playwright-cli skill. C12 weighs where the shell runs before M1, and D18 records the choice. Q12–Q17 list the skills questions still to settle.
 > - **2026-10-16:** R13 records how the tests and mutation testing run on Bun, the runtime the app uses. The change `tests-on-bun` moves them there.
 > - **2026-10-16, later:** R14 records what it takes to keep the server running on Node as well as Bun, and D19 records the choice to do so. Two small packages use Bun's built-ins on Bun and Node's modules elsewhere, and the change `bun-or-node` adds them.
+> - **2026-10-16, evening:** R15 records what "turn" means elsewhere, how other agent loops count and stop, and how LM Studio handles `tool_choice:"none"`. C8 proposes a finalize turn at the turn limit ahead of the budgets (D20), and C13 proposes calling the loop's unit a step (D21). Both are open.
 
 ---
 
@@ -87,7 +88,7 @@ Everything private (secrets, client specifics, my own skills and task definition
 
 ▸ **1. Scheduler.** Proposal: an in-process tick driven by the database (4.8, D6). Where task definitions live: C6, D5.
 
-▸ **2. Agent loop.** Draft in 4.5. Budgets and a context-fill check beyond the iteration cap: C8. Narration handling: C9, using LM Studio's own markers (R5.2). What a turn is, and how other agent loops count and stop: R15.
+▸ **2. Agent loop.** Draft in 4.5. Budgets and a context-fill check beyond the iteration cap: C8. Narration handling: C9, using LM Studio's own markers (R5.2). What a turn is, and how other agent loops count and stop: R15. Naming the loop's unit a step: C13.
 
 ▸ **3. Skills.** The SKILL.md spec has no typed tools (R7), so C4 proposes a different split. Storage: on disk (4.7). For the first skills change: R12, Q12–Q17.
 
@@ -773,7 +774,7 @@ Two research agents read each project's docs and source on 2026-10-16, for C8 an
   - an *LLM call* by ADK, an *iteration* by Microsoft Agent Framework, a *round trip* by Anthropic's tool-use docs, and a *round* by LM Studio's `.act()`.
 - **OpenTelemetry's GenAI conventions,** still in Development, have no turn. Their operations are `invoke_agent`, `chat` and `execute_tool`, and only `gen_ai.conversation.id` groups calls. **[H]**
 - **The split.** The sources that define the word use the whole exchange, and call one model call a step. The limits named "max turns" count model calls, against their own vendors' glossaries. They don't count alike either: OpenAI's counts the call that answers, and Claude's counts tool-use round trips only.
-- **Here.** The code and this brief say "turn" for one model request: `runTurn`, `MAX_TURNS`, the `turn` log record, C5's "model turn". Each request's result is already a `SessionStep`. A run has one user message, so all of its turns sit inside one of OpenAI's. The meanings would collide once a session takes a second user message (the `SessionStep` type plans one), once `reasoning.context` is set, and in compaction, which cuts at turn boundaries (C5) and keeps `keepLastTurns` (4.3).
+- **Here.** The code and this brief say "turn" for one model request: `runTurn`, `MAX_TURNS`, the `turn` log record, C5's "model turn". Each request's result is already a `SessionStep`. A run has one user message, so all of its turns sit inside one of OpenAI's. The meanings would collide once a session takes a second user message (the `SessionStep` type plans one), once `reasoning.context` is set, and in compaction, which cuts at turn boundaries (C5) and keeps `keepLastTurns` (4.3). C13 proposes new names.
 
 **R15.2 How agent loops limit and stop.** Versions current on 2026-10-16. **[H]** unless marked.
 
@@ -1092,6 +1093,27 @@ These are **proposals, not decisions**. Each links to a decision in Part 5. "Bri
   - cleanup at run end, since the browser daemon outlives every command (R12.2). macOS has no `/proc`, and `ps eww` shows the environment of only some processes, so a sweep by run ID needs care there;
   - LM Studio's token auth, since its API needs none by default (R5.6).
 - **Decision:** D18.
+
+### C13. Call one model request a step, and keep "turn" for the user's exchange
+- **Brief says:** "Hard cap on iterations." The design then named the iteration a turn: `runTurn` (4.3), cuts at turn boundaries (C5), the finalize turn (C8) and `MAX_TURNS`.
+- **Problem:** the sources that define "turn" mean a user's whole exchange, and call one model call a step (R15.1). The API the app calls probably agrees: `reasoning.context`'s `current_turn` seems to span every request since the last user message. The two meanings can't collide while a run takes one user message. They will once a session can ask the user and resume (the `SessionStep` type plans this), once `reasoning.context` is set, and in compaction, which must say which boundaries it cuts at. A later rename would also reach what M1 starts to persist: a task's `limits`, TASK.md files (C6) and the run log (4.4).
+- **Options:**
+
+| | One model request | It and the calls it asked for | A user's exchange | Cost |
+|---|---|---|---|---|
+| **Keep** | turn | turn | unnamed | none now; "turn" means two things once a session takes a second user message |
+| **Step** | model call | step | turn | one mechanical change: about 460 uses across the code, tests, specs and README, and the Brief's prose |
+
+- **Proposal: Step, before M1, as a change of its own that doesn't change what the server does.**
+  - `MAX_TURNS` becomes `MAX_STEPS`, the limit's name in Vercel's AI SDK, smolagents, tau-bench and Mastra. The session's own default of 8 can go with it, leaving the setting's 30 as the only default.
+  - `core`'s `runTurn` runs one model request, without the tools, so it becomes `callModel`, and the `model-turn` spec is renamed to match. 4.4's run log already calls this a `model_call`.
+  - `classify` returns a `Reply` rather than a `Turn`: calls, a final text, or nothing.
+  - The session's `TurnStats`, `turn_limit` and `turn_failed` take step names. The `turn` log record becomes `model call`, beside `tool call`, with a `step` field.
+  - The messages and the README count steps: "The model didn't answer within 30 steps".
+  - "Turn" is left free for the exchange: with the new names, a session runs one turn of several steps.
+  - Done before D20, the finalize turn is written in the new names from the start.
+- **Against:** OpenAI's and Claude's Agent SDKs call their limits "max turns", so `MAX_TURNS` is the name people may look for. And where it mattered, the Brief has already said "model turn" (C5) and "user turns" (R2.4).
+- **Decision:** D21.
 
 ---
 
@@ -1636,6 +1658,7 @@ The `migrate` service also runs `gremlin prune` on demand: `docker compose run -
 | D18 | Where the shell runs before M1 | Host shell (A) · host shell in a Seatbelt fence (A+) · workspace container through `docker exec` (B-lite) · C3's workspace and exec server, built early (B) | **B**, narrowly over B-lite (C12) | **decided 2026-10-15: A**, a host shell. D3 still governs M1 |
 | D19 | Which runtimes the server runs on | Bun only, declared in `engines` and checked at start-up · Bun or Node, through `@mecha-gremlin/yaml` and `@mecha-gremlin/process`, which use Bun's built-ins on Bun and Node's modules elsewhere (R14) | **Bun only**, declared and checked | **decided 2026-10-16: Bun or Node.** The tests run on both |
 | D20 | What the session does at its turn limit | Fail with no answer (today) · run the last turn's calls, then fail (most loops, R15.2) · run them, then a finalize turn, and end `capped` (smolagents, Microsoft Agent Framework) | **Finalize, ahead of M2's budgets** (C8) | open |
+| D21 | What "turn" names | One model request, as now · a user's whole exchange, with "step" for a model request and the calls it asked for, and "model call" for the request alone (R15.1) | **Step, before M1** (C13) | open |
 
 ## Open questions
 
