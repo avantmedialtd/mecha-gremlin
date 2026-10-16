@@ -16,7 +16,7 @@
 > - **2026-10-15:** R12 records the research for loading skills and using the playwright-cli skill. C12 weighs where the shell runs before M1, and D18 records the choice. Q12–Q17 list the skills questions still to settle.
 > - **2026-10-16:** R13 records how the tests and mutation testing run on Bun, the runtime the app uses. The change `tests-on-bun` moves them there.
 > - **2026-10-16, later:** R14 records what it takes to keep the server running on Node as well as Bun, and D19 records the choice to do so. Two small packages use Bun's built-ins on Bun and Node's modules elsewhere, and the change `bun-or-node` adds them.
-> - **2026-10-16, evening:** R15 records what "turn" means elsewhere, how other agent loops count and stop, and how LM Studio handles `tool_choice:"none"`. C8 proposes a finalize turn at the turn limit ahead of the budgets (D20), and C13 proposes calling the loop's unit a step (D21). Both are open.
+> - **2026-10-16, evening:** R15 records what "turn" means elsewhere, how other agent loops count and stop, and how LM Studio handles `tool_choice:"none"`. C8 proposes a finalize turn at the turn limit ahead of the budgets (D20), and C13 proposes calling the loop's unit a step (D21). D20 is open. D21 was decided the same evening, and the change `turn-to-step` carries it out.
 
 ---
 
@@ -1121,6 +1121,8 @@ These are **proposals, not decisions**. Each links to a decision in Part 5. "Bri
 
 This draft assumes the recommended option for every decision in Part 5. Sections that depend on an open decision name it.
 
+**Words (D21, 2026-10-16).** This draft predates D21, and says "turn" for one model request. From the change `turn-to-step` on, the code calls that request a *model call*, and a model call with the tool calls in its reply a *step*. A *turn* is a user's whole exchange. So read 4.3's `runTurn` as `callModel`, its `Turn` as `Reply`, `keepLastTurns` as a count of steps, and the finalize turn as a finalize step.
+
 ## 4.1 Architecture (D1, D2, D3)
 
 ```
@@ -1658,7 +1660,7 @@ The `migrate` service also runs `gremlin prune` on demand: `docker compose run -
 | D18 | Where the shell runs before M1 | Host shell (A) · host shell in a Seatbelt fence (A+) · workspace container through `docker exec` (B-lite) · C3's workspace and exec server, built early (B) | **B**, narrowly over B-lite (C12) | **decided 2026-10-15: A**, a host shell. D3 still governs M1 |
 | D19 | Which runtimes the server runs on | Bun only, declared in `engines` and checked at start-up · Bun or Node, through `@mecha-gremlin/yaml` and `@mecha-gremlin/process`, which use Bun's built-ins on Bun and Node's modules elsewhere (R14) | **Bun only**, declared and checked | **decided 2026-10-16: Bun or Node.** The tests run on both |
 | D20 | What the session does at its turn limit | Fail with no answer (today) · run the last turn's calls, then fail (most loops, R15.2) · run them, then a finalize turn, and end `capped` (smolagents, Microsoft Agent Framework) | **Finalize, ahead of M2's budgets** (C8) | open |
-| D21 | What "turn" names | One model request, as now · a user's whole exchange, with "step" for a model request and the calls it asked for, and "model call" for the request alone (R15.1) | **Step, before M1** (C13) | open |
+| D21 | What "turn" names | One model request, as now · a user's whole exchange, with "step" for a model request and the calls it asked for, and "model call" for the request alone (R15.1) | **Step, before M1** (C13) | **decided 2026-10-16: Step.** The change `turn-to-step` carries it out, after the `model-hello` and `model-turn` capabilities became `server` and `model-call` |
 
 ## Open questions
 
