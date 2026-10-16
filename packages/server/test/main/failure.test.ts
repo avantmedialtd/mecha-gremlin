@@ -9,6 +9,8 @@ const LMSTUDIO: Config = {
     apiKey: 'lm-studio',
     model: undefined,
     reasoningEffort: 'none',
+    skillsPath: undefined,
+    maxTurns: 30,
 };
 
 const OPENAI: Config = {
@@ -17,6 +19,8 @@ const OPENAI: Config = {
     apiKey: 'sk-test',
     model: 'gpt-test',
     reasoningEffort: undefined,
+    skillsPath: undefined,
+    maxTurns: 30,
 };
 
 const turnFailed = (error: TurnError, config: Config = OPENAI): string => {
@@ -28,7 +32,7 @@ describe('Actionable failures', () => {
         [
             'a timeout',
             { kind: 'timeout', detail: 'Request timed out.' },
-            "The model server at https://api.example.com/v1 didn't answer in time (Request timed out.). Try again, or ask about a smaller file.",
+            "The model server at https://api.example.com/v1 didn't answer in time (Request timed out.). Try again, or narrow the task.",
         ],
         [
             'a rate limit',
@@ -53,7 +57,7 @@ describe('Actionable failures', () => {
         [
             'an incomplete response',
             { kind: 'incomplete', detail: 'the response is incomplete: max_output_tokens' },
-            'The model stopped before finishing its turn (the response is incomplete: max_output_tokens). Try a narrower question or a smaller file.',
+            'The model stopped before finishing its turn (the response is incomplete: max_output_tokens). Try a narrower task.',
         ],
         [
             'an aborted turn',
@@ -91,7 +95,7 @@ describe('Actionable failures', () => {
         const turn = { number: 3, usage: undefined, seconds: 1 };
 
         expect(failure({ kind: 'turn_limit', turn }, OPENAI)).toBe(
-            "The model didn't answer within 3 turns: it was still calling tools. Try a narrower question.",
+            "The model didn't answer within 3 turns: it was still calling tools. Try a narrower task, or raise MAX_TURNS.",
         );
     });
 
@@ -99,7 +103,7 @@ describe('Actionable failures', () => {
         const turn = { number: 1, usage: undefined, seconds: 1 };
 
         expect(failure({ kind: 'empty', turn }, OPENAI)).toBe(
-            'The model gave no answer: its turn had neither text nor tool calls. Try again, or rephrase the question.',
+            'The model gave no answer: its turn had neither text nor tool calls. Try again, or rephrase the task.',
         );
     });
 

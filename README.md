@@ -6,20 +6,24 @@ A self-hosted, scheduled agent runner, in early development. The design and its 
 
 | Package | What it is |
 |---|---|
-| [`packages/core`](packages/core) | `@mecha-gremlin/core`: stateless functions. `runTurn` runs one streamed model turn over the Responses API and returns the reply or a classified error. The tool-calling pieces are tools defined by any [Standard Schema](https://standardschema.dev) library, `classify` for a turn's output, `validateArgs`, `toOutputItem`, and `toInput`, which replays the chat history. |
+| [`packages/core`](packages/core) | `@mecha-gremlin/core`: stateless functions. `runTurn` runs one streamed model turn over the Responses API and returns the reply or a classified error. The tool-calling pieces are tools defined by any [Standard Schema](https://standardschema.dev) library, `classify` for a turn's output, `validateArgs`, `toOutputItem`, and `toInput`, which replays the chat history. `skills` checks a SKILL.md and renders the skills catalog and a skill's activation, and `output` caps a command's output to its start and end as it streams in. |
 | [`packages/yaml`](packages/yaml) | `@mecha-gremlin/yaml`: `parseYaml`, which uses Bun's built-in parser, `Bun.YAML`, on Bun, and the [`yaml`](https://www.npmjs.com/package/yaml) package elsewhere. The two give the same values for everything frontmatter uses. |
 | [`packages/process`](packages/process) | `@mecha-gremlin/process`: `spawnProcess`, which uses `Bun.spawn` on Bun and `node:child_process` elsewhere, and gives the process the same shape on both: its pid, its output as web streams, a promise of how it exited, and `unref()`. |
-| [`packages/server`](packages/server) | `@mecha-gremlin/server`: the app. So far it asks the model a question about a file, which the model reads with the `read_file` tool in an agent loop. It runs on Bun or Node. |
+| [`packages/server`](packages/server) | `@mecha-gremlin/server`: the app. So far it carries out a task in an agent loop, with a shell, `read_file` and skills. It runs on Bun or Node. |
 
 Inside `packages/server/src`, the code is grouped by concern:
 - `main`: the entry point, and its helpers for the arguments, the log fields and the failure messages;
 - `config`;
 - `model`: model choice and LM Studio's API;
 - `session`: the agent loop, as a session that yields each turn's result;
-- `tools`;
+- `skills`: finding and reading the skills `SKILLS_PATH` lists;
+- `exec`: running a command, its environment, and stopping a session's processes at the end;
+- `tools`: `read_file`, `shell` and `activate_skill`;
 - `log`: the structured logger.
 
-`yaml` and `process` choose their implementation on every call, from the global object: Bun's when `globalThis.Bun` is defined, the other one otherwise. Nothing uses them yet.
+`yaml` and `process` choose their implementation on every call, from the global object: Bun's when `globalThis.Bun` is defined, the other one otherwise. The server reads skills' frontmatter with `yaml`, and runs commands and `ps` with `process`.
+
+At the top, [`test`](test) holds the signal guard, a Vitest setup file for every package's tests (see Develop).
 
 No package has index files: every import names the file it uses. The `package.json` of `core`, `yaml` and `process` exports each module by name, so the server imports `@mecha-gremlin/core/turn`, `@mecha-gremlin/core/result` and so on. The tests mirror the folders.
 
@@ -27,31 +31,36 @@ No package has index files: every import names the file it uses. The `package.js
 
 - [Bun](https://bun.com) 1.4 or later.
 - [Node.js](https://nodejs.org) 26 or later, for `bun run hello:node` and `bun run test:node`, and so for `bun run check`.
-- An OpenAI-compatible model server. By default that's a local [LM Studio](https://lmstudio.ai), with its server running (`lms server start`) and **a model loaded** (`lms load <model>`, or load one in the app). The server never makes LM Studio load a model on demand.
+- An OpenAI-compatible model server. By default that's a local [LM Studio](https://lmstudio.ai), with its server running (`lms server start`) and **a model loaded** (`lms load <model>`, or load one in the app). The server never makes LM Studio load a model on demand. A browsing task needs the model loaded with a larger context than LM Studio's default: see [Set up for browsing](#set-up-for-browsing).
 
 ## Run
 
 ```sh
 bun install
-bun run hello                                       # asks what package.json's check script runs
-bun run hello README.md                             # asks what README.md is for
-bun run hello package.json which vitest version     # your own question; quotes are optional
-bun run hello:node README.md                        # the same, on Node
+bun run hello                                                 # asks what package.json's check script runs
+bun run hello 'Which runtime does README.md describe?'        # a task of your own, quoted
+bun run hello:node 'Which runtime does README.md describe?'   # the same, on Node
 ```
 
-The command is `bun run hello [file] [question…]` on Bun, or `bun run hello:node [file] [question…]` on Node, with the same arguments and settings. The model reads the file with the `read_file` tool, and the loop runs until it answers, for at most 8 turns. A question usually takes two turns: one to read the file and one to answer. On a local 27B model, turns took from 15 seconds to about 2 minutes in testing, growing with the size of the file.
+The command is `bun run hello [task…]` on Bun, or `bun run hello:node [task…]` on Node, with the same arguments and settings. The arguments, joined with spaces, are the task. With none, the hello asks what exact command the `check` script in `package.json` runs.
+
+**Quote the task,** in single quotes unless it holds one. The shell reads `?`, `*`, `&`, `;`, `!` and `$` itself: in zsh, macOS's default shell, an unquoted `?` stops the command with "no matches found" before Bun runs.
+
+The model carries out the task with its tools: `shell`, `read_file`, and `activate_skill` when skills are loaded. The loop runs until it answers, for at most `MAX_TURNS` turns, 30 by default. A question about a file usually takes two turns: one to read it and one to answer. A browsing task takes many more, about two for each page action. On a local 27B model, turns took from 15 seconds to about 2 minutes in testing, growing with the size of what the model reads.
 
 Everything is logged to stdout as structured records, one per line:
-- the question;
+- the skills loaded, and any that couldn't be;
+- the task, with the run's ID and the working directory;
 - each turn's token usage, including the input tokens served from the model server's cache;
 - each tool call and its result;
 - the answer;
+- the processes stopped when the session ends, if there were any;
 - errors.
 
 The default output is formatted for reading:
 
 ```text
-08:12:01 INFO  asking model=prism-ml/bonsai-27b baseUrl=http://127.0.0.1:1234/v1 file=package.json question="What exact command does the check script run? Quote it."
+08:12:01 INFO  asking model=prism-ml/bonsai-27b baseUrl=http://127.0.0.1:1234/v1 run=3f9a1c2e workDir=/Users/you/mecha-gremlin task="What exact command does the check script in package.json run? Quote it."
 08:12:13 INFO  turn number=1 inputTokens=376 cachedTokens=256 outputTokens=26 reasoningTokens=0 seconds=11.3
 08:12:13 INFO  tool call tool=read_file arguments={"path":"package.json"}
 08:12:13 INFO  tool result tool=read_file bytes=814
@@ -63,13 +72,46 @@ The default output is formatted for reading:
 
 ### What `read_file` reads
 
-`read_file` reads UTF-8 text files under the working directory: the directory you run the command in. It refuses:
+`read_file` reads UTF-8 text files under the working directory, `WORK_DIR`, and inside the loaded skills' directories, by absolute path. It refuses:
 
-- paths outside the working directory, including through `..`, absolute paths and symbolic links;
+- paths outside those directories, including through `..`, absolute paths and symbolic links;
 - `.env` files and anything else whose name starts with `.env`, because they hold secrets such as `MODEL_API_KEY`;
 - directories and binary files.
 
-It returns at most 32 KiB of a file, and notes when it cut the file short. Every refusal goes back to the model as the tool's output, so the model can explain it or try something else.
+It returns at most 32 KiB of a file, and notes when it cut the file short. Every refusal goes back to the model as the tool's output, so the model can explain it or try something else. These limits guard `read_file` alone: the shell can read anything you can.
+
+### The shell
+
+`shell` runs a command with `bash -c` on this computer, as you, in the working directory. (The workspace container comes later, in M1.)
+
+- **Each call is a fresh shell:** `cd` and variables don't carry over, and stdin is closed.
+- **A command gets 120 seconds.** Then its process group gets SIGTERM, and SIGKILL 2 seconds later.
+- **Each output stream keeps its first and last 16 KiB.** When it cuts, the model is told how to see the rest: write the output to a file, then search it with `grep`, or print a part with `sed -n` or `tail -c`.
+- **Background jobs end with the command,** once bash has exited and the command's output has closed, or after a second. A process that leaves the command's process group keeps running, as playwright-cli's browser does.
+- **The session's processes are stopped when it ends,** whether it answers, fails, or gets Ctrl-C, SIGTERM or a hangup. Every command carries the run's ID in `GREMLIN_RUN_ID`, and every process that `ps` shows carrying it gets SIGTERM, then SIGKILL 2 seconds later. A match that looks wrong, more than 32 processes, pid 1 or below, or the hello itself or its parent, gets no signal at all, and the log says why; so does a `ps` that can't show environments or takes over 10 seconds. Signals are ignored while the processes are stopped. On macOS, `ps` hides the environment of Apple's own programs, and if the hello itself is killed with SIGKILL nothing is stopped: playwright-cli's browser then closes after 15 minutes idle.
+- **The environment is built from scratch:** `PATH`, `HOME`, `USER`, `LOGNAME`, `TMPDIR`, `LANG` and `LC_ALL` from yours, fixed values against prompts, pagers and colour codes, the run's ID, and a playwright-cli session of the run's own.
+
+**What the shell can reach: anything your account can.** A model steered by a web page can read your files, run programs and send data out. Building the environment from scratch keeps your other variables, and `.env`'s, out of what commands inherit and print by accident, such as an environment dump or a log. It doesn't stop a command that goes looking: `ps -E -p $PPID` shows the hello's own environment on macOS, and `.env` is a readable file. Run it attended, against sites you choose.
+
+### Skills
+
+A skill is a folder with a `SKILL.md`, in the [Agent Skills](https://agentskills.io) format. `SKILLS_PATH` lists the directories that hold skills, separated by `:` as in `PATH`: each of their subdirectories with a `SKILL.md` is a skill. Nothing else is searched, so skills written for other agents stay out unless you list them. The model sees each skill's name and description, loads a skill's instructions with `activate_skill`, and reads the skill's other files with `read_file`.
+
+For example, to browse with Microsoft's playwright-cli skill, which ships with the CLI and drives Google Chrome:
+
+```sh
+npm install -g @playwright/cli
+mkdir -p ~/gremlin-work
+WORK_DIR=~/gremlin-work SKILLS_PATH=$(npm root -g)/@playwright/cli/skills \
+    bun run hello 'Use the playwright-cli skill to find the title of https://example.com'
+```
+
+### Set up for browsing
+
+- **Load the model with at least 32k of context.** The skill's instructions are about 4k tokens, and one page's snapshot can be 8k, while LM Studio loads models with 8k unless told otherwise: `lms load <model> --context-length 32768`, then check the loaded context with `lms ps`.
+- **Give the hello a working directory of its own,** outside the repository, such as `~/gremlin-work` above. Commands run there, and playwright-cli writes its snapshots there, in `.playwright-cli/`. With `WORK_DIR` unset it's the current directory; in this repository, `.playwright/` and `.playwright-cli/` are gitignored.
+- **Turn on LM Studio's token auth:** "Require Authentication" in its server settings, with one of its tokens in `.env` as `MODEL_API_KEY`. It keeps other local processes and web pages away from LM Studio's API, though not this shell.
+- **Keep keys in `.env`, not on the command line,** where a command could read them with `ps -E -p $PPID`. Neither this nor a dedicated `WORK_DIR` stops a command that goes looking.
 
 ## Configuration
 
@@ -85,11 +127,14 @@ Settings come from the environment, and from a local `.env` file, which is gitig
 | `MODEL` | the first loaded model | required | The model to use. With `lmstudio` it must be loaded |
 | `MODEL_REASONING_EFFORT` | `none` | the model's default | Sent as `reasoning.effort`; `none` keeps local reasoning models quick |
 | `LOG_FORMAT` | `pretty` | `pretty` | `pretty` formats the log for reading; `json` writes one JSON object per record |
+| `WORK_DIR` | the current directory | the current directory | The shell's working directory and `read_file`'s root. A relative path resolves against the current directory |
+| `SKILLS_PATH` | none | none | The directories that hold skills, separated by `:` (see [Skills](#skills)). A relative entry resolves against the current directory |
+| `MAX_TURNS` | `30` | `30` | The most turns a session takes: a positive whole number |
 
-For example, to ask OpenAI instead:
+For example, to use OpenAI instead, with `MODEL_API_KEY=sk-…` in `.env`:
 
 ```sh
-MODEL_PROVIDER=openai MODEL_API_KEY=sk-… MODEL=gpt-5.5 bun run hello
+MODEL_PROVIDER=openai MODEL=gpt-5.5 bun run hello
 ```
 
 ## Develop
@@ -127,9 +172,10 @@ bun run mutation       # Stryker mutation testing on Bun, which fails below 100%
 - **Every mutant must be caught.**
   - Stryker fails below a 100% mutation score, so a new branch or message needs a test that would notice it changing.
   - A mutant that behaves exactly like the original code, or sits in code that can't run, is usually better removed by simplifying the code.
-  - Where the code can't reasonably change, a `// Stryker disable next-line` comment turns the mutant off, with the reason on the line above. There are three: `main.ts`' final `throw`, how far `read_file` reads, and the `yaml` package's log level, where `''` behaves exactly like `'error'`.
+  - Where the code can't reasonably change, a `// Stryker disable next-line` comment turns the mutant off, with the reason on the line above. There are five: `main.ts`' final `throw`, how far `read_file` reads, the `yaml` package's log level, where `''` behaves exactly like `'error'`, and two for the sweep's `ps`: its process group, since it lists the same processes from any group, and its working directory, since `''` means the current one, which works the same while it exists.
 - **Vitest is pinned to 4.x** until [stryker-js#6210](https://github.com/stryker-mutator/stryker-js/issues/6210) is fixed: Stryker's Vitest runner silently stops working on Vitest 5 (see `stryker.config.mjs`).
 - **Tests fake the app's globals.** The app reads the environment, `fetch`, the clock and `console` directly, with nothing injected. Tests fake them with `vi.stubEnv`, `vi.stubGlobal` and `vi.spyOn`, and Vitest undoes every fake after each test. Importing `main.ts` runs it, so its tests import it only after faking, and never statically.
+- **Tests start real processes, and a guard checks every signal they send.** The shell's and the sweep's tests run real commands, on Bun and on Node, and assert outcomes and signals, never elapsed time. [`test/signal-guard.ts`](test/signal-guard.ts), a Vitest setup file that Stryker never mutates, wraps `process.kill`. It refuses, and fails the test for, a signal that could reach pid 0, -1 or 1, the test process or its parent, or a process the test file can't vouch for: one it started, one carrying a run ID it registered, or a descendant of either. So even a mutant that widens the sweep's match can't reach your own processes. Processes a test leaves carry a fresh random run ID, and end on their own after 30 seconds at most.
 
 ## CI
 

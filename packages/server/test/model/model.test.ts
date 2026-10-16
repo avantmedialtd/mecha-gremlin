@@ -8,6 +8,8 @@ const OPENAI: Config = {
     apiKey: 'sk-test',
     model: 'gpt-test',
     reasoningEffort: undefined,
+    skillsPath: undefined,
+    maxTurns: 30,
 };
 
 describe('resolveModel', () => {

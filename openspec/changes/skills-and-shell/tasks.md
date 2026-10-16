@@ -2,8 +2,8 @@ This change builds on `tests-on-bun` and `bun-or-node`. `tests-on-bun` runs the 
 
 ## 1. Core: skills (`skills`)
 
-- [ ] 1.1 `packages/core/src/skills.ts`: `splitFrontmatter(text)` (design decision 2): the text must start with a `---` line, and the frontmatter ends at the next `---` line, with CRLF accepted. It returns the frontmatter's text and the trimmed body, or a failure when there is no frontmatter
-- [ ] 1.2 `readSkill(directoryName, frontmatter, body)`, which takes the parsed frontmatter as `unknown` (design decision 2):
+- [x] 1.1 `packages/core/src/skills.ts`: `splitFrontmatter(text)` (design decision 2): the text must start with a `---` line, and the frontmatter ends at the next `---` line, with CRLF accepted. It returns the frontmatter's text and the trimmed body, or a failure when there is no frontmatter
+- [x] 1.2 `readSkill(directoryName, frontmatter, body)`, which takes the parsed frontmatter as `unknown` (design decision 2):
   - a mapping, not an array or `null`, or a failure;
   - a description that isn't blank, or a failure;
   - the name, falling back to the directory's name when it's missing, not a string or blank;
@@ -11,22 +11,22 @@ This change builds on `tests-on-bun` and `bun-or-node`. `tests-on-bun` runs the 
   - every other key ignored.
 
   `core` gains no dependency.
-- [ ] 1.3 `renderCatalog(skills)`: the instruction (a skill's own files, by absolute path), then `<available_skills>` sorted by name, with `&`, `<` and `>` escaped (decision 3)
-- [ ] 1.4 `renderActivation(skill, files)`: takes the skill and every file path below its directory, relative to it. It returns the `skill_content` element:
+- [x] 1.3 `renderCatalog(skills)`: the instruction (a skill's own files, by absolute path), then `<available_skills>` sorted by name, with `&`, `<` and `>` escaped (decision 3)
+- [x] 1.4 `renderActivation(skill, files)`: takes the skill and every file path below its directory, relative to it. It returns the `skill_content` element:
   - the body;
   - the `Skill directory:` line, and the line saying paths to the skill's own files are relative to it;
   - inside `<skill_resources>`, the files sorted, without `SKILL.md` at the top and without any path that has a segment starting with `.`;
   - at most 100, then a line giving how many more files there are, hidden ones not counted.
-- [ ] 1.5 Unit tests for every `skills` scenario about `splitFrontmatter`, `readSkill`, the catalog and the activation text. `readSkill` gets parsed objects: a mapping, an array, `null`, a string, and a mapping with extra keys.
+- [x] 1.5 Unit tests for every `skills` scenario about `splitFrontmatter`, `readSkill`, the catalog and the activation text. `readSkill` gets parsed objects: a mapping, an array, `null`, a string, and a mapping with extra keys.
 
 ## 2. Core: capped output (`shell-tool`)
 
-- [ ] 2.1 `packages/core/src/output.ts`: `startCapture(limit)`, `appendCapture(capture, chunk)` and `renderCapture(capture)` (decision 6):
+- [x] 2.1 `packages/core/src/output.ts`: `startCapture(limit)`, `appendCapture(capture, chunk)` and `renderCapture(capture)` (decision 6):
   - the head and a rolling tail of `limit / 2` bytes each, and the total;
   - the `[… N bytes omitted …]` line, with N counting every byte not shown;
   - cuts moved to UTF-8 boundaries by at most 3 bytes;
   - U+FFFD for invalid UTF-8, and `␀` for NUL.
-- [ ] 2.2 Unit tests:
+- [x] 2.2 Unit tests:
   - short and long output, with the exact counts from the spec's "Long output" scenario;
   - a 3-byte and a 4-byte character at the head's cut and at the tail's start;
   - characters split across chunks;
@@ -35,18 +35,18 @@ This change builds on `tests-on-bun` and `bun-or-node`. `tests-on-bun` runs the 
 
 ## 3. Server: loading skills and `activate_skill` (`skills`)
 
-- [ ] 3.1 `packages/server/src/skills/skills.ts`: `loadSkills(skillsPath, cwd)` (decision 1):
+- [x] 3.1 `packages/server/src/skills/skills.ts`: `loadSkills(skillsPath, cwd)` (decision 1):
   - splits on `:`, skips empty entries, and resolves each root against `cwd`;
   - reads each root's subdirectories in sorted order, and each `SKILL.md` with `splitFrontmatter`, then `parseYaml` from `@mecha-gremlin/yaml/parse`, then `readSkill`. A `parseYaml` failure becomes the reason that the frontmatter isn't valid YAML, quoting the parser's message;
   - records each skill's directory by its real path;
   - leaves out a skill whose name is already taken.
 
   It returns the skills, the ones not loaded (`path`, `reason`) and the warnings (`skill`, `warning`), for `main.ts` to log. All I/O goes through `node:fs/promises`.
-- [ ] 3.2 `packages/server/src/tools/activate-skill.ts`: `activateSkillTool(skills)` (decision 3):
+- [x] 3.2 `packages/server/src/tools/activate-skill.ts`: `activateSkillTool(skills)` (decision 3):
   - `defineTool`, with `z.strictObject({ name: z.enum(names) })` and the description from decision 3;
   - lists the files below the skill's directory at activation time, and renders them with `renderActivation`;
   - remembers the skills already activated, and answers a second activation with the short note.
-- [ ] 3.3 Tests in real temporary directories for every `skills` scenario about loading and activation:
+- [x] 3.3 Tests in real temporary directories for every `skills` scenario about loading and activation:
   - **roots:** a root holding a skill, entries that aren't skills, a relative root with empty entries, a blank `SKILLS_PATH`, a missing root, a root that is a file, a linked skill directory;
   - **names:** two roots that collide, and two directories in one root that declare the same name;
   - **rejected and warned:** a `SKILL.md` without frontmatter, frontmatter that isn't valid YAML, and a skill whose name differs from its directory;
@@ -61,22 +61,22 @@ This change builds on `tests-on-bun` and `bun-or-node`. `tests-on-bun` runs the 
 
 ## 4. Server: `read_file` reads the skills' directories (`read-file-tool`)
 
-- [ ] 4.1 `readFileTool(root, skillDirectories)` (decision 4):
+- [x] 4.1 `readFileTool(root, skillDirectories)` (decision 4):
   - any path resolves against the root, an absolute one staying as it is;
   - it's allowed when it lands inside the root or any skill directory, both lexically and by real path;
   - the refusal says it is outside "the directories read_file may read";
   - the tool's and the `path` argument's descriptions mention absolute paths inside a skill's directory.
 
   Update the `READ_LIMIT` comment: a browsing run needs a larger context than LM Studio's 8k default.
-- [ ] 4.2 Tests:
+- [x] 4.2 Tests:
   - the new scenarios: a skill's file by absolute path, a link out of a skill directory, a relative path that exists only in a skill directory;
   - `.env` inside a skill directory is refused;
   - the existing refusal messages updated.
 
 ## 5. Server: the shell (`shell-tool`)
 
-- [ ] 5.1 `packages/server/src/exec/env.ts`: `commandEnv(parentEnv, runId)`. It returns exactly the copied variables that are set, the fixed values (`PLAYWRIGHT_MCP_IDLE_TIMEOUT` included), `GREMLIN_RUN_ID` and `PLAYWRIGHT_CLI_SESSION` (decision 5). Its test asserts the exact object
-- [ ] 5.2 `packages/server/src/exec/run.ts`: `runCommand(command, options)`. The options are `cwd`, `env`, `timeoutMs`, `graceMs`, `pipeWaitMs` and `captureBytes`. It:
+- [x] 5.1 `packages/server/src/exec/env.ts`: `commandEnv(parentEnv, runId)`. It returns exactly the copied variables that are set, the fixed values (`PLAYWRIGHT_MCP_IDLE_TIMEOUT` included), `GREMLIN_RUN_ID` and `PLAYWRIGHT_CLI_SESSION` (decision 5). Its test asserts the exact object
+- [x] 5.2 `packages/server/src/exec/run.ts`: `runCommand(command, options)`. The options are `cwd`, `env`, `timeoutMs`, `graceMs`, `pipeWaitMs` and `captureBytes`. It:
   - checks the working directory first, and fails naming it when it's gone;
   - spawns `bash -c` with `spawnProcess` from `@mecha-gremlin/process/spawn`, with `detached: true`. A failed start fails the outcome with the reason;
   - waits on `exited`, never on the streams' end alone;
@@ -87,7 +87,7 @@ This change builds on `tests-on-bun` and `bun-or-node`. `tests-on-bun` runs the 
   - before it returns, cancels both streams' readers, clears every timer, then calls the subprocess's `unref()`;
   - resolves to `ok({ exitCode or signal, timedOut, cut, stdout, stderr })`, or `err(reason)`;
   - exposes a way to kill the running command's group and wait for it to end, for `dispose()`.
-- [ ] 5.3 `packages/server/src/exec/sweep.ts`:
+- [x] 5.3 `packages/server/src/exec/sweep.ts`:
   - a pure `findRunProcesses(psOutput, runId)`: the pid, ppid and pgid of each line holding `GREMLIN_RUN_ID=<id>`, preceded by a space and followed by a space or the end of the line;
   - a pure `checkMatches(matches, ownPid, parentPid)`: refuses a pid of 1 or below, the CLI's own pid or its parent, and more than 32 matches;
   - a pure `descendants(listing, pids)`, from the same listing;
@@ -97,7 +97,7 @@ This change builds on `tests-on-bun` and `bun-or-node`. `tests-on-bun` runs the 
     - SIGKILLs the survivors and their descendants' groups, but only groups above 1 that aren't the CLI's own;
     - skips `ESRCH` and `EPERM`;
     - resolves to a `Result` with the number stopped, and never rejects.
-- [ ] 5.4 `packages/server/src/tools/shell.ts`: `createShell({ workDir, runId, parentEnv, limits })` returns `{ handler, dispose }`:
+- [x] 5.4 `packages/server/src/tools/shell.ts`: `createShell({ workDir, runId, parentEnv, limits })` returns `{ handler, dispose }`:
   - `limits` defaults to 120 s, 2 s, 1 s and 32 KiB;
   - the closed schema and the description from decision 5, built from the limits;
   - `.playwright/` created before the first command, ignoring failure;
@@ -107,7 +107,7 @@ This change builds on `tests-on-bun` and `bun-or-node`. `tests-on-bun` runs the 
     - kills a running command's group and waits for it;
     - then sweeps;
     - returns the same promise on every call.
-- [ ] 5.5 A Vitest setup file (`setupFiles`; Stryker never mutates it) that wraps `process.kill` for every test. It fails the test when a signal would reach:
+- [x] 5.5 A Vitest setup file (`setupFiles`; Stryker never mutates it) that wraps `process.kill` for every test. It fails the test when a signal would reach:
   - 0, -1 or 1;
   - the test process or its parent;
   - a process the test can't vouch for.
@@ -119,7 +119,7 @@ This change builds on `tests-on-bun` and `bun-or-node`. `tests-on-bun` runs the 
   - every member of a process group whose leader was spawned during the test. The setup file records each spawned pid by wrapping `Bun.spawn`, when the runtime has it, and `ChildProcess.prototype.spawn`. `spawnProcess` uses the first on Bun and the second on Node.
 
   Signal 0 always passes.
-- [ ] 5.6 Tests with real processes, which run on Bun and on Node, on macOS locally and on ubuntu in CI, for every `shell-tool` scenario:
+- [x] 5.6 Tests with real processes, which run on Bun and on Node, on macOS locally and on ubuntu in CI, for every `shell-tool` scenario:
   - **the command:** the working directory, stdin, exit codes, a signal, a failed spawn, a deleted working directory, the cut-output line;
   - **the environment:** a variable set in the test's environment doesn't reach the command;
   - **the group:**
@@ -143,13 +143,13 @@ This change builds on `tests-on-bun` and `bun-or-node`. `tests-on-bun` runs the 
 
 ## 6. Server: the hello carries out a task (`model-hello`)
 
-- [ ] 6.1 `config.ts`:
+- [x] 6.1 `config.ts`:
   - `loadWorkDir(env)`, beside `loadLogFormat`, returns `WORK_DIR`'s trimmed value or undefined, so `main.ts` has it even when `loadConfig` fails;
   - `loadConfig` reads `SKILLS_PATH`, and `MAX_TURNS`, a positive integer in decimal digits defaulting to 30;
   - `MAX_TURNS` is checked whatever `MODEL_PROVIDER` holds, so an unknown provider doesn't hide its error;
   - each problem is named in its own error, and both functions stay pure.
-- [ ] 6.2 `main/args.ts`: `parseArgs` returns the task: the arguments joined with spaces, or the default task
-- [ ] 6.3 `main.ts`:
+- [x] 6.2 `main/args.ts`: `parseArgs` returns the task: the arguments joined with spaces, or the default task
+- [x] 6.3 `main.ts`:
   - **settings:** resolves `WORK_DIR` against the current directory and checks it's an existing directory, even when `loadConfig` reports errors, then logs every error and exits; afterwards uses its real path everywhere;
   - **skills:** loads them, and logs `skill not loaded`, `skill warning` and `skills`;
   - **run ID:** the first 8 hexadecimal characters of `crypto.randomUUID()`;
@@ -157,10 +157,10 @@ This change builds on `tests-on-bun` and `bun-or-node`. `tests-on-bun` runs the 
   - **session:** builds the developer item (decision 9), adding the catalog when there are skills, and passes `read_file`, `shell`, then `activate_skill` to `createSession` with `maxTurns`;
   - **log:** `asking` with `model`, `baseUrl`, `run`, `workDir` and `task`;
   - **at the end:** awaits `dispose()` in a `finally`, logs `stopped` or `cleanup failed`, and removes the handlers.
-- [ ] 6.4 `main/failure.ts`:
+- [x] 6.4 `main/failure.ts`:
   - the turn-limit message suggests a narrower task or a higher `MAX_TURNS`;
   - the timeout, incomplete and no-answer messages speak of the task.
-- [ ] 6.5 Tests for every `model-hello` scenario, with the fake model server, a temporary `WORK_DIR` (a symbolic link in its own test) and a temporary `SKILLS_PATH`:
+- [x] 6.5 Tests for every `model-hello` scenario, with the fake model server, a temporary `WORK_DIR` (a symbolic link in its own test) and a temporary `SKILLS_PATH`:
   - **setup:** `WORK_DIR`, `SKILLS_PATH` and `MAX_TURNS` join `main.test.ts`' `SETTINGS`, so a developer's own settings can't leak in;
   - **the task:** the default task, a task from the arguments;
   - **the session:** the tools offered with and without skills, the developer item, an answer after a real `shell` command, `MAX_TURNS`;
@@ -177,7 +177,7 @@ This change builds on `tests-on-bun` and `bun-or-node`. `tests-on-bun` runs the 
 
 ## 7. Docs
 
-- [ ] 7.1 README:
+- [x] 7.1 README:
   - **the hello:** its task form, with quoted examples and why quoting matters in zsh;
   - **settings:** `WORK_DIR`, `SKILLS_PATH` and `MAX_TURNS` in the settings table;
   - **the shell:** what it does, its limits, and what it can reach: anything your account can (D18). An environment built from scratch stops accidental leaks, not a command that goes looking;
@@ -188,17 +188,17 @@ This change builds on `tests-on-bun` and `bun-or-node`. `tests-on-bun` runs the 
     - LM Studio's token auth;
     - keys in `.env`, not on the command line, where a command can read them with `ps -E -p $PPID`. The OpenAI example keeps `MODEL_API_KEY` in `.env` and passes only `MODEL_PROVIDER=openai MODEL=gpt-5.5` inline;
   - **other sections:** what `read_file` reads now, the layout table, and the Stryker-disable count.
-- [ ] 7.2 `packages/server/package.json`:
+- [x] 7.2 `packages/server/package.json`:
   - `description`: the app carries out a task with a shell, `read_file` and skills;
   - the dependencies `@mecha-gremlin/yaml` and `@mecha-gremlin/process`, `workspace:*`. Run `bun install`.
-- [ ] 7.3 `.gitignore`: add `.playwright/` and `.playwright-cli/`
+- [x] 7.3 `.gitignore`: add `.playwright/` and `.playwright-cli/`
 
 ## 8. Verification
 
-- [ ] 8.1 `bun run check` passes: format, lint, type-check, and the tests on Bun and on Node
-- [ ] 8.2 `bun run mutation` reaches 100%. Where a mutant can't be caught, simplify the code, or disable it with a `// Stryker disable` comment and its reason
+- [x] 8.1 `bun run check` passes: format, lint, type-check, and the tests on Bun and on Node
+- [x] 8.2 `bun run mutation` reaches 100%. Where a mutant can't be caught, simplify the code, or disable it with a `// Stryker disable` comment and its reason
 - [ ] 8.3 CI passes on ubuntu, including the shell and sweep tests against procps' `ps`
-- [ ] 8.4 Against the local LM Studio, after recording the loaded model's context with `lms ps`:
+- [x] 8.4 Against the local LM Studio, after recording the loaded model's context with `lms ps`:
   - `bun run hello` answers the default task by reading `package.json`, and so does `bun run hello:node`, on Node;
   - with `SKILLS_PATH=$(npm root -g)/@playwright/cli/skills` and a dedicated `WORK_DIR`, `bun run hello 'Use the playwright-cli skill to find the title of https://example.com'` activates the skill, runs `playwright-cli`, answers "Example Domain", and exits 0;
   - afterwards `pgrep -fl gremlin-<run>` prints nothing, where `<run>` is the `asking` record's `run`. Either the model closed the browser itself, or the log shows `stopped`;

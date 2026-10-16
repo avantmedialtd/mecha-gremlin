@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { loadConfig, loadLogFormat } from '../../src/config/config.ts';
+import { loadConfig, loadLogFormat, loadWorkDir } from '../../src/config/config.ts';
 
 describe('loadConfig', () => {
     test('defaults to a local LM Studio with nothing set', () => {
@@ -11,6 +11,8 @@ describe('loadConfig', () => {
                 apiKey: 'lm-studio',
                 model: undefined,
                 reasoningEffort: 'none',
+                skillsPath: undefined,
+                maxTurns: 30,
             },
         });
     });
@@ -57,6 +59,8 @@ describe('loadConfig', () => {
                 apiKey: 'sk-test',
                 model: 'gpt-test',
                 reasoningEffort: undefined,
+                skillsPath: undefined,
+                maxTurns: 30,
             },
         });
     });
@@ -128,13 +132,75 @@ describe('loadConfig', () => {
     });
 
     test('reports every invalid variable at once', () => {
-        expect(loadConfig({ MODEL_BASE_URL: 'nope', MODEL_REASONING_EFFORT: 'extreme' })).toEqual({
+        expect(
+            loadConfig({
+                MODEL_BASE_URL: 'nope',
+                MODEL_REASONING_EFFORT: 'extreme',
+                MAX_TURNS: 'lots',
+            }),
+        ).toEqual({
             ok: false,
             error: [
                 expect.stringContaining('MODEL_BASE_URL'),
                 expect.stringContaining('MODEL_REASONING_EFFORT'),
+                expect.stringContaining('MAX_TURNS'),
             ],
         });
+    });
+
+    test('SKILLS_PATH is passed through, trimmed', () => {
+        expect(loadConfig({ SKILLS_PATH: ' /skills:relative ' })).toMatchObject({
+            ok: true,
+            value: { skillsPath: '/skills:relative' },
+        });
+        expect(loadConfig({ SKILLS_PATH: '   ' })).toMatchObject({
+            ok: true,
+            value: { skillsPath: undefined },
+        });
+    });
+
+    test.each([
+        ['1', 1],
+        ['3', 3],
+        ['12', 12],
+        ['007', 7],
+        [' 5 ', 5],
+    ])('MAX_TURNS=%j is a turn limit of %d', (value, turns) => {
+        expect(loadConfig({ MAX_TURNS: value })).toMatchObject({
+            ok: true,
+            value: { maxTurns: turns },
+        });
+    });
+
+    test.each(['0', '-1', '2.5', 'lots', '+12', '1e3', '0x10', '2.0'])(
+        'MAX_TURNS=%j is refused',
+        (value) => {
+            expect(loadConfig({ MAX_TURNS: value })).toEqual({
+                ok: false,
+                error: [`MAX_TURNS must be a positive whole number, such as 30; got "${value}".`],
+            });
+        },
+    );
+
+    test("an unknown provider doesn't hide an invalid MAX_TURNS", () => {
+        expect(loadConfig({ MODEL_PROVIDER: 'anthropic', MAX_TURNS: '0' })).toEqual({
+            ok: false,
+            error: [
+                'MODEL_PROVIDER must be one of lmstudio, openai; got "anthropic".',
+                'MAX_TURNS must be a positive whole number, such as 30; got "0".',
+            ],
+        });
+    });
+});
+
+describe('loadWorkDir', () => {
+    test.each([
+        [undefined, undefined],
+        ['', undefined],
+        ['  ', undefined],
+        [' ../work ', '../work'],
+    ])('%j gives %j', (value, workDir) => {
+        expect(loadWorkDir({ WORK_DIR: value })).toBe(workDir);
     });
 });
 

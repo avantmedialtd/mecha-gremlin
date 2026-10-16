@@ -14,6 +14,8 @@ const config: Config = {
     apiKey: 'test-key',
     model: undefined,
     reasoningEffort: 'none',
+    skillsPath: undefined,
+    maxTurns: 30,
 };
 
 /** A `/api/v1/models` payload, shaped like LM Studio 0.4's. */

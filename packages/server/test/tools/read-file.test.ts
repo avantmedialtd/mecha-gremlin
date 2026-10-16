@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type ToolOutcome, toFunctionTool } from '@mecha-gremlin/core/tools';
@@ -7,11 +7,18 @@ import { READ_LIMIT, readFileTool } from '../../src/tools/read-file.ts';
 
 let root: string;
 let outside: string;
+// A skill's directory is given by its real path, as loadSkills records it.
+let skill: string;
 
 beforeAll(async () => {
     root = await mkdtemp(join(tmpdir(), 'read-file-root-'));
     outside = await mkdtemp(join(tmpdir(), 'read-file-outside-'));
+    skill = await realpath(await mkdtemp(join(tmpdir(), 'read-file-skill-')));
     await writeFile(join(outside, 'secret.txt'), 'top secret');
+    await mkdir(join(skill, 'references'));
+    await writeFile(join(skill, 'references', 'forms.md'), '# Forms\n');
+    await writeFile(join(skill, '.env'), 'SKILL_SECRET=1');
+    await symlink(join(outside, 'secret.txt'), join(skill, 'leak.md'));
 
     await writeFile(join(root, 'notes.txt'), 'hello');
     await writeFile(join(root, 'latin1.txt'), new Uint8Array([0x63, 0x61, 0x66, 0xe9, 0x21]));
@@ -42,11 +49,14 @@ afterAll(async () => {
     await chmod(join(root, 'locked.txt'), 0o600);
     await rm(root, { recursive: true, force: true });
     await rm(outside, { recursive: true, force: true });
+    await rm(skill, { recursive: true, force: true });
 });
 
 const read = (path: string): Promise<ToolOutcome> => {
-    return readFileTool(root).invoke(JSON.stringify({ path }));
+    return readFileTool(root, [skill]).invoke(JSON.stringify({ path }));
 };
+
+const OUTSIDE = 'is outside the directories read_file may read.';
 
 const errorOf = (outcome: ToolOutcome): string => {
     expect(outcome.ok).toBe(false);
@@ -72,8 +82,28 @@ describe('Read a UTF-8 text file under a root directory', () => {
         expect(await read(join(root, 'notes.txt'))).toEqual({ ok: true, value: 'hello' });
     });
 
+    test("reads a skill's file by its absolute path", async () => {
+        expect(await read(join(skill, 'references', 'forms.md'))).toEqual({
+            ok: true,
+            value: '# Forms\n',
+        });
+    });
+
+    test('without skill directories, only the root', async () => {
+        const tool = readFileTool(root, []);
+        const inRoot = await tool.invoke(JSON.stringify({ path: 'notes.txt' }));
+        const inSkill = await tool.invoke(
+            JSON.stringify({ path: join(skill, 'references', 'forms.md') }),
+        );
+
+        expect(inRoot).toEqual({ ok: true, value: 'hello' });
+        expect(errorOf(inSkill)).toBe(
+            `${JSON.stringify(join(skill, 'references', 'forms.md'))} ${OUTSIDE}`,
+        );
+    });
+
     test('the model sees a closed schema', () => {
-        const tool = toFunctionTool(readFileTool(root).tool);
+        const tool = toFunctionTool(readFileTool(root, []).tool);
 
         expect(tool).toMatchObject({ type: 'function', name: 'read_file', strict: true });
         expect(tool.parameters).toEqual({
@@ -85,41 +115,65 @@ describe('Read a UTF-8 text file under a root directory', () => {
     });
 
     test('the model is told what the tool reads, and how much', () => {
-        const tool = toFunctionTool(readFileTool(root).tool);
+        const tool = toFunctionTool(readFileTool(root, []).tool);
 
-        expect(tool.description).toContain('UTF-8 text file in the working directory');
-        expect(tool.description).toContain('32 KiB');
+        expect(tool.description).toBe(
+            "Read a UTF-8 text file and return its contents. The path is relative to the working directory, or absolute inside a skill's directory. Files over 32 KiB are cut short, with a note saying so.",
+        );
         expect(tool.parameters).toMatchObject({
             properties: {
-                path: { description: expect.stringContaining('relative to the working directory') },
+                path: {
+                    description:
+                        "The file's path: relative to the working directory, such as README.md or docs/guide.md, or absolute inside a skill's directory",
+                },
             },
         });
     });
 
     test('extra arguments are rejected before any file is read', async () => {
         // Had the file been looked up, a missing one would say so.
-        const error = errorOf(await readFileTool(root).invoke('{"path":"missing.txt","limit":5}'));
+        const error = errorOf(
+            await readFileTool(root, []).invoke('{"path":"missing.txt","limit":5}'),
+        );
 
         expect(error).toContain('(root): Unrecognized key: "limit"');
         expect(error).not.toContain('No such file');
     });
 });
 
-describe('Never read outside the root', () => {
+describe('Never read outside the root and the skill directories', () => {
     test.each(['..', '../secret.txt', '/etc/hosts', 'docs/../../secret.txt'])(
         '%s',
         async (path) => {
-            expect(errorOf(await read(path))).toBe(
-                `${JSON.stringify(path)} is outside the directory read_file may read.`,
-            );
+            expect(errorOf(await read(path))).toBe(`${JSON.stringify(path)} ${OUTSIDE}`);
         },
     );
 
     test('a symbolic link pointing outside', async () => {
         const error = errorOf(await read('link.txt'));
 
-        expect(error).toBe('"link.txt" is outside the directory read_file may read.');
+        expect(error).toBe(`"link.txt" ${OUTSIDE}`);
         expect(error).not.toContain('top secret');
+    });
+
+    test('a link out of a skill directory', async () => {
+        const path = join(skill, 'leak.md');
+        const error = errorOf(await read(path));
+
+        expect(error).toBe(`${JSON.stringify(path)} ${OUTSIDE}`);
+        expect(error).not.toContain('top secret');
+    });
+
+    test('a relative path stays in the root', async () => {
+        expect(errorOf(await read('references/forms.md'))).toBe(
+            'No such file: "references/forms.md".',
+        );
+    });
+
+    test("a path that leaves a skill's directory", async () => {
+        const path = join(skill, '..', 'elsewhere.md');
+
+        expect(errorOf(await read(path))).toBe(`${JSON.stringify(path)} ${OUTSIDE}`);
     });
 
     test('a symbolic link pointing inside', async () => {
@@ -138,6 +192,16 @@ describe('Refuse secrets, directories and binary files', () => {
         expect(error).toBe(
             `${JSON.stringify(path)} is an environment file. read_file doesn't read those: they hold secrets.`,
         );
+    });
+
+    test('an environment file inside a skill directory', async () => {
+        const path = join(skill, '.env');
+        const error = errorOf(await read(path));
+
+        expect(error).toBe(
+            `${JSON.stringify(path)} is an environment file. read_file doesn't read those: they hold secrets.`,
+        );
+        expect(error).not.toContain('SKILL_SECRET');
     });
 
     test('a link to an environment file', async () => {

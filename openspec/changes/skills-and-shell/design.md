@@ -119,7 +119,7 @@ The Brief already decides most of this change's shape:
   </available_skills>
   ```
   - `&`, `<` and `>` in names and descriptions are escaped, so a description can't close a tag.
-  - Sorting keeps the developer item byte-identical between runs with the same skills, which the prompt cache wants (4.6).
+  - Sorting keeps the developer item byte-identical between runs with the same skills, which the prompt cache wants (4.6). The order is by code unit, which no locale or ICU version changes, the same order as the `skills` record's.
   - The skill's location isn't listed: activation gives its directory, so the guide lets the catalog leave it out.
 - **`activate_skill`** is a tool in the server, offered only when at least one skill is loaded.
   - **Description:** "Load a skill's full instructions, with its directory and the list of its files. Name a skill from the available_skills list in your instructions."
@@ -140,7 +140,8 @@ The Brief already decides most of this change's shape:
     ```
   - **The path line is narrow on purpose.** playwright-cli's SKILL.md also shows paths that commands print, such as `.playwright-cli/page-….yml`. Those are relative to the working directory, and the developer item says so (decision 9). A blanket "relative paths in this skill" would send the model to the skill's directory for them.
   - **Files** are listed when the skill is activated, not read.
-    - Every file below the skill's directory is listed by its path relative to that directory, sorted. `SKILL.md` at the top is left out, and so is every path with a segment starting with `.`, judged on the relative path, so a skill under `~/.agents/skills` still lists its files.
+    - The skill's name, in the `name` attribute, and the file paths are escaped like the catalog's text, with `"` in the name as `&quot;`. Lenient reading accepts any name, and a `"` or `<` would otherwise break the element.
+    - Every regular file below the skill's directory is listed by its path relative to that directory, sorted. The walk doesn't enter hidden directories, so a git-cloned skill's `.git` costs nothing, and it neither follows nor lists links, so a link can't make it loop. `SKILL.md` at the top is left out, and so is every path with a segment starting with `.`, judged on the relative path, so a skill under `~/.agents/skills` still lists its files.
     - At most 100 are listed. When more remain, a line inside `<skill_resources>` gives how many more files there are; hidden files aren't counted.
   - **A second activation** of the same skill in a session returns a short note saying it's already active, rather than the same instructions again (the guide's deduplication).
 - **Why a tool rather than reading SKILL.md:**
@@ -191,7 +192,7 @@ The Brief already decides most of this change's shape:
   - **After bash exits** (without a timeout), the runner waits up to `pipeWaitMs` for both readers to reach the end of their streams, then SIGKILLs the whole group, cancels both readers and returns what it read. `exited` resolves at once even while a background child holds a pipe (Context), so a background child can't hang the call by holding a pipe (R10), and background jobs don't outlive the command.
   - **A process that leaves the command's process group isn't stopped this way.** It can leave by starting a session of its own, as playwright-cli's daemon does, through job control such as `set -m`, or through a tool that makes its own group, such as GNU `timeout`.
   - When the session ends, the sweep stops it if `ps` shows its run ID (decision 7). On macOS, an Apple binary's run ID doesn't show.
-  - **Group kills** go only to an integer process group above 1, through `process.kill(-pgid, signal)`. A wrong value such as 0 would reach the CLI's own group.
+  - **Group kills** go only to an integer process group above 1, through `process.kill(-pgid, signal)`. A wrong value such as 0 would reach the CLI's own group. The runner ignores any error from them: `ESRCH` once the group is empty, or `EPERM` when only a setuid program is left in it. They run from timers and an abort listener, where a throw would crash the hello.
   - **Handles:** when the runner returns, it has cancelled both readers, cleared every timer it set, and called the subprocess's `unref()`, in that order: `unref()` frees the hello only once both streams are cancelled (Context). A child that left the group may still hold a pipe, and the hello must not wait for it before exiting.
   - **Output cap:** each stream keeps its first 16 KiB and its last 16 KiB through `core`'s capture (decision 6). That's the same 32 KiB as `read_file`, so a typical page's snapshot arrives whole. Memory stays flat whatever the command writes, because the streams are read and the middle discarded, never buffered (C3).
 - **What the model gets back** is an `ok` outcome whatever the exit code:
@@ -224,7 +225,7 @@ The Brief already decides most of this change's shape:
 **6. `core` caps command output with a pure reducer.**
 - **`core/output.ts`:**
   - `startCapture(limit)` returns an empty capture;
-  - `appendCapture(capture, chunk)` returns a new capture. It keeps the first `limit / 2` bytes, a rolling window of the last `limit / 2`, and the total byte count;
+  - `appendCapture(capture, chunk)` returns a new capture. It keeps the first half of the limit in bytes, rounded down, a rolling window of the last half, and the total byte count. A limit below 2 counts as 2;
   - `renderCapture(capture)` returns the text:
     - the head, then, when anything was dropped, a line of its own reading `[… N bytes omitted …]`, then the tail;
     - N counts every byte not shown, including those dropped by moving a cut to a character boundary;
@@ -236,13 +237,15 @@ The Brief already decides most of this change's shape:
 **7. When a session ends, every process it started is stopped.**
 - **Run ID:** every hello run gets one, the first 8 hexadecimal characters of `crypto.randomUUID()`, logged in the `asking` record.
 - **Every command carries it** as `GREMLIN_RUN_ID` (C3), and as `PLAYWRIGHT_CLI_SESSION=gremlin-<run id>`. So a run drives a browser of its own, not the `default` session every caller of the install shares (R12.2).
-- **The `.playwright/` folder:** before its first command, the shell creates `.playwright/` in the working directory if it's missing. playwright-cli then scopes `list` and `close-all` to the sessions started from that directory (R12.2). That holds only within the working directory, and only for the CLI's own scoping: a host shell can still reach anything the user can (D18). A failure to create it is ignored, since playwright-cli works without it.
+- **The `.playwright/` folder:** before each command, the shell creates `.playwright/` in the working directory if it's missing, without creating any parent, so a deleted working directory stays deleted. Doing it every time keeps the scoping when a command has removed the folder. playwright-cli then scopes `list` and `close-all` to the sessions started from that directory (R12.2). That holds only within the working directory, and only for the CLI's own scoping: a host shell can still reach anything the user can (D18). A failure to create it is ignored, since playwright-cli works without it.
 - **The shell's `dispose()`**, called when the session ends, whatever the outcome:
   1. **Closes the shell.** From then on, a `shell` call starts nothing and fails with "the session is stopping; the command was not run".
      - Killing the running command resumes the session, which goes straight on to its next call or turn while the sweep is still running. Without the closed state, a new command could start after the listing and outlive the run.
      - The handler checks the state immediately before `spawn`, after its own awaits (the working-directory check and the `.playwright/` folder). A call that began before `dispose()` therefore can't start a command after it.
-  2. **Kills the running command,** if there is one, with SIGKILL to its group, and waits for it to end. Its dying processes then don't show up in the listing, and the count is deterministic.
-  3. **Lists processes** in one call, `ps axeww -o pid=,ppid=,pgid=,command=`, run with `spawnProcess` in a fixed environment (`PATH`, `LC_ALL=C`) and not detached, its output read whole, however long. A process matches when its line holds `GREMLIN_RUN_ID=<run id>`, preceded by a space and followed by a space or the end of the line. The match runs over the command line and the environment as `ps` prints them, so a process whose arguments name this run's ID matches too.
+  2. **Kills the running command,** if there is one, with SIGKILL to its group, and waits for it to end. Its dying processes then don't show up in the listing, and the count is deterministic. `runCommand` takes an `AbortSignal`, which `dispose()` aborts; the runner checks it right before spawning, after its own awaits.
+  3. **Lists processes** in one call, `ps axeww -o pid=,ppid=,pgid=,command=`, run with `spawnProcess` from `/`, not detached, with only `PATH` in its environment. With no locale variable set, `ps` prints in the C locale, so `LC_ALL=C` would change nothing. Its output is read whole, however long:
+     - **within 10 seconds.** A `ps` that takes longer, for example stuck on a process in uninterruptible sleep, is killed with SIGKILL, and the sweep fails. So `dispose()` always ends;
+     - **with environments shown.** A listing whose line for the hello shows no `PATH` fails the sweep: a `ps` that can't show environments would otherwise stop nothing without a word. A process matches when its line holds `GREMLIN_RUN_ID=<run id>`, preceded by a space and followed by a space or the end of the line. The match runs over the command line and the environment as `ps` prints them, so a process whose arguments name this run's ID matches too.
   4. **Guards against a wide match.** The sweep signals nothing, and reports why, when a match is pid 1 or below, is the CLI's own process or its parent, or there are more than 32 matches. Stryker activates one mutant at a time, so a mutant that widens the matcher can't also remove this guard, which has tests of its own.
   5. **Signals.** Before signalling, it records each match's descendants from the same listing. It sends each match SIGTERM, then polls every 50 ms until they've all exited or the grace ends.
   6. **Escalates.** When the grace ends, it SIGKILLs the matches still running, and the process groups of their descendants still running. A daemon killed this way would otherwise leave Chrome, which leads its own group and hides its environment, beyond any sweep. A group kill goes only to a group above 1 that isn't the CLI's own, the runner's rule, so a parsing slip can't reach the hello's group or every process the user owns.
@@ -265,7 +268,7 @@ The Brief already decides most of this change's shape:
   - stops the loop over the session's steps;
   - awaits `dispose()`;
   - exits with 130 for SIGINT, 143 for SIGTERM or 129 for SIGHUP.
-- **Later signals** are ignored while `dispose()` runs. Under `bun run`, one Ctrl-C reaches `main.ts` twice, and a "second Ctrl-C forces exit" rule would skip cleanup every time.
+- **Later signals** are ignored while `dispose()` runs. Under `bun run`, one Ctrl-C reaches `main.ts` twice, and a "second Ctrl-C forces exit" rule would skip cleanup every time. So is any signal once the session has ended and its final `dispose()` has started: the answer stands, and the listing's 10-second limit keeps the sweep from hanging the hello.
 - **`process.exit` is used here, unlike anywhere else,** because the session may be suspended mid-turn, waiting on the model, and has no way to end on its own.
 - **Alternative:** passing an abort signal through the session into `runTurn` and the shell, so the session ends with a step. That's cleaner, but it widens `createSession`'s contract for a case where exiting is all that's wanted.
 
@@ -345,6 +348,7 @@ The Brief already decides most of this change's shape:
   - the signal tests emit the signal on `process` while a turn is pending, stub `process.exit`, and wait for it with `vi.waitFor`;
   - a test checks that `process` ends with as many signal listeners as it started with.
 - **Live, by hand:** with LM Studio and the playwright-cli skill, a browsing task answers. Afterwards no process of the run's session is left. On Node, `bun run hello:node` answers the default task through the shell.
+- **Timing:** the describes that run real processes get a 15-second timeout, since CI's runners are slower than the Mac. The safety net vouches for what a test file started for the file's whole run, so a runner that outlives a failed test can still kill its own group.
 - **Stryker:** 100%, as before. A `// Stryker disable` comment needs its reason above it.
 
 **11. Documentation.**
@@ -370,6 +374,7 @@ The Brief already decides most of this change's shape:
 - **A browsing run needs a large context.** The skill's instructions are about 4k tokens, and one snapshot read can be about 8k. LM Studio loads models at 8k unless told otherwise. → The README says to load with at least 32k and check with `lms ps`. The live check records the loaded context. A context check waits for C8.
 - **A small local model ignores the skill or misuses it.** → The developer item says to activate a matching skill first, and the task can name the skill. Errors and refusals go back to the model, and `MAX_TURNS` ends a run that goes in circles.
 - **Context grows with every snapshot,** up to 32 KiB each. → The skill teaches `find`, `--depth` and `eval`, and a cut output says how to see the rest. Budgets and compaction come later (C8, C5).
+- **On Linux, one browser may trip the 32-match guard.** procps shows other processes' environments, and Chrome's processes inherit `GREMLIN_RUN_ID` from the daemon, so each counts as a match. A heavy page with many cross-site frames could pass 32, and the sweep would then stop nothing, leaving the browser to its 15-minute idle timeout. The Mac hides Chrome's environment, so it's unaffected. → Check on Linux before M1. If it trips, count and signal only the matches whose parent isn't a match, and let the escalation reach the rest.
 - **The sweep can't see every process.** → macOS hides the environment of Apple's own binaries and of Chrome.
   - The daemon shows its run ID, and stopping it stops the browser (measured).
   - The escalation kills descendants' groups, so a daemon killed with SIGKILL can't strand Chrome.

@@ -1,17 +1,8 @@
-const DEFAULT_FILE = 'package.json';
-/** Unanswerable without reading the file, so it shows the tool loop at work. */
-const DEFAULT_QUESTION = 'What exact command does the check script run? Quote it.';
-const FILE_QUESTION = 'What is this file for? Answer in two or three sentences.';
+// Unanswerable without reading package.json, so it shows the tool loop at work.
+const DEFAULT_TASK = 'What exact command does the check script in package.json run? Quote it.';
 
-/** The question's words are joined, so it needn't be quoted. */
-export const parseArgs = (
-    args: readonly string[],
-): { readonly file: string; readonly question: string } => {
-    const [file, ...words] = args;
-
-    if (file === undefined) {
-        return { file: DEFAULT_FILE, question: DEFAULT_QUESTION };
-    }
-
-    return { file, question: words.length > 0 ? words.join(' ') : FILE_QUESTION };
+// The task's words are joined, but the shell reads `?`, `*`, `&`, `;`, `!` and `$` itself, and
+// zsh stops at an unquoted `?`, so the README quotes every task.
+export const parseArgs = (args: readonly string[]): string => {
+    return args.length > 0 ? args.join(' ') : DEFAULT_TASK;
 };

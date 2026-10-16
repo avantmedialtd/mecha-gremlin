@@ -60,7 +60,7 @@ The command's environment SHALL NOT be the server's own. bash SHALL be started w
 - `CI=1`, `NO_COLOR=1`, `TERM=dumb`, `PAGER=cat`, `GIT_PAGER=cat`, `GIT_TERMINAL_PROMPT=0`, `DEBIAN_FRONTEND=noninteractive` and `PLAYWRIGHT_MCP_IDLE_TIMEOUT=900000`;
 - `GREMLIN_RUN_ID`, the run ID, and `PLAYWRIGHT_CLI_SESSION`, which is `gremlin-` followed by the run ID.
 
-Before its first command, the tool SHALL create the directory `.playwright` in the working directory if it's missing, and SHALL ignore a failure to create it.
+Before each command, the tool SHALL create the directory `.playwright` in the working directory if it's missing, and SHALL ignore a failure to create it.
 
 #### Scenario: The server's secrets stay out
 - **WHEN** the server's environment holds `MODEL_API_KEY`, and the command is `env`
@@ -145,8 +145,12 @@ Cuts SHALL move to UTF-8 character boundaries, invalid UTF-8 SHALL be decoded as
 The tool SHALL provide `dispose()`, for the server to call when the session ends. It SHALL:
 1. close the shell, so that no command starts from then on, including one whose call began earlier and hasn't been spawned yet. Each such call SHALL fail, saying the session is stopping;
 2. SIGKILL the process group of a command that is still running, and wait for that command to end;
-3. list processes with `ps axeww -o pid=,ppid=,pgid=,command=`. A process matches when its line, its command line and environment as `ps` prints them, holds `GREMLIN_RUN_ID=` and the run ID, preceded by a space and followed by a space or the end of the line;
-4. signal nothing, and report why, when a match is process 1 or below, is the server's own process or its parent, or when more than 32 processes match;
+3. list processes with `ps axeww -o pid=,ppid=,pgid=,command=`, run from `/` with only `PATH` in its environment. A process matches when its line, its command line and environment as `ps` prints them, holds `GREMLIN_RUN_ID=` and the run ID, preceded by a space and followed by a space or the end of the line;
+4. signal nothing, and report why, when:
+   - `ps` doesn't list the processes within 10 seconds. It SHALL then be killed;
+   - the listing doesn't show the server's own process with a `PATH` in its environment, so `ps` can't show environments;
+   - a match is process 1 or below, or is the server's own process or its parent;
+   - more than 32 processes match;
 5. send each match SIGTERM, and when the grace period ends, SIGKILL the matches still running, and the process groups of their descendants that are still running, as recorded from the same listing. A group kill SHALL go only to a process group above 1 that isn't the server's own;
 6. skip processes that have already exited, or belong to another user;
 7. resolve to a `Result`: the number of matching processes it stopped, or why it couldn't run. It SHALL NOT reject, and every later call SHALL return the first call's result.
@@ -174,6 +178,14 @@ The tool SHALL provide `dispose()`, for the server to call when the session ends
 #### Scenario: Nothing to stop
 - **WHEN** no process carries the run ID
 - **THEN** `dispose()` resolves to `ok` with 0
+
+#### Scenario: A ps that hangs
+- **WHEN** `ps` doesn't finish within the listing's time limit
+- **THEN** it is killed, `dispose()` resolves to an error saying `ps` didn't list the processes in time, and nothing is signalled
+
+#### Scenario: A ps that can't show environments
+- **WHEN** the listing shows the server's own process without its environment
+- **THEN** `dispose()` resolves to an error saying so, and nothing is signalled
 
 #### Scenario: No command after dispose
 - **WHEN** `dispose()` has started, and the model then calls `shell`

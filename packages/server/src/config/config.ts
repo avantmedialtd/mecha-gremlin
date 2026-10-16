@@ -16,6 +16,9 @@ const REASONING_EFFORTS = [
 
 const PROVIDERS = ['lmstudio', 'openai'] as const;
 
+// Room for about a dozen page actions, at two turns each.
+const DEFAULT_MAX_TURNS = 30;
+
 /**
  * Which kind of OpenAI-compatible service serves the model. It only changes how the model is
  * chosen: `lmstudio` can ask LM Studio which model is loaded; any other provider must name it.
@@ -44,6 +47,9 @@ export type Config = {
     readonly model: string | undefined;
     /** Sent as `reasoning.effort`. Undefined leaves the model's own default. */
     readonly reasoningEffort: Effort | undefined;
+    // The skills roots, separated by `:` as in PATH. Undefined loads no skill.
+    readonly skillsPath: string | undefined;
+    readonly maxTurns: number;
 };
 
 export type Env = Readonly<Record<string, string | undefined>>;
@@ -118,6 +124,23 @@ const checkModel = (
     return ok(raw);
 };
 
+// Digits only: Number() would also take 1e3, 0x10 and 2.0.
+const checkMaxTurns = (raw: string | undefined): Result<number, string> => {
+    if (raw === undefined) {
+        return ok(DEFAULT_MAX_TURNS);
+    }
+
+    if (!/^\d+$/.test(raw) || Number(raw) < 1) {
+        return err(`MAX_TURNS must be a positive whole number, such as 30; got "${raw}".`);
+    }
+
+    return ok(Number(raw));
+};
+
+const problemsOf = (checks: readonly Result<unknown, string>[]): string[] => {
+    return checks.flatMap((check) => (check.ok ? [] : [check.error]));
+};
+
 const checkEffort = (raw: string | undefined): Result<Effort | undefined, string> => {
     if (raw === undefined || isEffort(raw)) {
         return ok(raw);
@@ -137,13 +160,22 @@ export const loadLogFormat = (env: Env): Result<LogFormat, string> => {
         : err(`LOG_FORMAT must be pretty or json; got "${format}".`);
 };
 
+// Apart from `loadConfig`, like the log format, so that main.ts can check it even when the rest
+// of the settings are wrong, and report every problem at once.
+export const loadWorkDir = (env: Env): string | undefined => {
+    return read(env, 'WORK_DIR');
+};
+
 /** Reads and validates the server's settings. Pure: it touches nothing but `env`. */
 export const loadConfig = (env: Env): Result<Config, string[]> => {
+    // Checked whatever the provider, so an unknown provider doesn't hide its error.
+    const maxTurns = checkMaxTurns(read(env, 'MAX_TURNS'));
     const rawProvider = read(env, 'MODEL_PROVIDER') ?? 'lmstudio';
 
     if (!isProvider(rawProvider)) {
         return err([
             `MODEL_PROVIDER must be one of ${PROVIDERS.join(', ')}; got "${rawProvider}".`,
+            ...problemsOf([maxTurns]),
         ]);
     }
 
@@ -154,10 +186,8 @@ export const loadConfig = (env: Env): Result<Config, string[]> => {
     const model = checkModel(provider, read(env, 'MODEL'));
     const effort = checkEffort(read(env, 'MODEL_REASONING_EFFORT') ?? defaults.reasoningEffort);
 
-    if (!baseUrl.ok || !apiKey.ok || !model.ok || !effort.ok) {
-        const checks = [baseUrl, apiKey, model, effort];
-
-        return err(checks.flatMap((check) => (check.ok ? [] : [check.error])));
+    if (!baseUrl.ok || !apiKey.ok || !model.ok || !effort.ok || !maxTurns.ok) {
+        return err(problemsOf([baseUrl, apiKey, model, effort, maxTurns]));
     }
 
     return ok({
@@ -166,5 +196,7 @@ export const loadConfig = (env: Env): Result<Config, string[]> => {
         apiKey: apiKey.value,
         model: model.value,
         reasoningEffort: effort.value,
+        skillsPath: read(env, 'SKILLS_PATH'),
+        maxTurns: maxTurns.value,
     });
 };

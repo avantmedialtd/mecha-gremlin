@@ -6,7 +6,8 @@ import type { ToolOutcome } from '@mecha-gremlin/core/tools';
 import { z } from 'zod';
 import { type ToolHandler, defineTool } from './tool-handler.ts';
 
-/** About 8k tokens, so a capped file still fits LM Studio's default 8k context (Brief R5.5). */
+// About 8k tokens (Brief R5.5). A browsing run needs a larger context than LM Studio's 8k default
+// anyway: the skill's instructions and one snapshot already exceed it.
 export const READ_LIMIT = 32 * 1024;
 
 /** Git's test for binary files: text has no NUL bytes, and the first few KB tell. */
@@ -16,7 +17,7 @@ const ReadFileArgs = z.strictObject({
     path: z
         .string()
         .describe(
-            "The file's path relative to the working directory, such as README.md or docs/guide.md",
+            "The file's path: relative to the working directory, such as README.md or docs/guide.md, or absolute inside a skill's directory",
         ),
 });
 
@@ -24,6 +25,10 @@ const isInside = (root: string, target: string): boolean => {
     const path = relative(root, target);
 
     return path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path);
+};
+
+const isInsideAny = (directories: readonly string[], target: string): boolean => {
+    return directories.some((directory) => isInside(directory, target));
 };
 
 /** Files named `.env*` hold secrets by convention; direnv's `.envrc` is meant to match too. */
@@ -63,16 +68,22 @@ const errorCode = (error: unknown): unknown => {
     return Object(error).code;
 };
 
-const readFile = async (root: string, path: string): Promise<ToolOutcome> => {
+// The skill directories are real paths already, as loadSkills records them.
+const readFile = async (
+    root: string,
+    skillDirectories: readonly string[],
+    path: string,
+): Promise<ToolOutcome> => {
     const name = JSON.stringify(path);
-    const outside = (): ToolOutcome => err(`${name} is outside the directory read_file may read.`);
+    const outside = (): ToolOutcome =>
+        err(`${name} is outside the directories read_file may read.`);
     const secret = (): ToolOutcome =>
         err(`${name} is an environment file. read_file doesn't read those: they hold secrets.`);
 
     // A path that's outside lexically is refused without touching the disk at all.
     const target = resolve(root, path);
 
-    if (!isInside(resolve(root), target)) {
+    if (!isInsideAny([resolve(root), ...skillDirectories], target)) {
         return outside();
     }
 
@@ -84,7 +95,7 @@ const readFile = async (root: string, path: string): Promise<ToolOutcome> => {
         // Again with symbolic links resolved, so a link can't lead outside or to a secret.
         const real = await realpath(target);
 
-        if (!isInside(await realpath(root), real)) {
+        if (!isInsideAny([await realpath(root), ...skillDirectories], real)) {
             return outside();
         }
 
@@ -121,14 +132,14 @@ const readFile = async (root: string, path: string): Promise<ToolOutcome> => {
     }
 };
 
-export const readFileTool = (root: string): ToolHandler => {
+export const readFileTool = (root: string, skillDirectories: readonly string[]): ToolHandler => {
     return defineTool(
         {
             name: 'read_file',
             description:
-                'Read a UTF-8 text file in the working directory and return its contents. Files over 32 KiB are cut short, with a note saying so.',
+                "Read a UTF-8 text file and return its contents. The path is relative to the working directory, or absolute inside a skill's directory. Files over 32 KiB are cut short, with a note saying so.",
             schema: ReadFileArgs,
         },
-        ({ path }) => readFile(root, path),
+        ({ path }) => readFile(root, skillDirectories, path),
     );
 };

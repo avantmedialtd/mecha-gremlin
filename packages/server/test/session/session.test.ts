@@ -38,6 +38,8 @@ const CONFIG: Config = {
     apiKey: 'test-key',
     model: 'test-model',
     reasoningEffort: undefined,
+    skillsPath: undefined,
+    maxTurns: 30,
 };
 
 const output = (callId: string, text: string): HistoryItem => {

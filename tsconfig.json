@@ -21,6 +21,7 @@
     "include": [
         "packages/*/src/**/*.ts",
         "packages/*/test/**/*.ts",
+        "test/**/*.ts",
         "vitest.config.ts",
         "stryker.preload.ts"
     ]

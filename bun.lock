@@ -37,6 +37,8 @@
       "version": "0.0.0",
       "dependencies": {
         "@mecha-gremlin/core": "workspace:*",
+        "@mecha-gremlin/process": "workspace:*",
+        "@mecha-gremlin/yaml": "workspace:*",
         "openai": "^7.32.0",
         "zod": "^4.6.7",
       },

@@ -4,6 +4,10 @@ node_modules/
 .stryker-tmp/
 reports/
 
+# playwright-cli's workspace and snapshots, for runs whose working directory is the repository.
+.playwright/
+.playwright-cli/
+
 # Secrets and local settings never go into this public repo.
 .env
 .env.*

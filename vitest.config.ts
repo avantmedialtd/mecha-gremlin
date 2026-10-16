@@ -2,7 +2,9 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
     test: {
-        include: ['packages/*/test/**/*.test.ts'],
+        include: ['packages/*/test/**/*.test.ts', 'test/**/*.test.ts'],
+        // Every signal a test sends goes through the guard in this file first.
+        setupFiles: ['test/signal-guard.ts'],
         // The app reads globals that its tests fake; no fake may outlive its test.
         restoreMocks: true,
         unstubEnvs: true,

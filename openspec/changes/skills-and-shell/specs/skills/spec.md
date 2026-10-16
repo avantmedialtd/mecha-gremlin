@@ -139,9 +139,12 @@ Every other key SHALL be ignored, `allowed-tools` included. When the server find
 When at least one skill is loaded, the server SHALL offer an `activate_skill` tool. Its arguments SHALL be exactly one required string, `name`, restricted to the loaded skills' names, and no other property SHALL be allowed. Its output, built by `core`'s `renderActivation`, SHALL be a `<skill_content name="…">` element holding:
 1. the skill's body, without its frontmatter;
 2. the line `Skill directory: ` followed by the skill's directory, and a line saying that paths to the skill's own files are relative to that directory;
-3. a `<skill_resources>` element with a `<file>` element for each file below the skill's directory, as a path relative to it, sorted.
+3. a `<skill_resources>` element with a `<file>` element for each regular file below the skill's directory, as a path relative to it, sorted.
    - It SHALL leave out `SKILL.md` at the top of the skill's directory, and every path that, taken relative to that directory, has a segment starting with `.`.
+   - Links SHALL be neither followed nor listed.
    - When more than 100 files remain, it SHALL list the first 100, then, inside `<skill_resources>`, a line giving how many more files there are.
+
+The skill's name in the `name` attribute, and the file paths, SHALL be escaped as the catalog escapes its text, and `"` in the name as `&quot;`.
 
 The files SHALL be listed when the skill is activated, and not read. When a skill is activated again in the same session, the output SHALL be a short note saying it's already active, instead of its instructions. When no skill is loaded, the server SHALL NOT offer `activate_skill`.
 

@@ -2,13 +2,15 @@
     "name": "@mecha-gremlin/server",
     "version": "0.0.0",
     "private": true,
-    "description": "The mecha-gremlin app: for now, asks the model a question about a file, which it reads with a tool",
+    "description": "The mecha-gremlin app: for now, carries out a task with a shell, read_file and skills",
     "type": "module",
     "scripts": {
         "start": "bun src/main/main.ts"
     },
     "dependencies": {
         "@mecha-gremlin/core": "workspace:*",
+        "@mecha-gremlin/process": "workspace:*",
+        "@mecha-gremlin/yaml": "workspace:*",
         "openai": "^7.32.0",
         "zod": "^4.6.7"
     },
