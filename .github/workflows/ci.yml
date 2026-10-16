@@ -20,7 +20,7 @@ concurrency:
 
 env:
     BUN_VERSION: 1.4.3
-    # Vitest and Stryker run on Node; Stryker needs Node 22 or later.
+    # Node runs every test again (`bun run test:node`), and starts the hello.
     NODE_VERSION: 26
 
 # Third-party actions are pinned to full commit SHAs (tag in the trailing comment), so a
@@ -53,6 +53,24 @@ jobs:
             - run: bun run typecheck
             # Vitest annotates failures in the PR on its own when GITHUB_ACTIONS is set.
             - run: bun run test
+            # The server runs on Node as well as Bun, so the whole suite runs on Node too.
+            - run: bun run test:node
+            # The tests load the code through Vite's transform, so this is the one check that
+            # Node's own type stripping loads the server. Nothing listens on port 9, so the hello
+            # has to exit with 1, saying it can't reach LM Studio. Actions runs the script with
+            # `bash -e`, so the exit code is caught rather than ending the step.
+            - name: Start the hello on Node
+              env:
+                  MODEL_BASE_URL: http://127.0.0.1:9/v1
+              run: |
+                  status=0
+                  output=$(bun run hello:node 2>&1) || status=$?
+                  echo "$output"
+
+                  if [[ $status -ne 1 || $output != *"Can't reach LM Studio"* ]]; then
+                      echo "::error::Expected the hello to exit with 1, saying it can't reach LM Studio; it exited with $status"
+                      exit 1
+                  fi
             # Report only: the advisories are mostly in transitive dev tooling, and a hard gate
             # would block every build on a third party's release schedule. The step shows as
             # failed when there are advisories, but the job passes. Upgrade by hand and review
@@ -73,10 +91,6 @@ jobs:
             - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
               with:
                   bun-version: ${{ env.BUN_VERSION }}
-            - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-              with:
-                  node-version: ${{ env.NODE_VERSION }}
-                  package-manager-cache: false
             - run: bun install --frozen-lockfile
             - run: bun run mutation
             - name: Upload the mutation report

@@ -1,0 +1,12 @@
+{
+    "name": "@mecha-gremlin/process",
+    "version": "0.0.0",
+    "description": "Spawns a process with Bun.spawn on Bun, and with node:child_process elsewhere, in one shape",
+    "type": "module",
+    "exports": {
+        "./*": "./src/*.ts"
+    },
+    "dependencies": {
+        "@mecha-gremlin/core": "workspace:*"
+    }
+}
