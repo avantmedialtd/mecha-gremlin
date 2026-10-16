@@ -1596,7 +1596,7 @@ The `migrate` service also runs `gremlin prune` on demand: `docker compose run -
 | Q16 | What turn and context budget does browsing need? | Each page action is a shell call plus a snapshot read, so the cap of 8 turns is too low, and one snapshot read can add up to 32 KiB (R12.1). C8's budgets wait for M2. |
 | Q17 | Where does SKILL.md parsing live, `core` or the server, and with which YAML parser? | 4.3 puts `parseSkill` in `core`. `Bun.YAML` can't run there (lint) or under Vitest on Node, so the `yaml` package would be `core`'s first runtime dependency. |
 
-**Q12–Q17 (2026-10-16).** The OpenSpec change `skills-and-shell` proposes an answer to each in its design (`openspec/changes/skills-and-shell/design.md`):
+**Q12–Q17 (2026-10-16).** The OpenSpec change `skills-and-shell` answers each in its design (`openspec/changes/archive/2026-10-16-skills-and-shell/design.md`):
 
 | Question | Design decision |
 |---|---|
@@ -1607,7 +1607,7 @@ The `migrate` service also runs `gremlin prune` on demand: `docker compose run -
 | Q16 | 9 (`MAX_TURNS`) |
 | Q17 | 2 |
 
-They're settled when the change is archived.
+The change was implemented and archived on 2026-10-16, which settles them. Its live check browsed with the playwright-cli skill on a local 9B model.
 
 ## Spikes (M0)
 

@@ -197,14 +197,14 @@ This change builds on `tests-on-bun` and `bun-or-node`. `tests-on-bun` runs the 
 
 - [x] 8.1 `bun run check` passes: format, lint, type-check, and the tests on Bun and on Node
 - [x] 8.2 `bun run mutation` reaches 100%. Where a mutant can't be caught, simplify the code, or disable it with a `// Stryker disable` comment and its reason
-- [ ] 8.3 CI passes on ubuntu, including the shell and sweep tests against procps' `ps`
+- [x] 8.3 CI passes on ubuntu, including the shell and sweep tests against procps' `ps`
 - [x] 8.4 Against the local LM Studio, after recording the loaded model's context with `lms ps`:
   - `bun run hello` answers the default task by reading `package.json`, and so does `bun run hello:node`, on Node;
   - with `SKILLS_PATH=$(npm root -g)/@playwright/cli/skills` and a dedicated `WORK_DIR`, `bun run hello 'Use the playwright-cli skill to find the title of https://example.com'` activates the skill, runs `playwright-cli`, answers "Example Domain", and exits 0;
   - afterwards `pgrep -fl gremlin-<run>` prints nothing, where `<run>` is the `asking` record's `run`. Either the model closed the browser itself, or the log shows `stopped`;
   - Ctrl-C during a long `sleep` leaves no `sleep` running, and the exit code is 130;
   - `bun run hello 'Use the playwright-cli skill to list stories 10 to 12 on the Hacker News front page'`, which needs a snapshot beyond the cap or a file read, either answers or stops cleanly at `MAX_TURNS`.
-- [ ] 8.5 After `openspec archive`, which is the archiving session's step, not the implementer's:
+- [x] 8.5 After `openspec archive`, which is the archiving session's step, not the implementer's:
   - replace the placeholder Purposes of `openspec/specs/skills/spec.md` and `openspec/specs/shell-tool/spec.md`;
   - rewrite model-hello's Purpose: the hello carries out a task through the agent loop with a shell, `read_file` and skills;
   - move "Carry out a task and log the answer" to the top of model-hello, and "Never read outside the root and the skill directories" to second place in read-file-tool;

@@ -2,52 +2,75 @@
 
 ## Purpose
 
-The server entry point that chooses a model by provider (the model loaded in LM Studio by default, or a named model from any OpenAI-compatible service), asks it a question about a file through the agent loop, and logs the answer, with its configuration and failure behaviour. It runs on Bun or Node.
+The server entry point that chooses a model by provider (the model loaded in LM Studio by default, or a named model from any OpenAI-compatible service), has it carry out a task through the agent loop with a shell, `read_file` and skills, and logs the answer, with its configuration, its failure behaviour, and how it stops the session's processes. It runs on Bun or Node.
 ## Requirements
-### Requirement: Ask the model a question about a file and log the answer
-Running the server entry point, `bun run hello [file] [question…]` from the repository root, SHALL:
+### Requirement: Carry out a task and log the answer
+Running the server entry point, `bun run hello [task…]` from the repository root, SHALL:
 1. choose the model to use;
-2. take the file and the question from the arguments:
-   - the file is the first argument, defaulting to `package.json`;
-   - the question is the remaining arguments, joined with spaces;
-   - with no arguments, the question SHALL be "What exact command does the check script run? Quote it.";
-   - with only a file, the question SHALL be "What is this file for? Answer in two or three sentences.";
-3. run the agent loop with:
-   - the `read_file` tool, rooted at the working directory;
-   - a starting `developer` item telling the model to read files with `read_file` before answering questions about them;
-   - a `user` item naming the file and the question;
-4. log the trimmed answer as an `info` record `answer` with the field `text`;
-5. exit with code 0.
+2. take the task from the arguments, joined with spaces. With no arguments, the task SHALL be "What exact command does the check script in package.json run? Quote it.";
+3. load the skills `SKILLS_PATH` lists (`skills`);
+4. run the agent loop, with a turn limit of `MAX_TURNS`, with:
+   - the tools `read_file`, rooted at the working directory with the loaded skills' directories, then `shell`, in the working directory, then `activate_skill` when any skill is loaded;
+   - a starting `developer` item that:
+     - says the model carries out tasks on this computer with a shell and `read_file`;
+     - gives the working directory's real path, and says that paths commands print are relative to it;
+     - asks for a brief final answer;
+     - ends with the skills catalog, when any skill is loaded;
+   - a `user` item holding the task;
+5. log the trimmed answer as an `info` record `answer` with the field `text`;
+6. stop the session's processes, and exit with code 0.
 
 Every turn SHALL go to the OpenAI-compatible Responses endpoint at `{MODEL_BASE_URL}/responses` with the chosen model and, when one is configured, `reasoning.effort`.
 
-#### Scenario: Default question
+#### Scenario: Default task
 - **WHEN** the hello runs with no arguments
-- **THEN** the first request's `user` item names `package.json` and asks what the check script runs
+- **THEN** the first request's `user` item is "What exact command does the check script in package.json run? Quote it."
 
-#### Scenario: File and question from the arguments
-- **WHEN** the hello runs with the arguments `README.md`, `Which` and `runtime?`
-- **THEN** the first request's `user` item names `README.md` and asks "Which runtime?"
+#### Scenario: Task from the arguments
+- **WHEN** the hello runs with the arguments `Which`, `runtime` and `does README.md describe?`
+- **THEN** the first request's `user` item is "Which runtime does README.md describe?"
 
-#### Scenario: File only
-- **WHEN** the hello runs with the single argument `README.md`
-- **THEN** the first request's `user` item names `README.md` and asks what the file is for
+#### Scenario: The tools offered
+- **WHEN** `SKILLS_PATH` names a root holding the skill `pdf`
+- **THEN** the first request's tools are `read_file`, `shell` and `activate_skill`, in that order, and its `developer` item ends with the catalog listing `pdf`
 
-#### Scenario: Answer after reading the file
-- **WHEN** the working directory holds `package.json`, the first turn calls `read_file` for it, and the second turn answers "\n\nIt runs the checks."
-- **THEN** the second request carries the file's contents in a `function_call_output`, the `answer` record's `text` is "It runs the checks.", and the exit code is 0
+#### Scenario: Without skills
+- **WHEN** `SKILLS_PATH` is unset
+- **THEN** the first request's tools are `read_file` and `shell`, and its `developer` item mentions no skills
+
+#### Scenario: The working directory
+- **WHEN** `WORK_DIR` is a symbolic link to a directory holding `notes.txt`
+- **THEN** the `developer` item and the `asking` record give that directory's real path, `read_file` reads `notes.txt` there, and `shell` runs its commands there
+
+#### Scenario: Answer after running a command
+- **WHEN** the first turn calls `shell` with `{"command":"echo 42"}`, and the second turn answers "\n\nIt printed 42."
+- **THEN** the second request carries the command's output in a `function_call_output`, the `answer` record's `text` is "It printed 42.", and the exit code is 0
+
+#### Scenario: The turn limit comes from the settings
+- **WHEN** `MAX_TURNS` is 3, and every turn calls a tool
+- **THEN** exactly 3 requests are sent
 
 ### Requirement: Log each tool call and turn
 The hello SHALL log, through the structured logger:
-- before the first turn, an `info` record `asking` with the fields `model`, `baseUrl`, `file` and `question`;
+- when at least one skill is loaded, an `info` record `skills` with the field `names`, the loaded skills' names in sorted order;
+- the `skill not loaded` and `skill warning` records that loading the skills produces (`skills`);
+- before the first turn, an `info` record `asking` with the fields `model`, `baseUrl`, `run` (the session's run ID), `workDir` (the working directory's real path) and `task`;
 - as each turn completes, an `info` record `turn`. Its fields are `number`, `seconds` (rounded to a tenth) and, when the server reports them, `inputTokens`, `cachedTokens`, `outputTokens` and `reasoningTokens`;
 - then, for each of the turn's tool calls:
   - an `info` record `tool call` with the fields `tool` and `arguments`. The arguments are logged as JSON when they parse, and as the model sent them otherwise;
   - then an `info` record `tool result` with the fields `tool` and `bytes`, or a `warn` record `tool failed` with the fields `tool` and `error`.
 
 #### Scenario: Records of a tool round trip
-- **WHEN** the first turn calls `read_file` for `package.json` and the second turn answers
+- **WHEN** no skill is loaded, the first turn calls `read_file` for `package.json`, and the second turn answers
 - **THEN** the records are, in order: `asking`, `turn` 1 with its token counts, `tool call` with `arguments` `{ "path": "package.json" }`, `tool result` with the output's size in bytes, `turn` 2, and `answer`
+
+#### Scenario: The asking record
+- **WHEN** the run ID is a fresh random ID, `WORK_DIR` names a directory, and the task is "Say hi"
+- **THEN** the `asking` record's `run` is that ID, its `workDir` is that directory's real path, and its `task` is "Say hi"
+
+#### Scenario: The skills record
+- **WHEN** the skills `pdf` and `browser` are loaded
+- **THEN** a `skills` record, logged before the `asking` record, has the `names` `browser` and `pdf`
 
 #### Scenario: Sizes are in bytes
 - **WHEN** a tool's output holds characters that take more than one byte in UTF-8
@@ -106,9 +129,14 @@ The server SHALL read `MODEL_PROVIDER` (`lmstudio` or `openai`; default `lmstudi
 - The API key SHALL be sent as a bearer token to every endpoint the server calls.
 - The server SHALL validate all settings before any network call. If any is invalid or missing, it SHALL exit with code 1 and log an `error` record for each invalid or missing variable, naming it.
 
+It SHALL also read, whatever the provider:
+- `WORK_DIR`, the working directory of `read_file` and `shell`. It defaults to the current directory, and a relative path resolves against the current directory. It SHALL name an existing directory, and SHALL be used by its real path, with symbolic links resolved.
+- `SKILLS_PATH`, the skills roots (`skills`). When it's unset, no skill is loaded.
+- `MAX_TURNS`, the session's turn limit: a positive whole number written in decimal digits, defaulting to 30.
+
 #### Scenario: Defaults apply
 - **WHEN** none of the variables is set
-- **THEN** the provider is `lmstudio`, the base URL is `http://127.0.0.1:1234/v1`, the key is `lm-studio`, no model is configured, and the reasoning effort is `none`
+- **THEN** the provider is `lmstudio`, the base URL is `http://127.0.0.1:1234/v1`, the key is `lm-studio`, no model is configured, the reasoning effort is `none`, the working directory is the current directory, no skill is loaded, and the turn limit is 30
 
 #### Scenario: Another provider's defaults
 - **WHEN** `MODEL_PROVIDER` is `openai` and `MODEL_API_KEY` and `MODEL` are set
@@ -134,6 +162,18 @@ The server SHALL read `MODEL_PROVIDER` (`lmstudio` or `openai`; default `lmstudi
 - **WHEN** `MODEL_REASONING_EFFORT` is `low`
 - **THEN** the turn is sent with `reasoning.effort` equal to `low`
 
+#### Scenario: An invalid turn limit
+- **WHEN** `MAX_TURNS` is `0`, `-1`, `2.5` or `lots`
+- **THEN** no network call is made, an `error` record names `MAX_TURNS`, and the exit code is 1
+
+#### Scenario: A working directory that doesn't exist
+- **WHEN** `WORK_DIR` names a path that doesn't exist, or a file
+- **THEN** no network call is made, an `error` record names `WORK_DIR`, and the exit code is 1
+
+#### Scenario: Every problem is reported
+- **WHEN** `MODEL_PROVIDER` is `openai` with neither `MODEL_API_KEY` nor `MODEL` set, and `WORK_DIR` doesn't exist
+- **THEN** no network call is made, three `error` records name `MODEL_API_KEY`, `MODEL` and `WORK_DIR`, and the exit code is 1
+
 ### Requirement: Actionable failures
 The server SHALL exit with code 1 and log an `error` record whose message names the cause and a next step, in each of these cases:
 - the model server is unreachable;
@@ -151,11 +191,11 @@ When a turn fails, the message SHALL include the failure's detail, such as the s
 |---|---|
 | the model server is unreachable | with `lmstudio`, start LM Studio's server (`lms server start`) or set `MODEL_BASE_URL`; otherwise, check `MODEL_BASE_URL` |
 | the server rejected the API key (HTTP 401 or 403) | set `MODEL_API_KEY`, as for a key rejected at start-up |
-| the server didn't answer in time | try again, or ask about a smaller file |
+| the server didn't answer in time | try again, or narrow the task |
 | the server is limiting requests (HTTP 429) | wait a minute and try again; if it keeps happening, check the account's quota |
 | the server rejected the request (any other HTTP 4xx) | check that `MODEL` and `MODEL_REASONING_EFFORT` suit the server |
 | the server failed (HTTP 5xx), or the response failed or broke off | try again; if it keeps failing, check the model server |
-| the response is incomplete | try a narrower question or a smaller file |
+| the response is incomplete | narrow the task |
 | the turn was aborted | run the command again |
 | anything else | try again; if it keeps happening, report it as a bug |
 
@@ -189,7 +229,7 @@ When a turn fails, the message SHALL include the failure's detail, such as the s
 
 #### Scenario: Turn limit reached
 - **WHEN** the model is still calling tools after the loop's last allowed turn
-- **THEN** the error says the model didn't answer within the session's turn limit, naming its number of turns, no `answer` record is logged, and the exit code is 1
+- **THEN** the error says the model didn't answer within the session's turn limit, names its number of turns, and suggests a narrower task or a higher `MAX_TURNS`; no `answer` record is logged, and the exit code is 1
 
 #### Scenario: No answer
 - **WHEN** a turn returns neither tool calls nor text
@@ -210,3 +250,43 @@ The hello SHALL run on Bun with `bun run hello`, and on Node with `bun run hello
 - **WHEN** CI's check job runs
 - **THEN** it runs `bun run hello:node` with `MODEL_BASE_URL` set to a port where nothing listens, and fails unless the exit code is 1 and the output says LM Studio can't be reached
 
+### Requirement: Stop the session's processes when the hello ends
+The hello SHALL await the shell's `dispose()` before it exits, whether the session answered or failed.
+- When `dispose()` stopped any processes, the hello SHALL log an `info` record `stopped` with the field `count`, once.
+- When `dispose()` couldn't run its sweep, the hello SHALL log a `warn` record `cleanup failed` with the field `error`, and keep its exit code.
+- **Signal handlers:** it SHALL install handlers for SIGINT, SIGTERM and SIGHUP before the session starts, and SHALL remove them once `dispose()` has resolved.
+- **The first signal** SHALL:
+  - log a `warn` record `interrupted` with the field `signal`;
+  - stop handling the session's steps;
+  - await `dispose()`;
+  - exit with code 130 for SIGINT, 143 for SIGTERM or 129 for SIGHUP.
+
+  Signals that arrive while `dispose()` runs SHALL be ignored.
+
+#### Scenario: A process left behind
+- **WHEN** a command starts a process in a session of its own, and the model then answers
+- **THEN** that process is stopped before the hello exits, and a `stopped` record has `count` 1
+
+#### Scenario: Ctrl-C
+- **WHEN** the hello receives SIGINT during the session
+- **THEN** a `warn` record `interrupted` gives the signal `SIGINT`, the session's processes are stopped, and the exit code is 130
+
+#### Scenario: SIGTERM
+- **WHEN** the hello receives SIGTERM during the session
+- **THEN** a `warn` record `interrupted` gives the signal `SIGTERM`, the session's processes are stopped, and the exit code is 143
+
+#### Scenario: The terminal closes
+- **WHEN** the hello receives SIGHUP during the session
+- **THEN** a `warn` record `interrupted` gives the signal `SIGHUP`, the session's processes are stopped, and the exit code is 129
+
+#### Scenario: Ctrl-C twice
+- **WHEN** SIGINT arrives twice in quick succession
+- **THEN** one `interrupted` record is logged, the processes are stopped once, and the exit code is 130
+
+#### Scenario: No handler outlives the hello
+- **WHEN** the hello ends after an answer
+- **THEN** `process` has as many SIGINT, SIGTERM and SIGHUP listeners as before it started
+
+#### Scenario: The sweep can't run
+- **WHEN** the model answers, and the sweep can't list processes
+- **THEN** a `warn` record `cleanup failed` gives the reason, and the exit code is 0
