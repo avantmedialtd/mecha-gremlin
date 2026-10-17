@@ -13,3 +13,5 @@ reports/
 .env.*
 *.env
 !*.env.example
+
+.claude/worktrees
