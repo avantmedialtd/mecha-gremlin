@@ -9,15 +9,15 @@
 - both implementations by name, `parseYamlWithBun` and `parseYamlWithPackage`;
 - `chooseParser(globals)`, which returns `parseYamlWithBun` when `globals.Bun` is defined, and `parseYamlWithPackage` otherwise.
 
-`parseYaml` SHALL call the implementation that `chooseParser(globalThis)` returns, on every call. The scenarios of this capability SHALL hold for `parseYamlWithPackage` on Bun and on Node, and for `parseYamlWithBun` on Bun.
+`parseYaml` SHALL be the implementation that `chooseParser(globalThis)` returns, chosen once, when the module loads. The scenarios of this capability SHALL hold for `parseYamlWithPackage` on Bun and on Node, and for `parseYamlWithBun` on Bun.
 
 #### Scenario: The choice
 - **WHEN** `chooseParser` is given `{ Bun: {} }`, and then `{}`
 - **THEN** it returns `parseYamlWithBun`, and then `parseYamlWithPackage`
 
 #### Scenario: The choice on each runtime
-- **WHEN** `chooseParser(globalThis)` runs on Bun, and on Node
-- **THEN** it returns `parseYamlWithBun` on Bun, and `parseYamlWithPackage` on Node
+- **WHEN** the module loads on Bun, and on Node
+- **THEN** `parseYaml` is `parseYamlWithBun` on Bun, and `parseYamlWithPackage` on Node
 
 #### Scenario: A mapping
 - **WHEN** `parseYaml` is given `name: pdf` and `description: Work with PDFs.`, on two lines

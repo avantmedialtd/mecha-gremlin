@@ -22,8 +22,8 @@
 
 ## 5. CI (the session's)
 
-- [ ] 5.1 CI passes on the branch: both jobs, with the mutation job at 100%. Note the mutation job's duration next to `main`'s last, 8 min 51 s.
+- [x] 5.1 CI passes on the branch: both jobs, with the mutation job at 100%. Note the mutation job's duration next to `main`'s last, 8 min 51 s.
 
 ## 6. After archiving (the session's)
 
-- [ ] 6.1 After `openspec archive`, each changed requirement is still the first in its spec, and `openspec validate --all --strict` passes
+- [x] 6.1 After `openspec archive`, each changed requirement is still the first in its spec, and `openspec validate --all --strict` passes

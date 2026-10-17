@@ -17,15 +17,15 @@ It SHALL use `Bun.spawn` on Bun, and `node:child_process` elsewhere. The module 
 - both implementations by name, `spawnWithBun` and `spawnWithNode`;
 - `chooseSpawner(globals)`, which returns `spawnWithBun` when `globals.Bun` is defined, and `spawnWithNode` otherwise.
 
-`spawnProcess` SHALL call the implementation that `chooseSpawner(globalThis)` returns, on every call. Neither implementation SHALL write to stdout or stderr, or signal any process. The scenarios of this capability SHALL hold for `spawnWithNode` on Bun and on Node, and for `spawnWithBun` on Bun.
+`spawnProcess` SHALL be the implementation that `chooseSpawner(globalThis)` returns, chosen once, when the module loads. Neither implementation SHALL write to stdout or stderr, or signal any process. The scenarios of this capability SHALL hold for `spawnWithNode` on Bun and on Node, and for `spawnWithBun` on Bun.
 
 #### Scenario: The choice
 - **WHEN** `chooseSpawner` is given `{ Bun: {} }`, and then `{}`
 - **THEN** it returns `spawnWithBun`, and then `spawnWithNode`
 
 #### Scenario: The choice on each runtime
-- **WHEN** `chooseSpawner(globalThis)` runs on Bun, and on Node
-- **THEN** it returns `spawnWithBun` on Bun, and `spawnWithNode` on Node
+- **WHEN** the module loads on Bun, and on Node
+- **THEN** `spawnProcess` is `spawnWithBun` on Bun, and `spawnWithNode` on Node
 
 #### Scenario: spawnProcess runs the chosen implementation
 - **WHEN** `spawnProcess` runs `bash -c 'echo out'`
