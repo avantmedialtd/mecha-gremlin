@@ -21,7 +21,7 @@ Inside `packages/server/src`, the code is grouped by concern:
 - `tools`: `read_file`, `shell` and `activate_skill`;
 - `log`: the structured logger.
 
-`yaml` and `process` choose their implementation on every call, from the global object: Bun's when `globalThis.Bun` is defined, the other one otherwise. The server reads skills' frontmatter with `yaml`, and runs commands and `ps` with `process`.
+`yaml` and `process` choose their implementation once, when each module loads, from the global object: Bun's when `globalThis.Bun` is defined, the other one otherwise. The server reads skills' frontmatter with `yaml`, and runs commands and `ps` with `process`.
 
 At the top, [`test`](test) holds the signal guard, a Vitest setup file for every package's tests (see Develop).
 

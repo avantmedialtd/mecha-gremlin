@@ -187,7 +187,7 @@ describe('The choice of parser', () => {
     });
 
     test("this runtime's global object", () => {
-        expect(chooseParser(globalThis)).toBe(
+        expect(parseYaml).toBe(
             typeof Bun === 'undefined' ? parseYamlWithPackage : parseYamlWithBun,
         );
     });

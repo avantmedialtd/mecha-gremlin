@@ -334,9 +334,7 @@ describe('The choice of implementation', () => {
     });
 
     test("this runtime's global object", () => {
-        expect(chooseSpawner(globalThis)).toBe(
-            typeof Bun === 'undefined' ? spawnWithNode : spawnWithBun,
-        );
+        expect(spawnProcess).toBe(typeof Bun === 'undefined' ? spawnWithNode : spawnWithBun);
     });
 
     test('spawnProcess runs the chosen implementation', async () => {

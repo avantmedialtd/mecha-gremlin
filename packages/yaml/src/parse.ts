@@ -49,6 +49,4 @@ export const chooseParser = (globals: Globals): Parser => {
     return globals.Bun === undefined ? parseYamlWithPackage : parseYamlWithBun;
 };
 
-export const parseYaml = (text: string): Result<unknown, string> => {
-    return chooseParser(globalThis)(text);
-};
+export const parseYaml: Parser = chooseParser(globalThis);

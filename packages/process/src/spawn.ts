@@ -132,9 +132,4 @@ export const chooseSpawner = (globals: Globals): Spawner => {
     return globals.Bun === undefined ? spawnWithNode : spawnWithBun;
 };
 
-export const spawnProcess = (
-    argv: Argv,
-    options: SpawnOptions,
-): Promise<Result<Subprocess, string>> => {
-    return chooseSpawner(globalThis)(argv, options);
-};
+export const spawnProcess: Spawner = chooseSpawner(globalThis);
