@@ -160,12 +160,17 @@ bun run test           # unit tests (Vitest) on Bun; no LM Studio needed. test:w
 bun run test:node      # every test again, on Node
 bun run typecheck      # tsc --noEmit over the whole workspace
 bun run lint           # oxlint, with type information; warnings fail too
+bun run spellcheck     # CSpell, over code and docs alike
 bun run format         # oxfmt: 4-space indentation, single quotes; format:check only checks
-bun run check          # format:check, lint, typecheck, test and test:node, as CI would run them
+bun run check          # format:check, lint, spellcheck, typecheck, test and test:node, as CI would run them
 bun run mutation       # Stryker mutation testing on Bun, which fails below 100%; report in reports/mutation/
 ```
 
 - **Formatting.** oxfmt formats code and config files. Markdown, `openspec/`, `.claude/` and `.opencode/` are excluded in `.oxfmtrc.json`, so prose documents and generated command files keep their layout.
+- **Spelling.** CSpell checks every file git doesn't ignore, except `bun.lock` and the command files OpenSpec generates under `.claude/commands/` and `.opencode/`.
+  - It accepts American and British spellings.
+  - Its TypeScript, Node, npm, full-stack, shell, Python, SQL and Docker dictionaries apply to every file, not only to their own file types, since the docs and config talk about code too.
+  - A word it doesn't know goes in `words` in `cspell.json`. A token that isn't a word, such as a test string or a cluster of command-line flags, goes in `ignoreWords`.
 - **Tests run on Bun and on Node,** the two runtimes the app runs on. `bun run test` runs every test on Bun, and `bun run test:node` runs them all again on Node.
   - Each script names its runtime in `TEST_RUNTIME`, and a server test, `runtime.test.ts`, fails unless the tests run on the runtime it names, so it also fails for tests run without a script. Vitest's and Stryker's command-line scripts start Node, so `test`, `test:watch` and `mutation` start them with `--bun`.
   - `test:node`, and so `check`, needs Node 26: without Node, Bun stands in for `node`, and the runtime test fails.
@@ -198,7 +203,7 @@ bun run mutation       # Stryker mutation testing on Bun, which fails below 100%
 GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) builds every pushed branch, and pull requests from forks. It runs two jobs:
 
 1. **Check and test:**
-   - a frozen install, then the format check, lint and typecheck;
+   - a frozen install, then the format check, lint, spell check and typecheck;
    - the tests on Bun (failures are annotated on the PR), then the whole suite again on Node;
    - the server, started on Node against a port where nothing listens. It must exit with 1, saying it can't reach LM Studio. The tests load the code through Vite, so this is the one check that Node itself loads it;
    - `bun audit`, report only: the step shows as failed when there are advisories, but the job still passes.
