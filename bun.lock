@@ -16,6 +16,17 @@
         "vitest": "^4.1.11",
       },
     },
+    "packages/agent": {
+      "name": "@mecha-gremlin/agent",
+      "version": "0.0.0",
+      "dependencies": {
+        "@mecha-gremlin/core": "workspace:*",
+        "@mecha-gremlin/process": "workspace:*",
+        "@mecha-gremlin/yaml": "workspace:*",
+        "openai": "^7.32.0",
+        "zod": "^4.6.7",
+      },
+    },
     "packages/core": {
       "name": "@mecha-gremlin/core",
       "version": "0.0.0",
@@ -31,17 +42,6 @@
       "version": "0.0.0",
       "dependencies": {
         "@mecha-gremlin/core": "workspace:*",
-      },
-    },
-    "packages/server": {
-      "name": "@mecha-gremlin/server",
-      "version": "0.0.0",
-      "dependencies": {
-        "@mecha-gremlin/core": "workspace:*",
-        "@mecha-gremlin/process": "workspace:*",
-        "@mecha-gremlin/yaml": "workspace:*",
-        "openai": "^7.32.0",
-        "zod": "^4.6.7",
       },
     },
     "packages/yaml": {
@@ -312,11 +312,11 @@
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
+    "@mecha-gremlin/agent": ["@mecha-gremlin/agent@workspace:packages/agent"],
+
     "@mecha-gremlin/core": ["@mecha-gremlin/core@workspace:packages/core"],
 
     "@mecha-gremlin/process": ["@mecha-gremlin/process@workspace:packages/process"],
-
-    "@mecha-gremlin/server": ["@mecha-gremlin/server@workspace:packages/server"],
 
     "@mecha-gremlin/yaml": ["@mecha-gremlin/yaml@workspace:packages/yaml"],
 

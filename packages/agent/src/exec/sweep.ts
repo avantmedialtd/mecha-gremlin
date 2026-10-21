@@ -20,7 +20,7 @@ export type SweepOptions = {
 export const MAX_MATCHES = 32;
 
 // Signals are ignored while the session's processes are stopped, so a ps that hangs mustn't hold
-// the server for long. Reading every process's environment takes far less, even on a busy machine.
+// the agent for long. Reading every process's environment takes far less, even on a busy machine.
 const LIST_TIMEOUT_MS = 10_000;
 
 const POLL_MS = 50;
@@ -217,7 +217,7 @@ const listProcesses = async (
     return ok(stdout);
 };
 
-// The deadline's timer doesn't keep the server running once the processes have ended.
+// The deadline's timer doesn't keep the agent's process running once the processes have ended.
 const waitForExit = async (pids: readonly number[], graceMs: number): Promise<void> => {
     const deadline = AbortSignal.timeout(graceMs);
 

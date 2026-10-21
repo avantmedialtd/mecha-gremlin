@@ -169,7 +169,7 @@ describe('Find skills in the directories SKILLS_PATH lists', () => {
 });
 
 describe('Read SKILL.md leniently', () => {
-    test('the server reports a skill without frontmatter', async () => {
+    test('the agent reports a skill without frontmatter', async () => {
         const file = await write('root/pdf/SKILL.md', '# PDF\n');
 
         expect(await loadSkills(join(dir, 'root'), dir)).toEqual({
@@ -225,7 +225,7 @@ describe('Read SKILL.md leniently', () => {
         });
     });
 
-    test('the server reports a warning', async () => {
+    test('the agent reports a warning', async () => {
         await write('root/pdf-tools/SKILL.md', skillText('pdf'));
 
         expect(await loadSkills(join(dir, 'root'), dir)).toEqual({

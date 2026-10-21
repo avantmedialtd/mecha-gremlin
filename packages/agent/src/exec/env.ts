@@ -29,9 +29,9 @@ export const copyVariables = (
     );
 };
 
-// Built from scratch, never from the server's own environment, which holds the user's shell's
-// variables and .env's: a command that dumps or logs its environment can't leak them by accident
-// (Brief C12). It doesn't stop a command that goes looking for them.
+// Built from scratch, never from the agent process's own environment, which holds the user's
+// shell's variables and .env's: a command that dumps or logs its environment can't leak them by
+// accident (Brief C12). It doesn't stop a command that goes looking for them.
 export const commandEnv = (parentEnv: Env, runId: string): Readonly<Record<string, string>> => {
     return {
         ...copyVariables(parentEnv, COPIED),

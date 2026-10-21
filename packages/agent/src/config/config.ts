@@ -173,7 +173,7 @@ export const loadWorkDir = (env: Env): string | undefined => {
     return read(env, 'WORK_DIR');
 };
 
-/** Reads and validates the server's settings. Pure: it touches nothing but `env`. */
+/** Reads and validates the agent's settings. Pure: it touches nothing but `env`. */
 export const loadConfig = (env: Env): Result<Config, string[]> => {
     // Checked whatever the provider, so an unknown provider doesn't hide their errors.
     const maxSteps = checkMaxSteps(read(env, 'MAX_STEPS'));

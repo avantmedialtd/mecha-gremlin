@@ -187,7 +187,7 @@ describe('Report the exit code and both streams', { timeout: 15_000 }, () => {
 });
 
 describe("Build the command's environment from scratch", { timeout: 15_000 }, () => {
-    test("the server's secrets stay out", async () => {
+    test("the agent's secrets stay out", async () => {
         vi.stubEnv('MODEL_API_KEY', 'sk-test-secret');
 
         const output = await outputOf('env');

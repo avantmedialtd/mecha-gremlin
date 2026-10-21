@@ -1,6 +1,6 @@
 // Tests start real processes and signal them. A bug, or a Stryker mutant that widens a match,
 // could aim a signal at the developer's own processes, so every signal a test sends passes this
-// guard. Stryker never mutates it, and it shares no code with the server's own matching, so one
+// guard. Stryker never mutates it, and it shares no code with the agent's own matching, so one
 // mutant can't widen both. A refused signal is never sent, and it fails the test even when the
 // code under test swallows the error.
 import { ChildProcess, spawnSync } from 'node:child_process';

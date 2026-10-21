@@ -17,6 +17,7 @@
 > - **2026-10-16:** R13 records how the tests and mutation testing run on Bun, the runtime the app uses. The change `tests-on-bun` moves them there.
 > - **2026-10-16, later:** R14 records what it takes to keep the server running on Node as well as Bun, and D19 records the choice to do so. Two small packages use Bun's built-ins on Bun and Node's modules elsewhere, and the change `bun-or-node` adds them.
 > - **2026-10-16, evening:** R15 records what "turn" means elsewhere, how other agent loops count and stop, and how LM Studio handles `tool_choice:"none"`. C8 proposes a finalize turn at the turn limit ahead of the budgets (D20), and C13 proposes calling the loop's unit a step (D21). D20 is open. D21 was decided the same evening, and the change `turn-to-step` carries it out.
+> - **2026-10-21:** D22 names the package that carries out a task `agent`: it serves nothing, and "server" also meant the model server and the exec server. 4.2 puts it beside M1's `app`, which runs agents. The change `server-to-agent` renames it.
 
 ---
 
@@ -1162,7 +1163,10 @@ mecha-gremlin/                          public repo
 │   │                                   elsewhere (D19)
 │   ├── process/                        @mecha-gremlin/process: Bun.spawn on Bun,
 │   │                                   node:child_process elsewhere (D19)
-│   ├── app/                            entities, migrations, scheduler, loop, app tools, CLI `gremlin`
+│   ├── agent/                          @mecha-gremlin/agent: one run: the model choice, the loop,
+│   │                                   tools and skills (D22)
+│   ├── app/                            entities, migrations, scheduler, app tools, CLI `gremlin`;
+│   │                                   runs agents
 │   │   ├── tsconfig.json               "extends": "../../tsconfig.json"; Bun reads the tsconfig of
 │   │   │                               the directory it starts in, not the file's nearest (R6.2)
 │   │   └── db/init/                    creates the gremlin_owner and gremlin_app roles (4.4)
@@ -1661,6 +1665,7 @@ The `migrate` service also runs `gremlin prune` on demand: `docker compose run -
 | D19 | Which runtimes the server runs on | Bun only, declared in `engines` and checked at start-up · Bun or Node, through `@mecha-gremlin/yaml` and `@mecha-gremlin/process`, which use Bun's built-ins on Bun and Node's modules elsewhere (R14) | **Bun only**, declared and checked | **decided 2026-10-16: Bun or Node.** The tests run on both |
 | D20 | What the session does at its turn limit | Fail with no answer (today) · run the last turn's calls, then fail (most loops, R15.2) · run them, then a finalize turn, and end `capped` (smolagents, Microsoft Agent Framework) | **Finalize, ahead of M2's budgets** (C8) | open |
 | D21 | What "turn" names | One model request, as now · a user's whole exchange, with "step" for a model request and the calls it asked for, and "model call" for the request alone (R15.1) | **Step, before M1** (C13) | **decided 2026-10-16: Step.** The change `turn-to-step` carries it out, after the `model-hello` and `model-turn` capabilities became `server` and `model-call` |
+| D22 | What the package that carries out a task is called | `server`, as now · `agent`, with M1's `app` around it · `agent` now, renamed `app` at M1 · `app`, 4.2's name · `gremlin`, the CLI's | **`agent`, with `app` around it**: it runs one agent, and "server" also names the model server and the exec server (C3) | **decided 2026-10-21: agent.** The change `server-to-agent` carries it out |
 
 ## Open questions
 

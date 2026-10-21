@@ -1,8 +1,8 @@
 {
-    "name": "@mecha-gremlin/server",
+    "name": "@mecha-gremlin/agent",
     "version": "0.0.0",
     "private": true,
-    "description": "The mecha-gremlin app: for now, carries out a task with a shell, read_file and skills",
+    "description": "The mecha-gremlin agent: carries out a task with a shell, read_file and skills",
     "type": "module",
     "scripts": {
         "start": "bun src/main/main.ts"

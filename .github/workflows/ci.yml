@@ -20,7 +20,7 @@ concurrency:
 
 env:
     BUN_VERSION: 1.4.3
-    # Node runs every test again (`bun run test:node`), and starts the server.
+    # Node runs every test again (`bun run test:node`), and starts the agent.
     NODE_VERSION: 26
 
 # Third-party actions are pinned to full commit SHAs (tag in the trailing comment), so a
@@ -54,22 +54,22 @@ jobs:
             - run: bun run typecheck
             # Vitest annotates failures in the PR on its own when GITHUB_ACTIONS is set.
             - run: bun run test
-            # The server runs on Node as well as Bun, so the whole suite runs on Node too.
+            # The agent runs on Node as well as Bun, so the whole suite runs on Node too.
             - run: bun run test:node
             # The tests load the code through Vite's transform, so this is the one check that
-            # Node's own type stripping loads the server. Nothing listens on port 9, so the server
+            # Node's own type stripping loads the agent. Nothing listens on port 9, so the agent
             # has to exit with 1, saying it can't reach LM Studio. Actions runs the script with
             # `bash -e`, so the exit code is caught rather than ending the step.
-            - name: Start the server on Node
+            - name: Start the agent on Node
               env:
                   MODEL_BASE_URL: http://127.0.0.1:9/v1
               run: |
                   status=0
-                  output=$(bun run server:node 2>&1) || status=$?
+                  output=$(bun run agent:node 2>&1) || status=$?
                   echo "$output"
 
                   if [[ $status -ne 1 || $output != *"Can't reach LM Studio"* ]]; then
-                      echo "::error::Expected the server to exit with 1, saying it can't reach LM Studio; it exited with $status"
+                      echo "::error::Expected the agent to exit with 1, saying it can't reach LM Studio; it exited with $status"
                       exit 1
                   fi
             # Report only: the advisories are mostly in transitive dev tooling, and a hard gate

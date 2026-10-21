@@ -16,7 +16,7 @@ import {
 } from '../fake-model.ts';
 import { freshRunId, helperCommand, isGone, stopLeftovers, track } from '../exec/processes.ts';
 
-// main.ts runs as soon as it's imported, so it's never imported here at the top: `startServer`
+// main.ts runs as soon as it's imported, so it's never imported here at the top: `startAgent`
 // fakes the globals it reads, then imports it afresh. Its default task is spelled out for the same
 // reason.
 const DEFAULT_TASK = 'Use the playwright-cli skill to find the title of https://example.com';
@@ -49,7 +49,7 @@ const PACKAGE_JSON = `${JSON.stringify({ scripts: { check: 'bun run lint && bun 
 const MENU = 'Café crème: 3 €\n';
 
 let cwd: string;
-// On macOS the temporary directory is reached through a link, and the server uses real paths.
+// On macOS the temporary directory is reached through a link, and the agent uses real paths.
 let realCwd: string;
 let skillsRoot: string;
 
@@ -59,11 +59,11 @@ const writeIn = async (path: string, text: string): Promise<void> => {
 };
 
 beforeAll(async () => {
-    cwd = await mkdtemp(join(tmpdir(), 'server-'));
+    cwd = await mkdtemp(join(tmpdir(), 'agent-'));
     realCwd = await realpath(cwd);
     await writeFile(join(cwd, 'package.json'), PACKAGE_JSON);
     await writeFile(join(cwd, 'menu.txt'), MENU);
-    skillsRoot = await realpath(await mkdtemp(join(tmpdir(), 'server-skills-')));
+    skillsRoot = await realpath(await mkdtemp(join(tmpdir(), 'agent-skills-')));
     await writeIn(
         join(skillsRoot, 'pdf', 'SKILL.md'),
         '---\nname: pdf\ndescription: Work with PDFs.\n---\n# PDF\n',
@@ -79,10 +79,10 @@ afterAll(async () => {
     await rm(skillsRoot, { recursive: true, force: true });
 });
 
-// The servers this file starts, and the model calls it holds open. A test that fails midway
-// mustn't leave a server suspended, with its signal handlers installed, for the next test: after
-// each test, held model calls are released and servers awaited, for at most 10 s.
-const startedServers: Promise<unknown>[] = [];
+// The agents this file starts, and the model calls it holds open. A test that fails midway
+// mustn't leave an agent suspended, with its signal handlers installed, for the next test: after
+// each test, held model calls are released and agents awaited, for at most 10 s.
+const startedAgents: Promise<unknown>[] = [];
 const heldModelCalls: ((output: readonly ResponseOutputItem[]) => Promise<void>)[] = [];
 
 const within = (ms: number): Promise<unknown> => {
@@ -97,7 +97,7 @@ afterEach(async () => {
         .map((release) => release([message('The test ended.')]));
 
     await Promise.race([
-        Promise.allSettled([...released, ...startedServers.splice(0)]),
+        Promise.allSettled([...released, ...startedAgents.splice(0)]),
         within(10_000),
     ]);
 
@@ -117,11 +117,11 @@ const modelCallsOf = (requests: readonly RecordedRequest[]): RecordedRequest[] =
 };
 
 /**
- * Starts the server without waiting for it to end. The log is read as JSON records, which pins
+ * Starts the agent without waiting for it to end. The log is read as JSON records, which pins
  * every field, unless a test asks for another format; the formatted output has its own tests. The
  * run ID is a fresh one, which the signal guard vouches for.
  */
-const startServer = (env: Settings = {}, server: FakeServer = {}, args: readonly string[] = []) => {
+const startAgent = (env: Settings = {}, server: FakeServer = {}, args: readonly string[] = []) => {
     const settings: Settings = { LOG_FORMAT: 'json', ...env };
 
     for (const name of SETTINGS) {
@@ -153,7 +153,7 @@ const startServer = (env: Settings = {}, server: FakeServer = {}, args: readonly
         process.argv = argv;
         log.mockRestore();
     });
-    startedServers.push(done);
+    startedAgents.push(done);
 
     return {
         done,
@@ -165,12 +165,12 @@ const startServer = (env: Settings = {}, server: FakeServer = {}, args: readonly
     };
 };
 
-const runServer = async (
+const runAgent = async (
     env: Settings = {},
     server: FakeServer = {},
     args: readonly string[] = [],
 ) => {
-    const started = startServer(env, server, args);
+    const started = startAgent(env, server, args);
     await started.done;
     const modelCalls = started.modelCalls();
 
@@ -247,7 +247,7 @@ const heldModelCall = () => {
 
 describe('Carry out a task through the agent loop, and log the answer', { timeout: 15_000 }, () => {
     test('the default task', async () => {
-        const { modelCall } = await runServer();
+        const { modelCall } = await runAgent();
 
         expect(modelCall?.body?.input).toEqual([
             { role: 'developer', content: expect.any(String) },
@@ -256,7 +256,7 @@ describe('Carry out a task through the agent loop, and log the answer', { timeou
     });
 
     test('a task from the arguments', async () => {
-        const { modelCall } = await runServer({}, {}, [
+        const { modelCall } = await runAgent({}, {}, [
             'Which',
             'runtime',
             'does README.md describe?',
@@ -269,7 +269,7 @@ describe('Carry out a task through the agent loop, and log the answer', { timeou
     });
 
     test('without skills: read_file and shell, and a developer item that mentions no skills', async () => {
-        const { modelCall } = await runServer();
+        const { modelCall } = await runAgent();
 
         expect(modelCall?.body?.tools).toEqual([
             expect.objectContaining({ type: 'function', name: 'read_file', strict: true }),
@@ -281,7 +281,7 @@ describe('Carry out a task through the agent loop, and log the answer', { timeou
     });
 
     test('with skills: activate_skill too, and the catalog ends the developer item', async () => {
-        const { modelCall } = await runServer({ SKILLS_PATH: skillsRoot });
+        const { modelCall } = await runAgent({ SKILLS_PATH: skillsRoot });
 
         expect(toolNames(modelCall)).toEqual(['read_file', 'shell', 'activate_skill']);
         expect(developerItem(modelCall)).toMatch(
@@ -293,7 +293,7 @@ describe('Carry out a task through the agent loop, and log the answer', { timeou
     });
 
     test("activate_skill gives a skill's instructions, and read_file its files", async () => {
-        const { modelCalls } = await runServer(
+        const { modelCalls } = await runAgent(
             { SKILLS_PATH: skillsRoot },
             {
                 responses: script(
@@ -318,13 +318,13 @@ describe('Carry out a task through the agent loop, and log the answer', { timeou
     });
 
     test('the working directory, through a symbolic link', async () => {
-        const base = await mkdtemp(join(tmpdir(), 'server-work-'));
+        const base = await mkdtemp(join(tmpdir(), 'agent-work-'));
         const real = join(await realpath(base), 'real');
         await writeIn(join(real, 'notes.txt'), 'hello');
         await symlink(real, join(base, 'link'));
 
         try {
-            const { records, modelCall, modelCalls } = await runServer(
+            const { records, modelCall, modelCalls } = await runAgent(
                 { WORK_DIR: join(base, 'link') },
                 {
                     responses: script(
@@ -349,13 +349,13 @@ describe('Carry out a task through the agent loop, and log the answer', { timeou
     test('a relative WORK_DIR resolves against the current directory', async () => {
         await mkdir(join(cwd, 'work'), { recursive: true });
 
-        const { records } = await runServer({ WORK_DIR: 'work' });
+        const { records } = await runAgent({ WORK_DIR: 'work' });
 
         expect(find(records, 'asking')).toMatchObject({ workDir: join(realCwd, 'work') });
     });
 
     test('an answer after running a command', async () => {
-        const { code, records, modelCalls } = await runServer(
+        const { code, records, modelCalls } = await runAgent(
             {},
             {
                 responses: script(
@@ -375,7 +375,7 @@ describe('Carry out a task through the agent loop, and log the answer', { timeou
     });
 
     test('the step limit comes from the settings', async () => {
-        const { code, records, modelCalls } = await runServer(
+        const { code, records, modelCalls } = await runAgent(
             { MAX_STEPS: '3' },
             {
                 responses: (n) =>
@@ -391,7 +391,7 @@ describe('Carry out a task through the agent loop, and log the answer', { timeou
     });
 
     test('the default step limit is 30', async () => {
-        const { modelCalls } = await runServer(
+        const { modelCalls } = await runAgent(
             {},
             {
                 responses: (n) =>
@@ -418,9 +418,9 @@ const daemonOf = (request: RecordedRequest | undefined): number => {
     return track(Number(/stdout:\n(\d+)$/.exec(String(output))?.[1]));
 };
 
-describe("Stop the session's processes when the server ends", { timeout: 15_000 }, () => {
+describe("Stop the session's processes when the agent ends", { timeout: 15_000 }, () => {
     test('a process left behind is stopped, once', async () => {
-        const { code, records, modelCalls } = await runServer(
+        const { code, records, modelCalls } = await runAgent(
             {},
             leaveDaemon(() => completed([message('Started it.')])),
         );
@@ -440,7 +440,7 @@ describe("Stop the session's processes when the server ends", { timeout: 15_000 
     ] as const)('%s during the session', async (signal, code) => {
         const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
         const pending = heldModelCall();
-        const started = startServer({}, leaveDaemon(pending.response));
+        const started = startAgent({}, leaveDaemon(pending.response));
         await vi.waitFor(
             () => {
                 expect(started.modelCalls()).toHaveLength(2);
@@ -473,7 +473,7 @@ describe("Stop the session's processes when the server ends", { timeout: 15_000 
     test('Ctrl-C twice', async () => {
         const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
         const pending = heldModelCall();
-        const started = startServer({}, { responses: pending.response });
+        const started = startAgent({}, { responses: pending.response });
         await vi.waitFor(
             () => {
                 expect(started.modelCalls()).toHaveLength(1);
@@ -497,7 +497,7 @@ describe("Stop the session's processes when the server ends", { timeout: 15_000 
     });
 
     test('a signal while the processes are being stopped is ignored', async () => {
-        const bin = await mkdtemp(join(tmpdir(), 'server-ps-'));
+        const bin = await mkdtemp(join(tmpdir(), 'agent-ps-'));
         const listing = join(bin, 'listing');
         // A ps that says when the sweep has started, then takes its time.
         await writeFile(
@@ -509,7 +509,7 @@ describe("Stop the session's processes when the server ends", { timeout: 15_000 
         const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
 
         try {
-            const started = startServer();
+            const started = startAgent();
             await vi.waitFor(() => stat(listing), { timeout: 4000, interval: 20 });
 
             process.emit('SIGINT', 'SIGINT');
@@ -525,20 +525,20 @@ describe("Stop the session's processes when the server ends", { timeout: 15_000 
         }
     });
 
-    test('no handler outlives the server', async () => {
+    test('no handler outlives the agent', async () => {
         const before = SIGNALS.map((signal) => process.listenerCount(signal));
 
-        await runServer();
+        await runAgent();
 
         expect(SIGNALS.map((signal) => process.listenerCount(signal))).toEqual(before);
     });
 
     test("the sweep can't run", async () => {
-        const empty = await mkdtemp(join(tmpdir(), 'server-path-'));
+        const empty = await mkdtemp(join(tmpdir(), 'agent-path-'));
         vi.stubEnv('PATH', empty);
 
         try {
-            const { code, records } = await runServer();
+            const { code, records } = await runAgent();
 
             expect(code).toBe(0);
             expect(find(records, 'cleanup failed')).toMatchObject({
@@ -553,7 +553,7 @@ describe("Stop the session's processes when the server ends", { timeout: 15_000 
 
 describe('Log each model call and tool call', () => {
     test('the records of a tool round trip', async () => {
-        const { records, runId } = await runServer({}, readThenAnswer);
+        const { records, runId } = await runAgent({}, readThenAnswer);
 
         expect(records).toMatchObject([
             {
@@ -595,10 +595,10 @@ describe('Log each model call and tool call', () => {
     });
 
     test('the asking record', async () => {
-        const work = await mkdtemp(join(tmpdir(), 'server-asking-'));
+        const work = await mkdtemp(join(tmpdir(), 'agent-asking-'));
 
         try {
-            const { records, runId } = await runServer({ WORK_DIR: work }, {}, ['Say', 'hi']);
+            const { records, runId } = await runAgent({ WORK_DIR: work }, {}, ['Say', 'hi']);
 
             expect(runId).toMatch(/^[0-9a-f]{8}$/);
             expect(find(records, 'asking')).toEqual({
@@ -617,7 +617,7 @@ describe('Log each model call and tool call', () => {
     });
 
     test('the skills record, before the asking record', async () => {
-        const { records } = await runServer({ SKILLS_PATH: skillsRoot });
+        const { records } = await runAgent({ SKILLS_PATH: skillsRoot });
 
         expect(records.slice(0, 2)).toMatchObject([
             { level: 'info', message: 'skills', names: ['browser', 'pdf'] },
@@ -626,7 +626,7 @@ describe('Log each model call and tool call', () => {
     });
 
     test('skills not loaded, and their warnings', async () => {
-        const root = await realpath(await mkdtemp(join(tmpdir(), 'server-broken-')));
+        const root = await realpath(await mkdtemp(join(tmpdir(), 'agent-broken-')));
         await writeIn(join(root, 'broken', 'SKILL.md'), '# Broken\n');
         await writeIn(
             join(root, 'pdf-tools', 'SKILL.md'),
@@ -635,7 +635,7 @@ describe('Log each model call and tool call', () => {
         const missing = join(root, 'missing');
 
         try {
-            const { records } = await runServer({ SKILLS_PATH: `${missing}:${root}` });
+            const { records } = await runAgent({ SKILLS_PATH: `${missing}:${root}` });
 
             expect(records.filter((record) => record.level === 'warn')).toEqual([
                 {
@@ -667,7 +667,7 @@ describe('Log each model call and tool call', () => {
     });
 
     test('sizes are in bytes, not characters', async () => {
-        const { records } = await runServer(
+        const { records } = await runAgent(
             {},
             {
                 responses: script(
@@ -682,7 +682,7 @@ describe('Log each model call and tool call', () => {
     });
 
     test('a failed call is a warning carrying its error', async () => {
-        const { records } = await runServer(
+        const { records } = await runAgent(
             {},
             {
                 responses: script(
@@ -700,7 +700,7 @@ describe('Log each model call and tool call', () => {
     });
 
     test("arguments that don't parse are logged as the model sent them", async () => {
-        const { records } = await runServer(
+        const { records } = await runAgent(
             {},
             {
                 responses: script(
@@ -726,7 +726,7 @@ describe('Log each model call and tool call', () => {
             })}\n\n`,
             { headers: { 'content-type': 'text/event-stream' } },
         );
-        const { records } = await runServer({}, { responses: () => noUsage });
+        const { records } = await runAgent({}, { responses: () => noUsage });
 
         expect(find(records, 'model call')).toEqual({
             time: expect.any(String),
@@ -740,7 +740,7 @@ describe('Log each model call and tool call', () => {
     test('usage without token details leaves those out', async () => {
         // Some OpenAI-compatible servers report only the totals.
         const totals = { input_tokens: 10, output_tokens: 5, total_tokens: 15 } as ResponseUsage;
-        const { records } = await runServer(
+        const { records } = await runAgent(
             {},
             { responses: () => completed([message('Hi.')], totals) },
         );
@@ -759,7 +759,7 @@ describe('Log each model call and tool call', () => {
 
 describe('Formatted output by default', () => {
     test('without LOG_FORMAT, each record is a line to read', async () => {
-        const { output, runId } = await runServer({ LOG_FORMAT: undefined }, readThenAnswer);
+        const { output, runId } = await runAgent({ LOG_FORMAT: undefined }, readThenAnswer);
         const lines = output.trim().split('\n');
 
         expect(lines.every((line) => /^\d\d:\d\d:\d\d (INFO |WARN |ERROR) /.test(line))).toBe(true);
@@ -774,7 +774,7 @@ describe('Formatted output by default', () => {
     });
 
     test('an unknown LOG_FORMAT fails before anything else', async () => {
-        const { code, output, requests } = await runServer({ LOG_FORMAT: 'xml' });
+        const { code, output, requests } = await runAgent({ LOG_FORMAT: 'xml' });
 
         expect(code).toBe(1);
         expect(output).toMatch(
@@ -784,7 +784,7 @@ describe('Formatted output by default', () => {
     });
 
     test('LOG_FORMAT is trimmed, as every setting is', async () => {
-        const { output } = await runServer({ LOG_FORMAT: ' json ' }, readThenAnswer);
+        const { output } = await runAgent({ LOG_FORMAT: ' json ' }, readThenAnswer);
         const messages = output
             .trim()
             .split('\n')
@@ -803,7 +803,7 @@ describe('Formatted output by default', () => {
 
 describe('Read the configuration from the environment, and validate it at start-up', () => {
     test.each(['0', '-1', '2.5', 'lots'])('an invalid step limit: %j', async (value) => {
-        const { code, records, requests } = await runServer({ MAX_STEPS: value });
+        const { code, records, requests } = await runAgent({ MAX_STEPS: value });
 
         expect(code).toBe(1);
         expect(errors(records)).toEqual([expect.stringContaining('MAX_STEPS')]);
@@ -814,7 +814,7 @@ describe('Read the configuration from the environment, and validate it at start-
         ['without MAX_STEPS', { MAX_TURNS: '5' }],
         ['with MAX_STEPS', { MAX_TURNS: '5', MAX_STEPS: '12' }],
     ])("the step limit's former name, %s", async (_with, env) => {
-        const { code, records, requests } = await runServer(env);
+        const { code, records, requests } = await runAgent(env);
 
         expect(code).toBe(1);
         expect(errors(records)).toEqual([
@@ -827,7 +827,7 @@ describe('Read the configuration from the environment, and validate it at start-
         ['a path that does not exist', 'missing'],
         ['a file', 'package.json'],
     ])('a working directory that is %s', async (_kind, workDir) => {
-        const { code, records, requests } = await runServer({ WORK_DIR: workDir });
+        const { code, records, requests } = await runAgent({ WORK_DIR: workDir });
 
         expect(code).toBe(1);
         expect(errors(records)).toEqual([
@@ -837,7 +837,7 @@ describe('Read the configuration from the environment, and validate it at start-
     });
 
     test('every problem is reported', async () => {
-        const { code, records, requests } = await runServer({
+        const { code, records, requests } = await runAgent({
             MODEL_PROVIDER: 'openai',
             WORK_DIR: 'missing',
         });
@@ -854,7 +854,7 @@ describe('Read the configuration from the environment, and validate it at start-
 
 describe('Actionable failure messages', () => {
     test('no answer', async () => {
-        const { code, records } = await runServer(
+        const { code, records } = await runAgent(
             {},
             { responses: script(() => completed([reasoning()])) },
         );
@@ -868,7 +868,7 @@ describe('Actionable failure messages', () => {
 
     test("an item the SDK can't replay", async () => {
         const strange = { type: 'made_up' } as unknown as ResponseOutputItem;
-        const { code, records } = await runServer(
+        const { code, records } = await runAgent(
             {},
             {
                 responses: script(() =>
@@ -884,7 +884,7 @@ describe('Actionable failure messages', () => {
     });
 
     test('a failed model call', async () => {
-        const { code, records } = await runServer(
+        const { code, records } = await runAgent(
             {},
             { responses: () => httpError(500, 'model crashed') },
         );
@@ -897,7 +897,7 @@ describe('Actionable failure messages', () => {
     });
 
     test('a rate-limited model call', async () => {
-        const { code, records } = await runServer(
+        const { code, records } = await runAgent(
             {},
             { responses: () => httpError(429, 'slow down') },
         );
@@ -909,7 +909,7 @@ describe('Actionable failure messages', () => {
     });
 
     test('a failed model call without a status', async () => {
-        const { code, records } = await runServer(
+        const { code, records } = await runAgent(
             {},
             {
                 responses: () =>
@@ -936,7 +936,7 @@ describe('Actionable failure messages', () => {
     });
 
     test('LM Studio stops during the session', async () => {
-        const { code, records } = await runServer(
+        const { code, records } = await runAgent(
             {},
             {
                 responses: () => {
@@ -952,7 +952,7 @@ describe('Actionable failure messages', () => {
     });
 
     test("another provider that can't be reached", async () => {
-        const { code, records } = await runServer(
+        const { code, records } = await runAgent(
             { MODEL_PROVIDER: 'openai', MODEL_API_KEY: 'sk-test', MODEL: 'gpt-test' },
             {
                 responses: () => {
@@ -970,7 +970,7 @@ describe('Actionable failure messages', () => {
 
 describe('run with LM Studio (the default provider)', () => {
     test('asks the loaded model and logs its answer', async () => {
-        const { code, records, modelCall } = await runServer();
+        const { code, records, modelCall } = await runAgent();
 
         expect(code).toBe(0);
         expect(find(records, 'answer')).toMatchObject({ text: 'Hi there!' });
@@ -986,14 +986,14 @@ describe('run with LM Studio (the default provider)', () => {
     });
 
     test('passes the configured reasoning effort through', async () => {
-        const { code, modelCall } = await runServer({ MODEL_REASONING_EFFORT: 'low' });
+        const { code, modelCall } = await runAgent({ MODEL_REASONING_EFFORT: 'low' });
 
         expect(code).toBe(0);
         expect(modelCall?.body).toMatchObject({ reasoning: { effort: 'low' } });
     });
 
     test('invalid config fails before any network call', async () => {
-        const { code, records, requests } = await runServer({ MODEL_BASE_URL: 'lmstudio' });
+        const { code, records, requests } = await runAgent({ MODEL_BASE_URL: 'lmstudio' });
 
         expect(code).toBe(1);
         expect(errors(records)).toEqual([expect.stringContaining('MODEL_BASE_URL')]);
@@ -1001,7 +1001,7 @@ describe('run with LM Studio (the default provider)', () => {
     });
 
     test('an unreachable LM Studio fails with a hint', async () => {
-        const { code, records } = await runServer(
+        const { code, records } = await runAgent(
             {},
             {
                 models: () => {
@@ -1015,7 +1015,7 @@ describe('run with LM Studio (the default provider)', () => {
     });
 
     test("a rejected key fails with LM Studio's hint", async () => {
-        const { code, records } = await runServer(
+        const { code, records } = await runAgent(
             {},
             { models: () => new Response('denied', { status: 401 }) },
         );
@@ -1029,7 +1029,7 @@ describe('run with LM Studio (the default provider)', () => {
     });
 
     test("a configured model that isn't loaded isn't called", async () => {
-        const { code, records, modelCall } = await runServer({
+        const { code, records, modelCall } = await runAgent({
             MODEL: 'qwen2.5-0.5b-instruct-mlx',
         });
 
@@ -1055,7 +1055,7 @@ describe('run with LM Studio (the default provider)', () => {
                 },
             ],
         };
-        const { code, records, modelCall } = await runServer(
+        const { code, records, modelCall } = await runAgent(
             {},
             { models: () => Response.json(twoLoaded) },
         );
@@ -1074,7 +1074,7 @@ describe('run with another OpenAI-compatible provider', () => {
     const openai = { MODEL_PROVIDER: 'openai', MODEL_API_KEY: 'sk-test', MODEL: 'gpt-test' };
 
     test("uses the named model without asking LM Studio, and the model's own reasoning default", async () => {
-        const { code, records, requests, modelCall } = await runServer(openai);
+        const { code, records, requests, modelCall } = await runAgent(openai);
 
         expect(code).toBe(0);
         expect(find(records, 'answer')).toMatchObject({ text: 'Hi there!' });
@@ -1088,7 +1088,7 @@ describe('run with another OpenAI-compatible provider', () => {
     });
 
     test('needs MODEL and MODEL_API_KEY, and fails before any network call', async () => {
-        const { code, records, requests } = await runServer({ MODEL_PROVIDER: 'openai' });
+        const { code, records, requests } = await runAgent({ MODEL_PROVIDER: 'openai' });
 
         expect(code).toBe(1);
         expect(errors(records)).toEqual([
@@ -1099,7 +1099,7 @@ describe('run with another OpenAI-compatible provider', () => {
     });
 
     test('a rejected key points at MODEL_API_KEY, not at LM Studio', async () => {
-        const { code, records } = await runServer(openai, {
+        const { code, records } = await runAgent(openai, {
             responses: () => httpError(401, 'bad key'),
         });
 
@@ -1109,7 +1109,7 @@ describe('run with another OpenAI-compatible provider', () => {
     });
 
     test('a forbidden key reports its own status', async () => {
-        const { code, records } = await runServer(openai, {
+        const { code, records } = await runAgent(openai, {
             responses: () => httpError(403, 'forbidden'),
         });
 
