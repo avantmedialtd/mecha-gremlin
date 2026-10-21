@@ -2,10 +2,10 @@
 
 ## Purpose
 
-Agent Skills for the server: finding and reading the skills `SKILLS_PATH` lists, the catalog in the developer item, and the `activate_skill` tool.
+How the agent uses Agent Skills: finding and reading the skills `SKILLS_PATH` lists, the catalog in the developer item, and the `activate_skill` tool.
 ## Requirements
 ### Requirement: Find skills in the directories SKILLS_PATH lists
-The server SHALL load skills from the skills roots that `SKILLS_PATH` lists, separated by `:` as in `PATH`. A relative entry SHALL resolve against the current directory, and an empty entry SHALL be ignored. Every subdirectory of a root that holds a file named exactly `SKILL.md` SHALL be read as a skill. Other entries SHALL be skipped without a record, and nothing deeper SHALL be searched. Each skill's directory SHALL be recorded by its real path, with symbolic links resolved.
+The agent SHALL load skills from the skills roots that `SKILLS_PATH` lists, separated by `:` as in `PATH`. A relative entry SHALL resolve against the current directory, and an empty entry SHALL be ignored. Every subdirectory of a root that holds a file named exactly `SKILL.md` SHALL be read as a skill. Other entries SHALL be skipped without a record, and nothing deeper SHALL be searched. Each skill's directory SHALL be recorded by its real path, with symbolic links resolved.
 - Roots SHALL be read in the order listed, and each root's subdirectories in sorted order. A skill whose name is already taken, by a skill in the same root or an earlier one, SHALL NOT be loaded.
 - A `warn` record `skill not loaded`, with the fields `path` and `reason`, SHALL report:
   - each skill left out because its name was taken; the reason names the skill that took it;
@@ -49,7 +49,7 @@ The server SHALL load skills from the skills roots that `SKILLS_PATH` lists, sep
 ### Requirement: Read SKILL.md leniently
 Reading a skill's SKILL.md SHALL take three steps:
 1. `core`'s `splitFrontmatter(text)` splits it. The text SHALL start with a `---` line, and its frontmatter SHALL end at the next `---` line; CRLF line endings SHALL be accepted.
-2. The server SHALL parse the frontmatter with `parseYaml` from `@mecha-gremlin/yaml/parse`, which writes nothing to stdout or stderr.
+2. The agent SHALL parse the frontmatter with `parseYaml` from `@mecha-gremlin/yaml/parse`, which writes nothing to stdout or stderr.
 3. `core`'s `readSkill(directoryName, frontmatter, body)` checks the parsed frontmatter.
 
 `splitFrontmatter` and `readSkill` SHALL return `Result`s. Reading SHALL fail, with a reason, when:
@@ -67,7 +67,7 @@ Otherwise it SHALL succeed with:
   - a name longer than 64 characters;
   - a description longer than 1,024 characters.
 
-Every other key SHALL be ignored, `allowed-tools` included. When the server finds a skill it can't read, it SHALL skip it with a `warn` record `skill not loaded`, giving the skill's path and the reason. For each warning about a skill it loads, it SHALL log a `warn` record `skill warning` with the fields `skill` and `warning`.
+Every other key SHALL be ignored, `allowed-tools` included. When the agent finds a skill it can't read, it SHALL skip it with a `warn` record `skill not loaded`, giving the skill's path and the reason. For each warning about a skill it loads, it SHALL log a `warn` record `skill warning` with the fields `skill` and `warning`.
 
 #### Scenario: A skill as the spec describes it
 - **WHEN** the text is a `---` line, `name: pdf`, `description: Work with PDFs.`, a `---` line, then `# PDF` and a blank line, in the directory `pdf`
@@ -113,11 +113,11 @@ Every other key SHALL be ignored, `allowed-tools` included. When the server find
 - **WHEN** the frontmatter also holds `allowed-tools`, `homepage`, and a `metadata` mapping nested several levels deep in flow style with trailing commas
 - **THEN** it succeeds, and none of those keys changes the skill
 
-#### Scenario: The server reports a skill it can't use
+#### Scenario: The agent reports a skill it can't use
 - **WHEN** a root holds `pdf/SKILL.md` without frontmatter
 - **THEN** `pdf` isn't loaded, and a `warn` record `skill not loaded` has its path and a reason saying it has no frontmatter
 
-#### Scenario: The server reports a warning
+#### Scenario: The agent reports a warning
 - **WHEN** a root holds `pdf-tools/SKILL.md`, whose name is `pdf`
 - **THEN** `pdf` is loaded, and a `warn` record `skill warning` has the skill `pdf` and a warning naming both names
 
@@ -140,7 +140,7 @@ Every other key SHALL be ignored, `allowed-tools` included. When the server find
 - **THEN** both texts are identical
 
 ### Requirement: Activate a skill with activate_skill
-When at least one skill is loaded, the server SHALL offer an `activate_skill` tool. Its arguments SHALL be exactly one required string, `name`, restricted to the loaded skills' names, and no other property SHALL be allowed. Its output, built by `core`'s `renderActivation`, SHALL be a `<skill_content name="…">` element holding:
+When at least one skill is loaded, the agent SHALL offer an `activate_skill` tool. Its arguments SHALL be exactly one required string, `name`, restricted to the loaded skills' names, and no other property SHALL be allowed. Its output, built by `core`'s `renderActivation`, SHALL be a `<skill_content name="…">` element holding:
 1. the skill's body, without its frontmatter;
 2. the line `Skill directory: ` followed by the skill's directory, and a line saying that paths to the skill's own files are relative to that directory;
 3. a `<skill_resources>` element with a `<file>` element for each regular file below the skill's directory, as a path relative to it, sorted.
@@ -150,7 +150,7 @@ When at least one skill is loaded, the server SHALL offer an `activate_skill` to
 
 The skill's name in the `name` attribute, and the file paths, SHALL be escaped as the catalog escapes its text, and `"` in the name as `&quot;`.
 
-The files SHALL be listed when the skill is activated, and not read. When a skill is activated again in the same session, the output SHALL be a short note saying it's already active, instead of its instructions. When no skill is loaded, the server SHALL NOT offer `activate_skill`.
+The files SHALL be listed when the skill is activated, and not read. When a skill is activated again in the same session, the output SHALL be a short note saying it's already active, instead of its instructions. When no skill is loaded, the agent SHALL NOT offer `activate_skill`.
 
 #### Scenario: The model sees a closed schema with the skills' names
 - **WHEN** the skills `browser` and `pdf` are loaded, and `activate_skill` is converted with `toFunctionTool`

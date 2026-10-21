@@ -2,10 +2,10 @@
 
 ## Purpose
 
-The server's logger: records with a level, a message and JSON fields, written to stdout, formatted by default and as JSON lines on request.
+The agent's logger: records with a level, a message and JSON fields, written to stdout, formatted by default and as JSON lines on request.
 ## Requirements
 ### Requirement: Log structured records to stdout
-The server SHALL log through a structured logger of its own, with no logging library. A record SHALL have:
+The agent SHALL log through a structured logger of its own, with no logging library. A record SHALL have:
 - a time;
 - a level: `info`, `warn` or `error`;
 - a message;
@@ -16,7 +16,7 @@ A field SHALL NOT be named `time`, `level` or `message`, which are the record's 
 Every record SHALL go to stdout.
 
 #### Scenario: Records go to stdout
-- **WHEN** the server logs a record at any level
+- **WHEN** the agent logs a record at any level
 - **THEN** the record is written to stdout
 
 #### Scenario: An undefined field is left out
@@ -73,7 +73,7 @@ With `LOG_FORMAT` set to `json`, each record SHALL be written as one line holdin
 - **THEN** the line is a JSON object with `time`, `level` `info`, `message` "tool call", `tool` and `arguments` as an object
 
 ### Requirement: The log format is checked first
-`LOG_FORMAT` SHALL be read like the server's other settings: its value is trimmed, and a value that is blank once trimmed counts as unset. It SHALL default to `pretty` when it is unset. Any value other than `pretty` or `json` SHALL fail the start-up: the server SHALL log an error naming `LOG_FORMAT` in the formatted output, make no network call, and exit with code 1.
+`LOG_FORMAT` SHALL be read like the agent's other settings: its value is trimmed, and a value that is blank once trimmed counts as unset. It SHALL default to `pretty` when it is unset. Any value other than `pretty` or `json` SHALL fail the start-up: the agent SHALL log an error naming `LOG_FORMAT` in the formatted output, make no network call, and exit with code 1.
 
 #### Scenario: An unknown log format
 - **WHEN** `LOG_FORMAT` is `xml`

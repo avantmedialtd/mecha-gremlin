@@ -2,11 +2,11 @@
 
 ## Purpose
 
-The server's loop that alternates model calls and tool calls until the model answers, with its step limit, call ordering and failure handling.
+The agent's loop that alternates model calls and tool calls until the model answers, with its step limit, call ordering and failure handling.
 ## Requirements
 ### Requirement: Create a session from the configuration and a step limit
-The server SHALL provide an async `createSession(config, options)`. It takes the server's configuration, plus a list of tools each paired with a handler, a starting history, and a step limit, `maxSteps`. It SHALL:
-- choose the model as the server's model choice describes: LM Studio's loaded model, or `MODEL` for another provider;
+The agent SHALL provide an async `createSession(config, options)`. It takes the agent's configuration, plus a list of tools each paired with a handler, a starting history, and a step limit, `maxSteps`. It SHALL:
+- choose the model as the agent's model choice describes: LM Studio's loaded model, or `MODEL` for another provider;
 - build its own `openai` client from the configuration's base URL and API key;
 - send the configured reasoning effort, when there is one, with every model call.
 

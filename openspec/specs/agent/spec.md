@@ -1,11 +1,11 @@
-# server Specification
+# agent Specification
 
 ## Purpose
 
-The server entry point that chooses a model by provider (the model loaded in LM Studio by default, or a named model from any OpenAI-compatible service), has it carry out a task through the agent loop with a shell, `read_file` and skills, and logs the answer, with its configuration, its failure behaviour, and how it stops the session's processes. It runs on Bun, with `bun run server`, or on Node, with `bun run server:node`.
+The agent's entry point, which chooses a model by provider (the model loaded in LM Studio by default, or a named model from any OpenAI-compatible service), has it carry out a task through the agent loop with a shell, `read_file` and skills, and logs the answer, with its configuration, its failure behaviour, and how it stops the session's processes. It runs on Bun, with `bun run agent`, or on Node, with `bun run agent:node`.
 ## Requirements
 ### Requirement: Carry out a task through the agent loop, and log the answer
-Running the server entry point, `bun run server [task…]` from the repository root, SHALL:
+Running the agent, `bun run agent [task…]` from the repository root, SHALL:
 1. choose the model to use;
 2. take the task from the arguments, joined with spaces. With no arguments, the task SHALL be "Use the playwright-cli skill to find the title of https://example.com";
 3. load the skills `SKILLS_PATH` lists (`skills`);
@@ -23,11 +23,11 @@ Running the server entry point, `bun run server [task…]` from the repository r
 Every model call SHALL go to the OpenAI-compatible Responses endpoint at `{MODEL_BASE_URL}/responses` with the chosen model and, when one is configured, `reasoning.effort`.
 
 #### Scenario: Default task
-- **WHEN** the server runs with no arguments
+- **WHEN** the agent runs with no arguments
 - **THEN** the first request's `user` item is "Use the playwright-cli skill to find the title of https://example.com"
 
 #### Scenario: Task from the arguments
-- **WHEN** the server runs with the arguments `Which`, `runtime` and `does README.md describe?`
+- **WHEN** the agent runs with the arguments `Which`, `runtime` and `does README.md describe?`
 - **THEN** the first request's `user` item is "Which runtime does README.md describe?"
 
 #### Scenario: The tools offered
@@ -51,11 +51,11 @@ Every model call SHALL go to the OpenAI-compatible Responses endpoint at `{MODEL
 - **THEN** exactly 3 requests are sent
 
 ### Requirement: Log each model call and tool call
-The server SHALL log, through the structured logger:
+The agent SHALL log, through the structured logger:
 - when at least one skill is loaded, an `info` record `skills` with the field `names`, the loaded skills' names in sorted order;
 - the `skill not loaded` and `skill warning` records that loading the skills produces (`skills`);
 - before the first model call, an `info` record `asking` with the fields `model`, `baseUrl`, `run` (the session's run ID), `workDir` (the working directory's real path) and `task`;
-- as each step completes, an `info` record `model call`. Its fields are `step`, the step's number; `inputTokens`, `cachedTokens`, `outputTokens` and `reasoningTokens`, when the server reports them; and `seconds`, the model call's, rounded to a tenth;
+- as each step completes, an `info` record `model call`. Its fields are `step`, the step's number; `inputTokens`, `cachedTokens`, `outputTokens` and `reasoningTokens`, when the model server reports them; and `seconds`, the model call's, rounded to a tenth;
 - then, for each of the step's tool calls:
   - an `info` record `tool call` with the fields `tool` and `arguments`. The arguments are logged as JSON when they parse, and as the model sent them otherwise;
   - then an `info` record `tool result` with the fields `tool` and `bytes`, or a `warn` record `tool failed` with the fields `tool` and `error`.
@@ -81,10 +81,10 @@ The server SHALL log, through the structured logger:
 - **THEN** a `warn` record `tool failed` carries the tool's error
 
 ### Requirement: Choose the model according to the provider
-The server SHALL choose the model according to `MODEL_PROVIDER`.
+The agent SHALL choose the model according to `MODEL_PROVIDER`.
 - With `lmstudio`, the default, it SHALL ask LM Studio's native `GET {origin of MODEL_BASE_URL}/api/v1/models` which models are loaded, and SHALL NOT request a model that isn't currently loaded. A loaded model is an entry of type `llm` with at least one loaded instance.
   - When `MODEL` is set, it SHALL match a loaded instance id or a loaded model key.
-  - When it isn't set, the server SHALL use the first loaded instance. If more than one LLM instance is loaded, it SHALL say which one it chose in an `info` record.
+  - When it isn't set, the agent SHALL use the first loaded instance. If more than one LLM instance is loaded, it SHALL say which one it chose in an `info` record.
 - With any other provider, it SHALL use `MODEL` and SHALL NOT call LM Studio's native API.
 
 #### Scenario: No model configured, one loaded
@@ -116,7 +116,7 @@ The server SHALL choose the model according to `MODEL_PROVIDER`.
 - **THEN** the requests name the model `gpt-test`, and no request goes to `/api/v1/models`
 
 ### Requirement: Read the configuration from the environment, and validate it at start-up
-The server SHALL read `MODEL_PROVIDER` (`lmstudio` or `openai`; default `lmstudio`), `MODEL_BASE_URL`, `MODEL_API_KEY`, `MODEL` and `MODEL_REASONING_EFFORT`, with these defaults per provider:
+The agent SHALL read `MODEL_PROVIDER` (`lmstudio` or `openai`; default `lmstudio`), `MODEL_BASE_URL`, `MODEL_API_KEY`, `MODEL` and `MODEL_REASONING_EFFORT`, with these defaults per provider:
 
 | Variable | `lmstudio` | `openai` |
 |---|---|---|
@@ -126,8 +126,8 @@ The server SHALL read `MODEL_PROVIDER` (`lmstudio` or `openai`; default `lmstudi
 | `MODEL_REASONING_EFFORT` | `none` | unset, so the request carries no `reasoning.effort` |
 
 - A trailing slash on `MODEL_BASE_URL` SHALL be removed.
-- The API key SHALL be sent as a bearer token to every endpoint the server calls.
-- The server SHALL validate all settings before any network call. If any is invalid or missing, it SHALL exit with code 1 and log an `error` record for each invalid or missing variable, naming it.
+- The API key SHALL be sent as a bearer token to every endpoint the agent calls.
+- The agent SHALL validate all settings before any network call. If any is invalid or missing, it SHALL exit with code 1 and log an `error` record for each invalid or missing variable, naming it.
 
 It SHALL also read, whatever the provider:
 - `WORK_DIR`, the working directory of `read_file` and `shell`. It defaults to the current directory, and a relative path resolves against the current directory. It SHALL name an existing directory, and SHALL be used by its real path, with symbolic links resolved.
@@ -181,9 +181,9 @@ It SHALL also read, whatever the provider:
 - **THEN** no network call is made, three `error` records name `MODEL_API_KEY`, `MODEL` and `WORK_DIR`, and the exit code is 1
 
 ### Requirement: Actionable failure messages
-The server SHALL exit with code 1 and log an `error` record whose message names the cause and a next step, in each of these cases:
+The agent SHALL exit with code 1 and log an `error` record whose message names the cause and a next step, in each of these cases:
 - the model server is unreachable;
-- the server rejects the API key;
+- the model server rejects the API key;
 - LM Studio's models endpoint returns an unexpected shape;
 - a model call fails;
 - the model is still calling tools when the session's step limit is reached;
@@ -191,16 +191,16 @@ The server SHALL exit with code 1 and log an `error` record whose message names 
 
 No `answer` record SHALL be logged in these cases.
 
-When a model call fails, the message SHALL include the failure's detail, such as the server's own message, and its next step SHALL depend on why the call failed:
+When a model call fails, the message SHALL include the failure's detail, such as the model server's own message, and its next step SHALL depend on why the call failed:
 
 | The model call failed because | Next step |
 |---|---|
 | the model server is unreachable | with `lmstudio`, start LM Studio's server (`lms server start`) or set `MODEL_BASE_URL`; otherwise, check `MODEL_BASE_URL` |
-| the server rejected the API key (HTTP 401 or 403) | set `MODEL_API_KEY`, as for a key rejected at start-up |
-| the server didn't answer in time | try again, or narrow the task |
-| the server is limiting requests (HTTP 429) | wait a minute and try again; if it keeps happening, check the account's quota |
-| the server rejected the request (any other HTTP 4xx) | check that `MODEL` and `MODEL_REASONING_EFFORT` suit the server |
-| the server failed (HTTP 5xx), or the response failed or broke off | try again; if it keeps failing, check the model server |
+| the model server rejected the API key (HTTP 401 or 403) | set `MODEL_API_KEY`, as for a key rejected at start-up |
+| the model server didn't answer in time | try again, or narrow the task |
+| the model server is limiting requests (HTTP 429) | wait a minute and try again; if it keeps happening, check the account's quota |
+| the model server rejected the request (any other HTTP 4xx) | check that `MODEL` and `MODEL_REASONING_EFFORT` suit the model server |
+| the model server failed (HTTP 5xx), or the response failed or broke off | try again; if it keeps failing, check the model server |
 | the response is incomplete | narrow the task |
 | the model call was aborted | run the command again |
 | anything else | try again; if it keeps happening, report it as a bug |
@@ -231,7 +231,7 @@ When a model call fails, the message SHALL include the failure's detail, such as
 
 #### Scenario: Rate limited
 - **WHEN** the Responses endpoint answers HTTP 429 with the message "slow down"
-- **THEN** the error says the server is limiting requests, includes "429 slow down", and says to wait a minute and try again
+- **THEN** the error says the model server is limiting requests, includes "429 slow down", and says to wait a minute and try again
 
 #### Scenario: Step limit reached
 - **WHEN** the model is still calling tools after the loop's last allowed step
@@ -241,25 +241,25 @@ When a model call fails, the message SHALL include the failure's detail, such as
 - **WHEN** a reply holds neither tool calls nor text
 - **THEN** the error says the model gave no answer, no `answer` record is logged, and the exit code is 1
 
-### Requirement: Run the server on Bun or on Node
-The server SHALL run on Bun with `bun run server`, and on Node with `bun run server:node`, taking the same arguments and settings. `bun run server:node` SHALL load the `.env` file in the current directory when there is one, and SHALL start without one; other `.env` files that Bun reads, such as `.env.local`, are not read on Node. `packages/server/package.json` SHALL declare both runtimes in `engines`. CI SHALL start the server on Node.
+### Requirement: Run the agent on Bun or on Node
+The agent SHALL run on Bun with `bun run agent`, and on Node with `bun run agent:node`, taking the same arguments and settings. `bun run agent:node` SHALL load the `.env` file in the current directory when there is one, and SHALL start without one; other `.env` files that Bun reads, such as `.env.local`, are not read on Node. `packages/agent/package.json` SHALL declare both runtimes in `engines`. CI SHALL start the agent on Node.
 
 #### Scenario: On Node
-- **WHEN** `bun run server:node` runs with `MODEL_BASE_URL` set to `http://127.0.0.1:9/v1`, where nothing listens, and there is no `.env`
+- **WHEN** `bun run agent:node` runs with `MODEL_BASE_URL` set to `http://127.0.0.1:9/v1`, where nothing listens, and there is no `.env`
 - **THEN** Node notes on stderr that `.env` wasn't found, an `error` record says LM Studio can't be reached at that URL, and the exit code is 1, as on Bun
 
 #### Scenario: Settings from .env on Node
-- **WHEN** the `.env` in the current directory sets `MODEL_PROVIDER` to `nonsense`, and the server runs on Node with `--env-file-if-exists=.env`
+- **WHEN** the `.env` in the current directory sets `MODEL_PROVIDER` to `nonsense`, and the agent runs on Node with `--env-file-if-exists=.env`
 - **THEN** an `error` record names `MODEL_PROVIDER`, and the exit code is 1
 
-#### Scenario: CI starts the server on Node
+#### Scenario: CI starts the agent on Node
 - **WHEN** CI's check job runs
-- **THEN** it runs `bun run server:node` with `MODEL_BASE_URL` set to a port where nothing listens, and fails unless the exit code is 1 and the output says LM Studio can't be reached
+- **THEN** it runs `bun run agent:node` with `MODEL_BASE_URL` set to a port where nothing listens, and fails unless the exit code is 1 and the output says LM Studio can't be reached
 
-### Requirement: Stop the session's processes when the server ends
-The server SHALL await the shell's `dispose()` before it exits, whether the session answered or failed.
-- When `dispose()` stopped any processes, the server SHALL log an `info` record `stopped` with the field `count`, once.
-- When `dispose()` couldn't run its sweep, the server SHALL log a `warn` record `cleanup failed` with the field `error`, and keep its exit code.
+### Requirement: Stop the session's processes when the agent ends
+The agent SHALL await the shell's `dispose()` before it exits, whether the session answered or failed.
+- When `dispose()` stopped any processes, the agent SHALL log an `info` record `stopped` with the field `count`, once.
+- When `dispose()` couldn't run its sweep, the agent SHALL log a `warn` record `cleanup failed` with the field `error`, and keep its exit code.
 - **Signal handlers:** it SHALL install handlers for SIGINT, SIGTERM and SIGHUP before the session starts, and SHALL remove them once `dispose()` has resolved.
 - **The first signal** SHALL:
   - log a `warn` record `interrupted` with the field `signal`;
@@ -271,28 +271,29 @@ The server SHALL await the shell's `dispose()` before it exits, whether the sess
 
 #### Scenario: A process left behind
 - **WHEN** a command starts a process in a session of its own, and the model then answers
-- **THEN** that process is stopped before the server exits, and a `stopped` record has `count` 1
+- **THEN** that process is stopped before the agent exits, and a `stopped` record has `count` 1
 
 #### Scenario: Ctrl-C
-- **WHEN** the server receives SIGINT during the session
+- **WHEN** the agent receives SIGINT during the session
 - **THEN** a `warn` record `interrupted` gives the signal `SIGINT`, the session's processes are stopped, and the exit code is 130
 
 #### Scenario: SIGTERM
-- **WHEN** the server receives SIGTERM during the session
+- **WHEN** the agent receives SIGTERM during the session
 - **THEN** a `warn` record `interrupted` gives the signal `SIGTERM`, the session's processes are stopped, and the exit code is 143
 
 #### Scenario: The terminal closes
-- **WHEN** the server receives SIGHUP during the session
+- **WHEN** the agent receives SIGHUP during the session
 - **THEN** a `warn` record `interrupted` gives the signal `SIGHUP`, the session's processes are stopped, and the exit code is 129
 
 #### Scenario: Ctrl-C twice
 - **WHEN** SIGINT arrives twice in quick succession
 - **THEN** one `interrupted` record is logged, the processes are stopped once, and the exit code is 130
 
-#### Scenario: No handler outlives the server
-- **WHEN** the server ends after an answer
+#### Scenario: No handler outlives the agent
+- **WHEN** the agent ends after an answer
 - **THEN** `process` has as many SIGINT, SIGTERM and SIGHUP listeners as before it started
 
 #### Scenario: The sweep can't run
 - **WHEN** the model answers, and the sweep can't list processes
 - **THEN** a `warn` record `cleanup failed` gives the reason, and the exit code is 0
+

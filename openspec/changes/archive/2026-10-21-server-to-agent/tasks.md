@@ -39,7 +39,7 @@
   - its comment and its `::error::` message speak of the agent.
 
   Push with gh's credential, `git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push`, because the keychain's token can't push workflow files.
-- [ ] 3.2 CI passes on the branch: both jobs, with the mutation job at 100%.
+- [x] 3.2 CI passes on the branch: both jobs, with the mutation job at 100%.
 
 ## 4. README and Brief
 
@@ -67,12 +67,12 @@
 
 ## 6. After archiving (the session's)
 
-- [ ] 6.1 After `openspec archive` (design decision 6), in one commit:
+- [x] 6.1 After `openspec archive` (design decision 6), in one commit:
   - `git mv openspec/specs/server openspec/specs/agent`, and the title line becomes `# agent Specification`;
   - the Purpose lines of `agent`, `agent-loop`, `read-file-tool`, `shell-tool`, `skills` and `structured-log`, as decision 6 words them;
   - the scenario titles "The agent reports a skill it can't use", "The agent reports a warning" and "The agent's secrets stay out".
-- [ ] 6.2 Check:
+- [x] 6.2 Check:
   - "Run the agent on Bun or on Node" and "Stop the session's processes when the agent ends" are still the `agent` spec's last two requirements;
   - `openspec validate --specs --strict` passes, and `openspec doctor` finds nothing;
   - `grep -rni server openspec/specs` shows only model-server meanings.
-- [ ] 6.3 The memory note `folders-not-flat-no-indexes` points to `packages/agent/src`, not `packages/server/src`.
+- [x] 6.3 The memory note `folders-not-flat-no-indexes` points to `packages/agent/src`, not `packages/server/src`.

@@ -2,10 +2,10 @@
 
 ## Purpose
 
-The server's `read_file` tool: what it may read, its limits, and how it reports what it can't do.
+The agent's `read_file` tool: what it may read, its limits, and how it reports what it can't do.
 ## Requirements
 ### Requirement: Read a UTF-8 text file under a root directory
-The server SHALL provide a `read_file` tool, created for a root directory and a list of skill directories, which may be empty. Its arguments SHALL be exactly one required string, `path`, and no other property SHALL be allowed. A relative path SHALL resolve against the root, and an absolute path SHALL be used as it is. On success its output SHALL be the file's contents decoded as UTF-8, with invalid sequences replaced by U+FFFD.
+The agent SHALL provide a `read_file` tool, created for a root directory and a list of skill directories, which may be empty. Its arguments SHALL be exactly one required string, `path`, and no other property SHALL be allowed. A relative path SHALL resolve against the root, and an absolute path SHALL be used as it is. On success its output SHALL be the file's contents decoded as UTF-8, with invalid sequences replaced by U+FFFD.
 
 #### Scenario: Reads a file
 - **WHEN** the root holds `notes.txt` containing "hello", and `read_file` is called with `{"path":"notes.txt"}`
@@ -109,3 +109,4 @@ It SHALL report every failure, unexpected I/O errors included, as a failed outco
 #### Scenario: Invalid UTF-8 at the cut
 - **WHEN** the file is 32,760 bytes of ASCII text, then 20 bytes of 0x80, then 1,000 more bytes of ASCII text
 - **THEN** the output is the 32,760 ASCII bytes and five U+FFFD characters, followed by a note saying 32765 of 33780 bytes are shown
+
