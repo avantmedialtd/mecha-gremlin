@@ -43,7 +43,7 @@ describe('toInput', () => {
         type: 'function_call',
         id: 'fc_1',
         call_id: 'call_1',
-        name: 'read_file',
+        name: 'read',
         arguments: '{"path":"package.json"}',
         status: 'completed',
     } as const;

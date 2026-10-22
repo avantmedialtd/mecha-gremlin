@@ -2,7 +2,7 @@
     "name": "@mecha-gremlin/agent",
     "version": "0.0.0",
     "private": true,
-    "description": "The mecha-gremlin agent: carries out a task with a shell, read_file and skills",
+    "description": "The mecha-gremlin agent: carries out a task with a shell, skills, and the file tools read, write and edit, or apply_patch",
     "type": "module",
     "scripts": {
         "start": "bun src/main/main.ts"

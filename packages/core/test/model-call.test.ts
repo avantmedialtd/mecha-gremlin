@@ -124,7 +124,7 @@ describe('Return the reply text and usage when the call completes', () => {
             type: 'function_call',
             id: 'fc_1',
             call_id: 'call_1',
-            name: 'read_file',
+            name: 'read',
             arguments: '{}',
             status: 'completed',
         };

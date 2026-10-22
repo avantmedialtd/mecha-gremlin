@@ -18,6 +18,7 @@
 > - **2026-10-16, later:** R14 records what it takes to keep the server running on Node as well as Bun, and D19 records the choice to do so. Two small packages use Bun's built-ins on Bun and Node's modules elsewhere, and the change `bun-or-node` adds them.
 > - **2026-10-16, evening:** R15 records what "turn" means elsewhere, how other agent loops count and stop, and how LM Studio handles `tool_choice:"none"`. C8 proposes a finalize turn at the turn limit ahead of the budgets (D20), and C13 proposes calling the loop's unit a step (D21). D20 is open. D21 was decided the same evening, and the change `turn-to-step` carries it out.
 > - **2026-10-21:** D22 names the package that carries out a task `agent`: it serves nothing, and "server" also meant the model server and the exec server. 4.2 puts it beside M1's `app`, which runs agents. The change `server-to-agent` renames it.
+> - **2026-10-22:** R16 surveys the tools ten coding harnesses give a model to write files. D23 records the choice: `read`, `write` and `edit` by default, renaming `read_file`, and `apply_patch` in place of `write` and `edit` by the `FILE_TOOLS` setting. C4's table, ▸4 and M1's slice name them. The change `file-write-tools` adds them.
 
 ---
 
@@ -93,7 +94,7 @@ Everything private (secrets, client specifics, my own skills and task definition
 
 ▸ **3. Skills.** The SKILL.md spec has no typed tools (R7), so C4 proposes a different split. Storage: on disk (4.7). For the first skills change: R12, Q12–Q17.
 
-▸ **4. Base tools.** Where they execute: C3. Before M1, the shell runs on the host (C12, D18). Process-group kill, pipe and stdin handling, and output caps: C3, 4.5, R8, R10.
+▸ **4. Base tools.** The shell, and the file tools `read`, `write` and `edit`, with `apply_patch` in place of `write` and `edit` as the alternative (D23, R16). Where they execute: C3. Before M1, the shell runs on the host (C12, D18). Process-group kill, pipe and stdin handling, and output caps: C3, 4.5, R8, R10.
 
 ▸ **5. Persistence.** One row per history item rather than one `jsonb` array per run (C11). Entity draft: 4.4.
 
@@ -811,6 +812,31 @@ Two research agents read each project's docs and source on 2026-10-16, for C8 an
 
 **Sources:** openai/openai-agents-python `src/agents/run.py` and openai.github.io/openai-agents-python/running_agents; openai/openai-agents-js `packages/agents-core/src/runner/turnPreparation.ts`; OAI /api/docs/guides/reasoning, /guides/conversation-state, /guides/function-calling and /guides/websocket-mode, and /cookbook/examples/responses_api/reasoning_items; openai-python `src/openai/types/shared/reasoning.py`; learn.chatgpt.com/docs/app-server; code.claude.com/docs/en/agent-sdk/agent-loop, /cli-reference, /glossary and /hooks; platform.claude.com/docs/en/api/messages and /agents-and-tools/tool-use/how-tool-use-works; ai.google.dev/gemini-api/docs/generate-content/thought-signatures; adk.dev/runtime/event-loop and /runtime/runconfig; google/adk-python 2.12.0 `flows/llm_flows/core/_model_call.py`; ai-sdk.dev/docs/ai-sdk-core/tools-and-tool-calling and /docs/agents/loop-control; vercel/ai 7.0.142 `generate-text.ts`; docs.langchain.com/oss/python/langgraph/graph-api; langchain-ai/langgraph 1.2.15 `_internal/_config.py`, and prebuilt 1.1.1 `chat_agent_executor.py`; langchain-ai/langchain 1.4.6 `agents/middleware/model_call_limit.py`; pydantic/pydantic-ai 2.57.0 `usage.py`, and pydantic.dev/docs/ai; huggingface/smolagents 1.26.0 `agents.py`; microsoft/agent-framework python-1.22.0 `_tools.py`; microsoft/autogen `_assistant_agent.py`; mastra.ai/reference/agents/generate; github.com/open-telemetry/semantic-conventions-genai; gorilla.cs.berkeley.edu/blogs/13_bfcl_v3_multi_turn.html; sierra-research/tau-bench `tool_calling_agent.py`; swe-agent.com/latest/usage/trajectories; lmstudio.ai/docs/typescript/agent/act.
 
+## R16. File-writing tools in coding harnesses
+
+A survey of ten harnesses on 2026-10-21/22, for the `file-write-tools` change and D23, against their current source and docs. **[H]** throughout. The question: what tools do coding agents give a model to write and change files, how do they match the text to change, and what keeps them from overwriting a file?
+
+| Harness | Write | Edit | Matching | Overwrite guard |
+|---|---|---|---|---|
+| Claude Code | `Write(file_path, content)` | `Edit(file_path, old_string, new_string, replace_all)` | exact; unique unless `replace_all` | read first (newer models may skip it), plus a permission prompt |
+| Anthropic text editor tool | `create(path, file_text)` | `str_replace`, `insert` | exact; errors on 0 or many | left to the client; the reference code's `create` refuses existing files |
+| Codex CLI | none | `apply_patch` (freeform, V4A) | exact, then trailing whitespace ignored, then trimmed, then punctuation folded | approval policy; `Add File` overwrites |
+| Responses API `apply_patch` type | `create_file` | `update_file`, `delete_file` (V4A diffs) | the client's | left to the client |
+| Gemini CLI | `write_file` | `replace(…, allow_multiple)` | exact, then whitespace-tolerant, then fuzzy, then an LLM fixer | confirmation with a diff |
+| OpenHands | `create` | `str_replace`, `insert`, `undo_edit` | exact, then stripped | `create` refuses existing files; writes atomically |
+| opencode | `write` | `edit(…, replaceAll)`; `apply_patch` for GPT | nine fallback matchers | permission prompt; its read-before-write check was removed in April 2026 |
+| Cline | none | `editor`; `apply_patch` for GPT | exact after normalising line endings | no whole-file overwrite |
+| pi | `write(path, content)` | `edit(path, edits[{oldText, newText}])` | exact, then fuzzy | none |
+| Goose | `write(path, content)` | `edit(path, before, after)` | exact, unique | none |
+
+- **The toolset:** a whole-file write plus an exact find-and-replace edit, or `apply_patch` in their place for GPT-family models.
+- **Shared rules:** parent directories are created; zero or many matches is an error asking for more context.
+- **Names:** Claude Code, pi, opencode and Goose call the pair write and edit, and Claude Code, pi and opencode call the read tool read. Codex's `apply_patch` keeps its name wherever it's offered, since GPT models are trained on it.
+- **Reading pages by line** in every harness with a read tool: pi and Claude Code take `offset` and `limit`, Gemini CLI `start_line` and `end_line`, opencode `offset`.
+- **The usual guard against overwriting is a person approving a diff.** This agent runs unattended (M1), so the comparable harnesses are pi and Goose, which keep no file state at all.
+
+**Sources,** checked 2026-10-21/22: code.claude.com/docs/en/tools-reference; platform.claude.com/docs/en/agents-and-tools/tool-use/text-editor-tool; github.com/anthropics/claude-quickstarts (computer_use_demo/tools/edit.py); github.com/openai/codex (codex-rs/apply-patch/src/{parser,seek_sequence,file_update,text_file}.rs; codex-rs/core/src/tools/handlers/apply_patch_spec.rs); developers.openai.com/api/docs/guides/tools-apply-patch; github.com/google-gemini/gemini-cli (packages/core/src/tools/{edit,write-file}.ts); github.com/OpenHands/software-agent-sdk (openhands-tools/openhands/tools/file_editor/editor.py); github.com/anomalyco/opencode v1.19.3 (packages/opencode/src/tool/{edit,write}.ts) and PR #22999; github.com/cline/cline (sdk/packages/core/src/extensions/tools/executors/editor.ts); github.com/badlogic/pi-mono (packages/coding-agent/src/core/tools/{write,edit}.ts); github.com/aaif-goose/goose (crates/goose/src/agents/platform_extensions/developer/edit.rs).
+
 ---
 
 # Part 3: Where the brief stands, and challenges
@@ -923,7 +949,7 @@ These are **proposals, not decisions**. Each links to a decision in Part 5. "Bri
 
 | | Runs in | Defined as | Model sees |
 |---|---|---|---|
-| **Base tools** | workspace | app code: `shell`, `read_file`, `write_file` | always, in `tools[]` |
+| **Base tools** | workspace | app code: `shell`, `read`, `write` and `edit`, or `apply_patch` in place of those two (D23) | always, in `tools[]` |
 | **App tools** | app | TypeScript schema plus handler | per task: only tools that need app secrets or the DB, such as state or notify |
 | **Skills** | workspace | SKILL.md folder plus `scripts/` | catalog (name and description) in the preamble; body loaded via `activate_skill` |
 
@@ -1617,7 +1643,7 @@ The `migrate` service also runs `gremlin prune` on demand: `docker compose run -
 | | Scope | Done when |
 |---|---|---|
 | **M0 Spikes** | S1, S2, S3 and S5 (Part 5), as throwaway scripts with pass/fail results. S4 waits for M5, so the skeleton doesn't need a SIWC-eligible account | D1, D3, D8, D11, D13 and D15 can be closed |
-| **M1 Walking skeleton** (the brief's slice) | **Infrastructure:** compose with restart policies, healthchecks, the `migrate` service and two DB roles with the grant matrix; Task, Run, Item and Event; `gremlin apply`. **Scheduling:** `gremlin serve` with the advisory lock; the tick with `ON CONFLICT`, per-task savepoints and the overlap index; a boot sweep limited to `running → abandoned` plus the exec reset; the per-profile worker. **Execution:** the loop with `shell`, `read_file` and `write_file` through the workspace, with a per-command timeout, process-group kill, closed stdin, a hard output cap with the ~1 s pipe wait, and output normalisation plus `toStorable`. **Recording:** record-before-running events, the run's hard deadline, and `gremlin runs show <id>`. **Profile and hygiene:** one profile, an OpenAI API key (D14); gitleaks, push protection, boot config validation, `tsc` in CI | A task fires on schedule, edits real files and leaves a readable transcript, and the system survives an app restart, a hung command and `yes` |
+| **M1 Walking skeleton** (the brief's slice) | **Infrastructure:** compose with restart policies, healthchecks, the `migrate` service and two DB roles with the grant matrix; Task, Run, Item and Event; `gremlin apply`. **Scheduling:** `gremlin serve` with the advisory lock; the tick with `ON CONFLICT`, per-task savepoints and the overlap index; a boot sweep limited to `running → abandoned` plus the exec reset; the per-profile worker. **Execution:** the loop with `shell`, `read`, and `write` and `edit` or `apply_patch` (D23), through the workspace, with a per-command timeout, process-group kill, closed stdin, a hard output cap with the ~1 s pipe wait, and output normalisation plus `toStorable`. **Recording:** record-before-running events, the run's hard deadline, and `gremlin runs show <id>`. **Profile and hygiene:** one profile, an OpenAI API key (D14); gitleaks, push protection, boot config validation, `tsc` in CI | A task fires on schedule, edits real files and leaves a readable transcript, and the system survives an app restart, a hung command and `yes` |
 | **M2 Hardening** | The rest of 4.5: argument validation, model-visible output caps, budgets, the context-fill check and finalize; the compaction seam (`estimateTokens`, `planCompaction` returning null); narration nudges; first-output and idle timeouts; the catch-up rule and grace; limit-domain backoff and `deferred`, tested with an unreachable backend (an offline laptop now defers even the API-key profile); history repair; DST tests; failure notification and dead-man's switch (Q1); `gremlin prune`, nightly backups and a restore test | A deliberately broken task degrades gracefully, and you hear about it |
 | **M3 Skills and state** | SKILL.md discovery in the app, catalog, `activate_skill`, `gremlin skill-env set`, carried state (Q2) | A task uses one of your skills and remembers something across runs |
 | **M4 LM Studio** | Local profile, token auth, model check at run start, per-profile concurrency, review of cache telemetry | The same task runs on both backends |
@@ -1666,6 +1692,7 @@ The `migrate` service also runs `gremlin prune` on demand: `docker compose run -
 | D20 | What the session does at its turn limit | Fail with no answer (today) · run the last turn's calls, then fail (most loops, R15.2) · run them, then a finalize turn, and end `capped` (smolagents, Microsoft Agent Framework) | **Finalize, ahead of M2's budgets** (C8) | open |
 | D21 | What "turn" names | One model request, as now · a user's whole exchange, with "step" for a model request and the calls it asked for, and "model call" for the request alone (R15.1) | **Step, before M1** (C13) | **decided 2026-10-16: Step.** The change `turn-to-step` carries it out, after the `model-hello` and `model-turn` capabilities became `server` and `model-call` |
 | D22 | What the package that carries out a task is called | `server`, as now · `agent`, with M1's `app` around it · `agent` now, renamed `app` at M1 · `app`, 4.2's name · `gremlin`, the CLI's | **`agent`, with `app` around it**: it runs one agent, and "server" also names the model server and the exec server (C3) | **decided 2026-10-21: agent.** The change `server-to-agent` carries it out |
+| D23 | The file tools, and their names | `write_file` beside `read_file`, as C4 first listed them · a whole-file write and an exact edit, `write` and `edit`, as in Claude Code, pi, opencode and Goose · Codex's `apply_patch` alone · both sets at once (R16) | **`read`, `write` and `edit`, with `apply_patch` in place of `write` and `edit` by a setting**: the pair most harnesses give every model, and the format GPT models are trained on as the alternative. Both at once would give two ways to do one thing (C4) | **decided 2026-10-22: `read` (renaming `read_file`), `write` and `edit` by default, and `apply_patch` instead with `FILE_TOOLS=apply-patch`.** The change `file-write-tools` carries it out |
 
 ## Open questions
 

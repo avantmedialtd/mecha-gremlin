@@ -10,6 +10,7 @@ const OPENAI: Config = {
     reasoningEffort: undefined,
     skillsPath: undefined,
     maxSteps: 30,
+    fileTools: 'write-edit',
 };
 
 describe('resolveModel', () => {

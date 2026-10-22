@@ -2,13 +2,17 @@ import { realpath, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { type Result, err, ok } from '@mecha-gremlin/core/result';
 import { renderCatalog } from '@mecha-gremlin/core/skills';
-import { loadConfig, loadLogFormat, loadWorkDir } from '../config/config.ts';
+import { type FileTools, loadConfig, loadLogFormat, loadWorkDir } from '../config/config.ts';
 import { createLogger } from '../log/log.ts';
 import { createSession } from '../session/session.ts';
 import { loadSkills } from '../skills/skills.ts';
 import { activateSkillTool } from '../tools/activate-skill.ts';
-import { readFileTool } from '../tools/read-file.ts';
+import { applyPatchTool } from '../tools/apply-patch.ts';
+import { editTool } from '../tools/edit.ts';
+import { readTool } from '../tools/read.ts';
 import { createShell } from '../tools/shell.ts';
+import type { ToolHandler } from '../tools/tool-handler.ts';
+import { writeTool } from '../tools/write.ts';
 import { parseArgs } from './args.ts';
 import { failure } from './failure.ts';
 import { modelCallFields, parsed } from './fields.ts';
@@ -21,12 +25,24 @@ type HandledSignal = keyof typeof EXIT_CODES;
 const HANDLED: readonly HandledSignal[] = ['SIGINT', 'SIGTERM', 'SIGHUP'];
 
 /** Sent as a developer item, not as `instructions`, which LM Studio reportedly ignores (Brief C1). */
-const instructions = (workDir: string): string => {
-    return `You carry out tasks on this computer. You have a shell, and read_file for reading text files. The working directory is ${workDir}, and paths that commands print are relative to it. Keep your final answer brief.`;
+const instructions = (workDir: string, fileTools: FileTools): string => {
+    const tools =
+        fileTools === 'apply-patch'
+            ? 'You have a shell, read for reading text files, and apply_patch for writing and changing them.'
+            : 'You have a shell, read for reading text files, write for creating or replacing a file, and edit for changing part of one.';
+
+    return `You carry out tasks on this computer. ${tools} The working directory is ${workDir}, and paths that commands print are relative to it. Keep your final answer brief.`;
+};
+
+// The two sets are never offered together, and the order stays fixed for the prompt cache.
+const fileToolsFor = (fileTools: FileTools, workDir: string): ToolHandler[] => {
+    return fileTools === 'apply-patch'
+        ? [applyPatchTool(workDir)]
+        : [writeTool(workDir), editTool(workDir)];
 };
 
 // Its real path is used everywhere: on macOS /tmp and /var are links, and a path built from pwd
-// would fail read_file's lexical check.
+// would fail the file tools' lexical checks.
 const findWorkDir = async (raw: string | undefined): Promise<Result<string, string>> => {
     const path = resolve(process.cwd(), raw ?? '');
     const problem = `WORK_DIR must name an existing directory; ${path} isn't one.`;
@@ -129,16 +145,15 @@ const run = async (args: readonly string[]): Promise<number> => {
     }
 
     try {
-        const developer =
-            skills.length > 0
-                ? `${instructions(workDir.value)}\n\n${renderCatalog(skills)}`
-                : instructions(workDir.value);
+        const preamble = instructions(workDir.value, config.fileTools);
+        const developer = skills.length > 0 ? `${preamble}\n\n${renderCatalog(skills)}` : preamble;
         const created = await createSession(config, {
             tools: [
-                readFileTool(
+                readTool(
                     workDir.value,
                     skills.map((skill) => skill.directory),
                 ),
+                ...fileToolsFor(config.fileTools, workDir.value),
                 shell.handler,
                 ...(skills.length > 0 ? [activateSkillTool(skills)] : []),
             ],

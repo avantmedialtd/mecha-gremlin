@@ -11,6 +11,7 @@ const LMSTUDIO: Config = {
     reasoningEffort: 'none',
     skillsPath: undefined,
     maxSteps: 30,
+    fileTools: 'write-edit',
 };
 
 const OPENAI: Config = {
@@ -21,6 +22,7 @@ const OPENAI: Config = {
     reasoningEffort: undefined,
     skillsPath: undefined,
     maxSteps: 30,
+    fileTools: 'write-edit',
 };
 
 const modelCallFailed = (error: ModelCallError, config: Config = OPENAI): string => {

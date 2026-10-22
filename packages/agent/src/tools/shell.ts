@@ -6,7 +6,7 @@ import type { Env } from '../config/config.ts';
 import { commandEnv } from '../exec/env.ts';
 import { type RunResult, runCommand } from '../exec/run.ts';
 import { sweep } from '../exec/sweep.ts';
-import { READ_LIMIT } from './read-file.ts';
+import { READ_LIMIT } from './read.ts';
 import { type ToolHandler, defineTool } from './tool-handler.ts';
 
 export type Limits = {
@@ -16,12 +16,12 @@ export type Limits = {
     readonly captureBytes: number;
 };
 
-// The same 32 KiB as read_file, so a typical page's snapshot arrives whole.
+// As much as one call of the read tool returns, so a typical page's snapshot arrives whole.
 export const DEFAULT_LIMITS: Limits = {
     timeoutMs: 120_000,
     graceMs: 2000,
     pipeWaitMs: 1000,
-    captureBytes: 32 * 1024,
+    captureBytes: READ_LIMIT,
 };
 
 export type ShellOptions = {
@@ -45,7 +45,8 @@ const describeShell = ({ timeoutMs, captureBytes }: Limits): string => {
 };
 
 // Explicit snapshots of large pages are cut, so this is on the skill's main path.
-const CUT_NOTE = `The output was cut. To see the rest, run the command again with its output written to a file in the working directory, then search the file with grep, or print the part you need with sed -n or tail -c: read_file shows only a file's first ${READ_LIMIT / 1024} KiB.`;
+const CUT_NOTE =
+    "The output was cut. To see the rest, run the command again with its output written to a file in the working directory, then read the file a part at a time with the read tool's offset and limit, search it with grep, or print the part you need with sed -n or tail -c.";
 
 // An `ok` outcome whatever the exit code: the model needs the output to act on a failure
 // (Brief 4.5).

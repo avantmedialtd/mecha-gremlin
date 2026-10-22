@@ -201,7 +201,7 @@ describe('renderCatalog', () => {
     test('the instruction, then each skill', () => {
         expect(catalogOf({ name: 'pdf', description: DESCRIPTION })).toBe(
             [
-                "Skills give you instructions for particular kinds of task. When a task matches a skill's description, call activate_skill with the skill's name before you start, then follow its instructions. Read a skill's own files with read_file, by absolute path.",
+                "Skills give you instructions for particular kinds of task. When a task matches a skill's description, call activate_skill with the skill's name before you start, then follow its instructions. Read a skill's own files with the read tool, by absolute path.",
                 '',
                 '<available_skills>',
                 '<skill>',

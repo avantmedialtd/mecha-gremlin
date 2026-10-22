@@ -24,7 +24,7 @@ const LIMITS: Limits = {
 const NOT_RUN = { ok: false, error: 'the session is stopping; the command was not run' };
 
 const CUT_NOTE =
-    "The output was cut. To see the rest, run the command again with its output written to a file in the working directory, then search the file with grep, or print the part you need with sed -n or tail -c: read_file shows only a file's first 32 KiB.";
+    "The output was cut. To see the rest, run the command again with its output written to a file in the working directory, then read the file a part at a time with the read tool's offset and limit, search it with grep, or print the part you need with sed -n or tail -c.";
 
 let workDir: string;
 

@@ -26,7 +26,7 @@ const fakeTool = (validate: Validate = (value) => ({ value: value as Args })) =>
     const validated: unknown[] = [];
     const targets: string[] = [];
     const tool: Tool<Args> = {
-        name: 'read_file',
+        name: 'read',
         description: 'Read a file',
         schema: {
             '~standard': {
@@ -80,7 +80,7 @@ const call = (callId: string): ResponseFunctionToolCall => {
         type: 'function_call',
         id: `fc_${callId}`,
         call_id: callId,
-        name: 'read_file',
+        name: 'read',
         arguments: '{"path":"package.json"}',
         status: 'completed',
     };
@@ -109,7 +109,7 @@ describe('toFunctionTool', () => {
     test("builds a strict function tool from the schema's JSON Schema, without $schema", () => {
         expect(toFunctionTool(fakeTool().tool)).toEqual({
             type: 'function',
-            name: 'read_file',
+            name: 'read',
             description: 'Read a file',
             strict: true,
             parameters: PARAMETERS,
@@ -206,9 +206,7 @@ describe('validateArgs', () => {
             parserMessage = (thrown as SyntaxError).message;
         }
 
-        expect(error).toContain(
-            `The arguments for read_file are not valid JSON (${parserMessage}).`,
-        );
+        expect(error).toContain(`The arguments for read are not valid JSON (${parserMessage}).`);
         expect(error.endsWith(`JSON Schema: ${expectedSchema}`)).toBe(true);
         expect(validated).toEqual([]);
     });
@@ -219,7 +217,7 @@ describe('validateArgs', () => {
             const { tool, validated } = fakeTool();
             const error = errorOf(await validateArgs(tool, raw));
 
-            expect(error).toContain('The arguments for read_file must be a JSON object.');
+            expect(error).toContain('The arguments for read must be a JSON object.');
             expect(error.endsWith(`JSON Schema: ${expectedSchema}`)).toBe(true);
             expect(validated).toEqual([]);
         },
@@ -234,7 +232,7 @@ describe('validateArgs', () => {
         }));
         const error = errorOf(await validateArgs(tool, '{"file":"x"}'));
 
-        expect(error).toContain("The arguments for read_file don't match its schema:");
+        expect(error).toContain("The arguments for read don't match its schema:");
         expect(error).toContain('- path: Required\n');
         expect(error).toContain('- items.0.name: Expected string\n');
         expect(error.endsWith(`JSON Schema: ${expectedSchema}`)).toBe(true);
@@ -278,7 +276,7 @@ describe('validateArgs', () => {
         const rejecting = fakeTool(async () => {
             throw thrown;
         });
-        const expected = `Validating the arguments for read_file failed (boom).\nThe arguments must match this JSON Schema: ${expectedSchema}`;
+        const expected = `Validating the arguments for read failed (boom).\nThe arguments must match this JSON Schema: ${expectedSchema}`;
 
         expect(errorOf(await validateArgs(throwing.tool, '{"path":"a"}'))).toBe(expected);
         expect(errorOf(await validateArgs(rejecting.tool, '{"path":"a"}'))).toBe(expected);
@@ -302,7 +300,7 @@ describe('validateArgs', () => {
         };
 
         expect(errorOf(await validateArgs(unsupported, '[]'))).toBe(
-            'The arguments for read_file must be a JSON object.',
+            'The arguments for read must be a JSON object.',
         );
     });
 });

@@ -22,7 +22,7 @@ const written = (format: LogFormat, log: (logger: Logger) => void): string[] => 
 
 describe('Fields', () => {
     test("can't take the names the record uses itself", () => {
-        expectTypeOf({ tool: 'read_file', usage: undefined }).toExtend<Fields>();
+        expectTypeOf({ tool: 'read', usage: undefined }).toExtend<Fields>();
         expectTypeOf({ time: 'noon' }).not.toExtend<Fields>();
         expectTypeOf({ level: 'info' }).not.toExtend<Fields>();
         expectTypeOf({ message: 'hi' }).not.toExtend<Fields>();
@@ -87,11 +87,11 @@ describe('Formatted output', () => {
 
     test('a multi-line string gets a block under the line', () => {
         const lines = written('pretty', (log) =>
-            log.info('answer', { text: 'It runs:\n\n    bun run check', tool: 'read_file' }),
+            log.info('answer', { text: 'It runs:\n\n    bun run check', tool: 'read' }),
         );
 
         expect(lines).toEqual([
-            `${CLOCK} INFO  answer tool=read_file\n  text:\n    It runs:\n    \n        bun run check`,
+            `${CLOCK} INFO  answer tool=read\n  text:\n    It runs:\n    \n        bun run check`,
         ]);
     });
 
@@ -106,13 +106,13 @@ describe('Formatted output', () => {
     test('a multi-line message keeps its first line in place, and its other lines come first', () => {
         const lines = written('pretty', (log) =>
             log.error('The model call failed.\nTry again.', {
-                tool: 'read_file',
+                tool: 'read',
                 text: 'one\ntwo',
             }),
         );
 
         expect(lines).toEqual([
-            `${CLOCK} ERROR The model call failed. tool=read_file\n    Try again.\n  text:\n    one\n    two`,
+            `${CLOCK} ERROR The model call failed. tool=read\n    Try again.\n  text:\n    one\n    two`,
         ]);
     });
 
@@ -126,13 +126,13 @@ describe('Formatted output', () => {
 describe('JSON output', () => {
     test('one JSON object per record, fields after the time, level and message', () => {
         const lines = written('json', (log) => {
-            log.info('tool call', { tool: 'read_file', arguments: { path: 'a.txt' } });
+            log.info('tool call', { tool: 'read', arguments: { path: 'a.txt' } });
             log.warn('tool failed', { error: 'one\ntwo' });
             log.error('stopped', { usage: undefined });
         });
 
         expect(lines).toEqual([
-            '{"time":"2026-10-12T07:15:51.250Z","level":"info","message":"tool call","tool":"read_file","arguments":{"path":"a.txt"}}',
+            '{"time":"2026-10-12T07:15:51.250Z","level":"info","message":"tool call","tool":"read","arguments":{"path":"a.txt"}}',
             '{"time":"2026-10-12T07:15:51.250Z","level":"warn","message":"tool failed","error":"one\\ntwo"}',
             '{"time":"2026-10-12T07:15:51.250Z","level":"error","message":"stopped"}',
         ]);

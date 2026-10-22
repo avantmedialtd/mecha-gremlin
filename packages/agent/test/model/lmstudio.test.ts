@@ -16,6 +16,7 @@ const config: Config = {
     reasoningEffort: 'none',
     skillsPath: undefined,
     maxSteps: 30,
+    fileTools: 'write-edit',
 };
 
 /** A `/api/v1/models` payload, shaped like LM Studio 0.4's. */

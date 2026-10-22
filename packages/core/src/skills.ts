@@ -33,7 +33,7 @@ const MAX_DESCRIPTION = 1024;
 const MAX_FILES = 100;
 
 const CATALOG_INSTRUCTION =
-    "Skills give you instructions for particular kinds of task. When a task matches a skill's description, call activate_skill with the skill's name before you start, then follow its instructions. Read a skill's own files with read_file, by absolute path.";
+    "Skills give you instructions for particular kinds of task. When a task matches a skill's description, call activate_skill with the skill's name before you start, then follow its instructions. Read a skill's own files with the read tool, by absolute path.";
 
 // Paths that commands print, such as playwright-cli's snapshots, are relative to the working
 // directory, so the line speaks only of the skill's own files.

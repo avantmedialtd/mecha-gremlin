@@ -39,6 +39,7 @@ const CONFIG: Config = {
     reasoningEffort: undefined,
     skillsPath: undefined,
     maxSteps: 30,
+    fileTools: 'write-edit',
 };
 
 const output = (callId: string, text: string): HistoryItem => {
@@ -51,7 +52,7 @@ const recordingTool = (
     const paths: string[] = [];
     const handler = defineTool(
         {
-            name: 'read_file',
+            name: 'read',
             description: 'Read a file',
             schema: z.strictObject({ path: z.string() }),
         },
@@ -115,7 +116,7 @@ const runSession = async (
     };
 };
 
-const roundTrip = [reasoning(), call('read_file', { path: 'package.json' }, 'call_1')];
+const roundTrip = [reasoning(), call('read', { path: 'package.json' }, 'call_1')];
 
 const readThenAnswer = () => {
     return script(
@@ -276,8 +277,8 @@ describe('Alternate model calls and tool calls until the model answers', () => {
 
 describe('Run every tool call in order and answer each exactly once', () => {
     test('two calls in one reply', async () => {
-        const a = call('read_file', { path: 'a.txt' }, 'call_a');
-        const b = call('read_file', { path: 'b.txt' }, 'call_b');
+        const a = call('read', { path: 'a.txt' }, 'call_a');
+        const b = call('read', { path: 'b.txt' }, 'call_b');
         const { history, paths } = await runSession({
             responses: script(
                 () => completed([a, b]),
@@ -308,7 +309,7 @@ describe('Run every tool call in order and answer each exactly once', () => {
         const { bodies } = await runSession(
             {
                 responses: script(
-                    () => completed([call('write_file', { path: 'x.txt' })]),
+                    () => completed([call('delete', { path: 'x.txt' })]),
                     () => completed([message('Done.')]),
                 ),
             },
@@ -317,17 +318,14 @@ describe('Run every tool call in order and answer each exactly once', () => {
 
         expect(bodies).toHaveLength(2);
         expect(bodies[1]?.input).toContainEqual(
-            output(
-                'call_1',
-                'Error: unknown tool "write_file"; available tools: read_file, take_note',
-            ),
+            output('call_1', 'Error: unknown tool "delete"; available tools: read, take_note'),
         );
     });
 
     test('invalid arguments', async () => {
         const { bodies, paths } = await runSession({
             responses: script(
-                () => completed([call('read_file', { file: 'x.txt' })]),
+                () => completed([call('read', { file: 'x.txt' })]),
                 () => completed([message('Done.')]),
             ),
         });
@@ -337,15 +335,15 @@ describe('Run every tool call in order and answer each exactly once', () => {
             output(
                 'call_1',
                 expect.stringMatching(
-                    /^Error: The arguments for read_file don't match its schema:\n- path: /,
+                    /^Error: The arguments for read don't match its schema:\n- path: /,
                 ),
             ),
         );
     });
 
     test.each([
-        [new Error('disk on fire'), 'Error: read_file failed: disk on fire'],
-        ['a thrown string', 'Error: read_file failed: a thrown string'],
+        [new Error('disk on fire'), 'Error: read failed: disk on fire'],
+        ['a thrown string', 'Error: read failed: a thrown string'],
     ])('a handler that throws %j', async (thrown, expected) => {
         const failing = recordingTool(async () => {
             throw thrown;
@@ -362,7 +360,7 @@ describe('Run every tool call in order and answer each exactly once', () => {
 
 describe('Stop at the step limit', () => {
     const endless: FakeServer = {
-        responses: (n) => completed([call('read_file', { path: `f${n}.txt` }, `call_${n}`)]),
+        responses: (n) => completed([call('read', { path: `f${n}.txt` }, `call_${n}`)]),
     };
 
     test('the model never stops calling tools', async () => {
@@ -489,8 +487,8 @@ describe('Yield each step as it completes', () => {
 
     test("a step's calls carry their outcomes, failures included", async () => {
         const euro = recordingTool(async () => ok('€'));
-        const a = call('read_file', { path: 'a' }, 'call_a');
-        const b = call('read_file', {}, 'call_b');
+        const a = call('read', { path: 'a' }, 'call_a');
+        const b = call('read', {}, 'call_b');
         const { steps } = await runSession(
             {
                 responses: script(

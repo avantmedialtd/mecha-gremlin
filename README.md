@@ -6,10 +6,10 @@ A self-hosted, scheduled agent runner, in early development. The design and its 
 
 | Package | What it is |
 |---|---|
-| [`packages/core`](packages/core) | `@mecha-gremlin/core`: stateless functions. `callModel` calls the model once over the Responses API, streamed, and returns the reply or a classified error. The tool-calling pieces are tools defined by any [Standard Schema](https://standardschema.dev) library, `classify` for a model call's output, `validateArgs`, `toOutputItem`, and `toInput`, which replays the chat history. `skills` checks a SKILL.md and renders the skills catalog and a skill's activation, and `output` caps a command's output to its start and end as it streams in. |
+| [`packages/core`](packages/core) | `@mecha-gremlin/core`: stateless functions. `callModel` calls the model once over the Responses API, streamed, and returns the reply or a classified error. The tool-calling pieces are tools defined by any [Standard Schema](https://standardschema.dev) library, `classify` for a model call's output, `validateArgs`, `toOutputItem`, and `toInput`, which replays the chat history. `skills` checks a SKILL.md and renders the skills catalog and a skill's activation, `output` caps a command's output to its start and end as it streams in, and `patch` parses a patch in Codex's V4A format and applies its changes to a file's text. |
 | [`packages/yaml`](packages/yaml) | `@mecha-gremlin/yaml`: `parseYaml`, which uses Bun's built-in parser, `Bun.YAML`, on Bun, and the [`yaml`](https://www.npmjs.com/package/yaml) package elsewhere. The two give the same values for everything frontmatter uses. |
 | [`packages/process`](packages/process) | `@mecha-gremlin/process`: `spawnProcess`, which uses `Bun.spawn` on Bun and `node:child_process` elsewhere, and gives the process the same shape on both: its pid, its output as web streams, a promise of how it exited, and `unref()`. |
-| [`packages/agent`](packages/agent) | `@mecha-gremlin/agent`: the agent. It carries out a task in an agent loop, with a shell, `read_file` and skills. It runs on Bun or Node. |
+| [`packages/agent`](packages/agent) | `@mecha-gremlin/agent`: the agent. It carries out a task in an agent loop, with a shell, file tools and skills. It runs on Bun or Node. |
 
 Inside `packages/agent/src`, the code is grouped by concern:
 - `main`: the entry point, and its helpers for the arguments, the log fields and the failure messages;
@@ -18,7 +18,7 @@ Inside `packages/agent/src`, the code is grouped by concern:
 - `session`: the agent loop, as a session that yields each step's result;
 - `skills`: finding and reading the skills `SKILLS_PATH` lists;
 - `exec`: running a command, its environment, and stopping a session's processes at the end;
-- `tools`: `read_file`, `shell` and `activate_skill`;
+- `tools`: `read`, `write`, `edit`, `apply_patch`, `shell` and `activate_skill`, and the fence the file tools share;
 - `log`: the structured logger.
 
 `yaml` and `process` choose their implementation once, when each module loads, from the global object: Bun's when `globalThis.Bun` is defined, the other one otherwise. The agent reads skills' frontmatter with `yaml`, and runs commands and `ps` with `process`.
@@ -36,7 +36,7 @@ No package has index files: every import names the file it uses. The `package.js
 
 ## Run
 
-Once, before the first run, install the dependencies, and set `SKILLS_PATH` in `.env` to playwright-cli's skills. Without it, the default task's skill isn't loaded, and the model has only the shell and `read_file`.
+Once, before the first run, install the dependencies, and set `SKILLS_PATH` in `.env` to playwright-cli's skills. Without it, the default task's skill isn't loaded, and the model has only the shell and the file tools.
 
 ```sh
 bun install
@@ -55,7 +55,7 @@ The command is `bun run agent [task…]` on Bun, or `bun run agent:node [task…
 
 **Quote the task,** in single quotes unless it holds one. The shell reads `?`, `*`, `&`, `;`, `!` and `$` itself: in zsh, macOS's default shell, an unquoted `?` stops the command with "no matches found" before Bun runs.
 
-The model carries out the task with its tools: `shell`, `read_file`, and `activate_skill` when skills are loaded. The loop runs until it answers, for at most `MAX_STEPS` steps, 30 by default. A question about a file usually takes two steps: one to read it and one to answer. A browsing task takes many more, about two for each page action. On a local 27B model, a model call took from 15 seconds to about 2 minutes in testing, growing with the size of what the model reads.
+The model carries out the task with its tools, offered in this order: `read`; `write` and `edit`, or `apply_patch` in their place when `FILE_TOOLS` is `apply-patch`; `shell`; and `activate_skill` when skills are loaded. The loop runs until it answers, for at most `MAX_STEPS` steps, 30 by default. A question about a file usually takes two steps: one to read it and one to answer. A browsing task takes many more, about two for each page action. On a local 27B model, a model call took from 15 seconds to about 2 minutes in testing, growing with the size of what the model reads.
 
 Everything is logged to stdout as structured records, one per line:
 - the skills loaded, and any that couldn't be;
@@ -86,15 +86,22 @@ The default output is formatted for reading. This is the default task on a local
 
 `LOG_FORMAT=json` writes each record as a JSON object instead, with its time in ISO 8601.
 
-### What `read_file` reads
+### The file tools
 
-`read_file` reads UTF-8 text files under the working directory, `WORK_DIR`, and inside the loaded skills' directories, by absolute path. It refuses:
+`read` reads UTF-8 text files under the working directory, `WORK_DIR`, and inside the loaded skills' directories, by absolute path. It pages through a file by line: `offset` is the first line to read, from 1, and `limit` the most lines. Each call returns at most 32 KiB in whole lines, with a note giving the `offset` to continue from. A single line longer than that is cut, and the rest of it can be seen only through the shell.
 
-- paths outside those directories, including through `..`, absolute paths and symbolic links;
+The model writes and changes files with one of two sets of tools, which `FILE_TOOLS` chooses. The two are never offered together:
+
+- **`write-edit`, the default:** `write` creates or replaces a whole file, creating missing directories, and `edit` replaces exact text in a file. Its `old_string` must occur exactly once, unless `replace_all` is set.
+- **`apply-patch`:** `apply_patch` takes a patch in the V4A format of OpenAI's Codex, which adds, updates, moves and deletes files. It finds the lines to change leniently, as Codex does, and changes nothing unless the whole patch applies.
+
+The four tools share a fence. They refuse:
+
+- paths outside the working directory, including through `..`, absolute paths and symbolic links. `read` may also read inside the skills' directories, which the other three can't write;
 - `.env` files and anything else whose name starts with `.env`, because they hold secrets such as `MODEL_API_KEY`;
 - directories and binary files.
 
-It returns at most 32 KiB of a file, and notes when it cut the file short. Every refusal goes back to the model as the tool's output, so the model can explain it or try something else. These limits guard `read_file` alone: the shell can read anything you can.
+`write`, and `apply_patch` adding a file, won't replace a file larger than 32 KiB, the most one read returns, since the model may not have read all of it. `edit` and `apply_patch` change files of up to 10 MiB that are valid UTF-8. Every refusal goes back to the model as the tool's output, so the model can explain it or try something else. These limits guard the file tools alone: the shell can read and write anything you can.
 
 ### The shell
 
@@ -102,7 +109,7 @@ It returns at most 32 KiB of a file, and notes when it cut the file short. Every
 
 - **Each call is a fresh shell:** `cd` and variables don't carry over, and stdin is closed.
 - **A command gets 120 seconds.** Then its process group gets SIGTERM, and SIGKILL 2 seconds later.
-- **Each output stream keeps its first and last 16 KiB.** When it cuts, the model is told how to see the rest: write the output to a file, then search it with `grep`, or print a part with `sed -n` or `tail -c`.
+- **Each output stream keeps its first and last 16 KiB.** When it cuts, the model is told how to see the rest: write the output to a file, then read it a part at a time with `read`, search it with `grep`, or print a part with `sed -n` or `tail -c`.
 - **Background jobs end with the command,** once bash has exited and the command's output has closed, or after a second. A process that leaves the command's process group keeps running, as playwright-cli's browser does.
 - **The session's processes are stopped when it ends,** whether it answers, fails, or gets Ctrl-C, SIGTERM or a hangup. Every command carries the run's ID in `GREMLIN_RUN_ID`, and every process that `ps` shows carrying it gets SIGTERM, then SIGKILL 2 seconds later. A match that looks wrong, more than 32 processes, pid 1 or below, or the agent's own process or its parent, gets no signal at all, and the log says why; so does a `ps` that can't show environments or takes over 10 seconds. Signals are ignored while the processes are stopped. On macOS, `ps` hides the environment of Apple's own programs, and if the agent's process is killed with SIGKILL nothing is stopped: playwright-cli's browser then closes after 15 minutes idle.
 - **The environment is built from scratch:** `PATH`, `HOME`, `USER`, `LOGNAME`, `TMPDIR`, `LANG` and `LC_ALL` from yours, fixed values against prompts, pagers and colour codes, the run's ID, and a playwright-cli session of the run's own.
@@ -111,7 +118,7 @@ It returns at most 32 KiB of a file, and notes when it cut the file short. Every
 
 ### Skills
 
-A skill is a folder with a `SKILL.md`, in the [Agent Skills](https://agentskills.io) format. `SKILLS_PATH` lists the directories that hold skills, separated by `:` as in `PATH`: each of their subdirectories with a `SKILL.md` is a skill. Nothing else is searched, so skills written for other agents stay out unless you list them. The model sees each skill's name and description, loads a skill's instructions with `activate_skill`, and reads the skill's other files with `read_file`.
+A skill is a folder with a `SKILL.md`, in the [Agent Skills](https://agentskills.io) format. `SKILLS_PATH` lists the directories that hold skills, separated by `:` as in `PATH`: each of their subdirectories with a `SKILL.md` is a skill. Nothing else is searched, so skills written for other agents stay out unless you list them. The model sees each skill's name and description, loads a skill's instructions with `activate_skill`, and reads the skill's other files with `read`.
 
 For example, to browse with Microsoft's playwright-cli skill, which ships with the CLI and drives Google Chrome:
 
@@ -143,9 +150,10 @@ Settings come from the environment, and from a local `.env` file, which is gitig
 | `MODEL` | the first loaded model | required | The model to use. With `lmstudio` it must be loaded |
 | `MODEL_REASONING_EFFORT` | `none` | the model's default | Sent as `reasoning.effort`; `none` keeps local reasoning models quick |
 | `LOG_FORMAT` | `pretty` | `pretty` | `pretty` formats the log for reading; `json` writes one JSON object per record |
-| `WORK_DIR` | the current directory | the current directory | The shell's working directory and `read_file`'s root. A relative path resolves against the current directory |
+| `WORK_DIR` | the current directory | the current directory | The shell's working directory, and the file tools' root. A relative path resolves against the current directory |
 | `SKILLS_PATH` | none | none | The directories that hold skills, separated by `:` (see [Skills](#skills)). A relative entry resolves against the current directory |
 | `MAX_STEPS` | `30` | `30` | The most steps a session takes: a positive whole number. It was `MAX_TURNS` until it was renamed, and the agent refuses the old name |
+| `FILE_TOOLS` | `write-edit` | `write-edit` | The tools that write files (see [The file tools](#the-file-tools)): `write-edit` offers `write` and `edit`; `apply-patch` offers `apply_patch` in their place |
 
 For example, to use OpenAI instead, with `MODEL_API_KEY=sk-…` in `.env`:
 
@@ -193,7 +201,7 @@ bun run mutation       # Stryker mutation testing on Bun, which fails below 100%
 - **Every mutant must be caught.**
   - Stryker fails below a 100% mutation score, so a new branch or message needs a test that would notice it changing.
   - A mutant that behaves exactly like the original code, or sits in code that can't run, is usually better removed by simplifying the code.
-  - Where the code can't reasonably change, a `// Stryker disable next-line` comment turns the mutant off, with the reason on the line above. There are five: `main.ts`' final `throw`, how far `read_file` reads, the `yaml` package's log level, where `''` behaves exactly like `'error'`, and two for the sweep's `ps`: its process group, since it lists the same processes from any group, and its working directory, since `''` means the current one, which works the same while it exists.
+  - Where the code can't reasonably change, a `// Stryker disable next-line` comment turns the mutant off, with the reason on the line above. There are four: `main.ts`' final `throw`, the `yaml` package's log level, where `''` behaves exactly like `'error'`, and two for the sweep's `ps`: its process group, since it lists the same processes from any group, and its working directory, since `''` means the current one, which works the same while it exists.
 - **Vitest is pinned to 4.x** until [stryker-js#6210](https://github.com/stryker-mutator/stryker-js/issues/6210) is fixed: Stryker's Vitest runner silently stops working on Vitest 5 (see `stryker.config.mjs`).
 - **Tests fake the app's globals.** The app reads the environment, `fetch`, the clock and `console` directly, with nothing injected. Tests fake them with `vi.stubEnv`, `vi.stubGlobal` and `vi.spyOn`, and Vitest undoes every fake after each test. Importing `main.ts` runs it, so its tests import it only after faking, and never statically.
 - **Tests start real processes, and a guard checks every signal they send.** The shell's and the sweep's tests run real commands, on Bun and on Node, and assert outcomes and signals, never elapsed time. [`test/signal-guard.ts`](test/signal-guard.ts), a Vitest setup file that Stryker never mutates, wraps `process.kill`. It refuses, and fails the test for, a signal that could reach pid 0, -1 or 1, the test process or its parent, or a process the test file can't vouch for: one it started, one carrying a run ID it registered, or a descendant of either. So even a mutant that widens the sweep's match can't reach your own processes. Processes a test leaves carry a fresh random run ID, and end on their own after 30 seconds at most.

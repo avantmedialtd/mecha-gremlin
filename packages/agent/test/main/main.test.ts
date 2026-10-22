@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { ResponseOutputItem, ResponseUsage } from 'openai/resources/responses/responses';
@@ -33,6 +33,7 @@ const SETTINGS = [
     'SKILLS_PATH',
     'MAX_STEPS',
     'MAX_TURNS',
+    'FILE_TOOLS',
 ] as const;
 type Settings = Readonly<Partial<Record<(typeof SETTINGS)[number], string>>>;
 
@@ -216,7 +217,7 @@ const developerItem = (request: RecordedRequest | undefined): string => {
 
 const readThenAnswer: FakeServer = {
     responses: script(
-        () => completed([reasoning(), call('read_file', { path: 'package.json' })]),
+        () => completed([reasoning(), call('read', { path: 'package.json' })]),
         () => completed([message('\n\nIt runs the checks.')]),
     ),
 };
@@ -268,22 +269,44 @@ describe('Carry out a task through the agent loop, and log the answer', { timeou
         });
     });
 
-    test('without skills: read_file and shell, and a developer item that mentions no skills', async () => {
+    test('without skills: read, write, edit and shell, and a developer item that mentions no skills', async () => {
         const { modelCall } = await runAgent();
 
         expect(modelCall?.body?.tools).toEqual([
-            expect.objectContaining({ type: 'function', name: 'read_file', strict: true }),
+            expect.objectContaining({ type: 'function', name: 'read', strict: true }),
+            expect.objectContaining({ type: 'function', name: 'write', strict: true }),
+            expect.objectContaining({ type: 'function', name: 'edit', strict: true }),
             expect.objectContaining({ type: 'function', name: 'shell', strict: true }),
         ]);
         expect(developerItem(modelCall)).toBe(
-            `You carry out tasks on this computer. You have a shell, and read_file for reading text files. The working directory is ${realCwd}, and paths that commands print are relative to it. Keep your final answer brief.`,
+            `You carry out tasks on this computer. You have a shell, read for reading text files, write for creating or replacing a file, and edit for changing part of one. The working directory is ${realCwd}, and paths that commands print are relative to it. Keep your final answer brief.`,
+        );
+    });
+
+    test('the patch tool set', async () => {
+        const { modelCalls } = await runAgent(
+            { FILE_TOOLS: 'apply-patch' },
+            {
+                responses: script(
+                    () => completed([call('read', { path: 'package.json' })]),
+                    () => completed([message('Done.')]),
+                ),
+            },
+        );
+
+        expect(modelCalls.map((request) => toolNames(request))).toEqual([
+            ['read', 'apply_patch', 'shell'],
+            ['read', 'apply_patch', 'shell'],
+        ]);
+        expect(developerItem(modelCalls[0])).toBe(
+            `You carry out tasks on this computer. You have a shell, read for reading text files, and apply_patch for writing and changing them. The working directory is ${realCwd}, and paths that commands print are relative to it. Keep your final answer brief.`,
         );
     });
 
     test('with skills: activate_skill too, and the catalog ends the developer item', async () => {
         const { modelCall } = await runAgent({ SKILLS_PATH: skillsRoot });
 
-        expect(toolNames(modelCall)).toEqual(['read_file', 'shell', 'activate_skill']);
+        expect(toolNames(modelCall)).toEqual(['read', 'write', 'edit', 'shell', 'activate_skill']);
         expect(developerItem(modelCall)).toMatch(
             /^You carry out tasks on this computer\..*Keep your final answer brief\.\n\nSkills give you instructions/s,
         );
@@ -292,7 +315,7 @@ describe('Carry out a task through the agent loop, and log the answer', { timeou
         );
     });
 
-    test("activate_skill gives a skill's instructions, and read_file its files", async () => {
+    test("activate_skill gives a skill's instructions, and read its files", async () => {
         const { modelCalls } = await runAgent(
             { SKILLS_PATH: skillsRoot },
             {
@@ -300,11 +323,7 @@ describe('Carry out a task through the agent loop, and log the answer', { timeou
                     () =>
                         completed([
                             call('activate_skill', { name: 'pdf' }, 'call_1'),
-                            call(
-                                'read_file',
-                                { path: join(skillsRoot, 'pdf', 'SKILL.md') },
-                                'call_2',
-                            ),
+                            call('read', { path: join(skillsRoot, 'pdf', 'SKILL.md') }, 'call_2'),
                         ]),
                     () => completed([message('Done.')]),
                 ),
@@ -330,8 +349,19 @@ describe('Carry out a task through the agent loop, and log the answer', { timeou
                     responses: script(
                         () =>
                             completed([
-                                call('read_file', { path: 'notes.txt' }, 'call_1'),
-                                call('shell', { command: 'pwd' }, 'call_2'),
+                                call('read', { path: 'notes.txt' }, 'call_1'),
+                                call('write', { path: 'new.txt', content: 'new\n' }, 'call_2'),
+                                call(
+                                    'edit',
+                                    {
+                                        path: 'notes.txt',
+                                        old_string: 'hello',
+                                        new_string: 'bye',
+                                        replace_all: false,
+                                    },
+                                    'call_3',
+                                ),
+                                call('shell', { command: 'pwd' }, 'call_4'),
                             ]),
                         () => completed([message('Done.')]),
                     ),
@@ -340,7 +370,14 @@ describe('Carry out a task through the agent loop, and log the answer', { timeou
 
             expect(developerItem(modelCall)).toContain(`The working directory is ${real},`);
             expect(find(records, 'asking')).toMatchObject({ workDir: real });
-            expect(callOutputs(modelCalls[1])).toEqual(['hello', `exit code: 0\nstdout:\n${real}`]);
+            expect(callOutputs(modelCalls[1])).toEqual([
+                'hello',
+                'Created new.txt (1 line, 4 bytes).',
+                'Replaced 1 occurrence in notes.txt.',
+                `exit code: 0\nstdout:\n${real}`,
+            ]);
+            expect(await readFile(join(real, 'new.txt'), 'utf8')).toBe('new\n');
+            expect(await readFile(join(real, 'notes.txt'), 'utf8')).toBe('bye');
         } finally {
             await rm(base, { recursive: true, force: true });
         }
@@ -378,8 +415,7 @@ describe('Carry out a task through the agent loop, and log the answer', { timeou
         const { code, records, modelCalls } = await runAgent(
             { MAX_STEPS: '3' },
             {
-                responses: (n) =>
-                    completed([call('read_file', { path: 'package.json' }, `call_${n}`)]),
+                responses: (n) => completed([call('read', { path: 'package.json' }, `call_${n}`)]),
             },
         );
 
@@ -394,8 +430,7 @@ describe('Carry out a task through the agent loop, and log the answer', { timeou
         const { modelCalls } = await runAgent(
             {},
             {
-                responses: (n) =>
-                    completed([call('read_file', { path: 'package.json' }, `call_${n}`)]),
+                responses: (n) => completed([call('read', { path: 'package.json' }, `call_${n}`)]),
             },
         );
 
@@ -578,13 +613,13 @@ describe('Log each model call and tool call', () => {
             {
                 level: 'info',
                 message: 'tool call',
-                tool: 'read_file',
+                tool: 'read',
                 arguments: { path: 'package.json' },
             },
             {
                 level: 'info',
                 message: 'tool result',
-                tool: 'read_file',
+                tool: 'read',
                 bytes: Buffer.byteLength(PACKAGE_JSON),
             },
             { level: 'info', message: 'model call', step: 2 },
@@ -671,7 +706,7 @@ describe('Log each model call and tool call', () => {
             {},
             {
                 responses: script(
-                    () => completed([call('read_file', { path: 'menu.txt' })]),
+                    () => completed([call('read', { path: 'menu.txt' })]),
                     () => completed([message('A café crème costs 3 €.')]),
                 ),
             },
@@ -686,7 +721,7 @@ describe('Log each model call and tool call', () => {
             {},
             {
                 responses: script(
-                    () => completed([call('read_file', { path: '.env' })]),
+                    () => completed([call('read', { path: '.env' })]),
                     () => completed([message("I can't read that.")]),
                 ),
             },
@@ -694,8 +729,8 @@ describe('Log each model call and tool call', () => {
 
         expect(find(records, 'tool failed')).toMatchObject({
             level: 'warn',
-            tool: 'read_file',
-            error: '".env" is an environment file. read_file doesn\'t read those: they hold secrets.',
+            tool: 'read',
+            error: '".env" is an environment file. The read tool doesn\'t read those: they hold secrets.',
         });
     });
 
@@ -704,7 +739,7 @@ describe('Log each model call and tool call', () => {
             {},
             {
                 responses: script(
-                    () => completed([call('read_file', '{"path": "package.json"')]),
+                    () => completed([call('read', '{"path": "package.json"')]),
                     () => completed([message('Sorry.')]),
                 ),
             },
@@ -766,8 +801,8 @@ describe('Formatted output by default', () => {
         expect(lines.map((line) => line.slice(9))).toEqual([
             `INFO  asking model=prism-ml/bonsai-27b baseUrl=http://127.0.0.1:1234/v1 run=${runId} workDir=${realCwd} task="${DEFAULT_TASK}"`,
             'INFO  model call step=1 inputTokens=349 cachedTokens=256 outputTokens=26 reasoningTokens=12 seconds=1.5',
-            'INFO  tool call tool=read_file arguments={"path":"package.json"}',
-            `INFO  tool result tool=read_file bytes=${Buffer.byteLength(PACKAGE_JSON)}`,
+            'INFO  tool call tool=read arguments={"path":"package.json"}',
+            `INFO  tool result tool=read bytes=${Buffer.byteLength(PACKAGE_JSON)}`,
             'INFO  model call step=2 inputTokens=349 cachedTokens=256 outputTokens=26 reasoningTokens=12 seconds=1.5',
             'INFO  answer text="It runs the checks."',
         ]);
@@ -850,6 +885,16 @@ describe('Read the configuration from the environment, and validate it at start-
         ]);
         expect(requests).toHaveLength(0);
     });
+
+    test('an invalid file tools setting', async () => {
+        const { code, records, requests } = await runAgent({ FILE_TOOLS: 'both' });
+
+        expect(code).toBe(1);
+        expect(errors(records)).toEqual([
+            'FILE_TOOLS must be write-edit or apply-patch; got "both".',
+        ]);
+        expect(requests).toHaveLength(0);
+    });
 });
 
 describe('Actionable failure messages', () => {
@@ -872,7 +917,7 @@ describe('Actionable failure messages', () => {
             {},
             {
                 responses: script(() =>
-                    completed([strange, call('read_file', { path: 'package.json' })]),
+                    completed([strange, call('read', { path: 'package.json' })]),
                 ),
             },
         );

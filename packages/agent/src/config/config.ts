@@ -25,6 +25,9 @@ const DEFAULT_MAX_STEPS = 30;
  */
 export type Provider = (typeof PROVIDERS)[number];
 
+/** The tools that write files: `write` and `edit`, or `apply_patch` in their place. */
+export type FileTools = 'write-edit' | 'apply-patch';
+
 type Defaults = {
     readonly baseUrl: string;
     readonly apiKey?: string;
@@ -50,6 +53,7 @@ export type Config = {
     // The skills roots, separated by `:` as in PATH. Undefined loads no skill.
     readonly skillsPath: string | undefined;
     readonly maxSteps: number;
+    readonly fileTools: FileTools;
 };
 
 export type Env = Readonly<Record<string, string | undefined>>;
@@ -144,6 +148,15 @@ const checkFormerName = (raw: string | undefined): Result<undefined, string> => 
         : err('MAX_TURNS is now MAX_STEPS; rename it in your settings.');
 };
 
+// The two sets are never offered together: two ways to do one thing make for worse tool choices.
+const checkFileTools = (raw: string | undefined): Result<FileTools, string> => {
+    const value = raw ?? 'write-edit';
+
+    return value === 'write-edit' || value === 'apply-patch'
+        ? ok(value)
+        : err(`FILE_TOOLS must be write-edit or apply-patch; got "${value}".`);
+};
+
 const problemsOf = (checks: readonly Result<unknown, string>[]): string[] => {
     return checks.flatMap((check) => (check.ok ? [] : [check.error]));
 };
@@ -178,12 +191,13 @@ export const loadConfig = (env: Env): Result<Config, string[]> => {
     // Checked whatever the provider, so an unknown provider doesn't hide their errors.
     const maxSteps = checkMaxSteps(read(env, 'MAX_STEPS'));
     const formerName = checkFormerName(read(env, 'MAX_TURNS'));
+    const fileTools = checkFileTools(read(env, 'FILE_TOOLS'));
     const rawProvider = read(env, 'MODEL_PROVIDER') ?? 'lmstudio';
 
     if (!isProvider(rawProvider)) {
         return err([
             `MODEL_PROVIDER must be one of ${PROVIDERS.join(', ')}; got "${rawProvider}".`,
-            ...problemsOf([maxSteps, formerName]),
+            ...problemsOf([maxSteps, formerName, fileTools]),
         ]);
     }
 
@@ -194,8 +208,16 @@ export const loadConfig = (env: Env): Result<Config, string[]> => {
     const model = checkModel(provider, read(env, 'MODEL'));
     const effort = checkEffort(read(env, 'MODEL_REASONING_EFFORT') ?? defaults.reasoningEffort);
 
-    if (!baseUrl.ok || !apiKey.ok || !model.ok || !effort.ok || !maxSteps.ok || !formerName.ok) {
-        return err(problemsOf([baseUrl, apiKey, model, effort, maxSteps, formerName]));
+    if (
+        !baseUrl.ok ||
+        !apiKey.ok ||
+        !model.ok ||
+        !effort.ok ||
+        !maxSteps.ok ||
+        !formerName.ok ||
+        !fileTools.ok
+    ) {
+        return err(problemsOf([baseUrl, apiKey, model, effort, maxSteps, formerName, fileTools]));
     }
 
     return ok({
@@ -206,5 +228,6 @@ export const loadConfig = (env: Env): Result<Config, string[]> => {
         reasoningEffort: effort.value,
         skillsPath: read(env, 'SKILLS_PATH'),
         maxSteps: maxSteps.value,
+        fileTools: fileTools.value,
     });
 };

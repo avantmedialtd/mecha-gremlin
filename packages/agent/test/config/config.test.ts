@@ -13,6 +13,7 @@ describe('loadConfig', () => {
                 reasoningEffort: 'none',
                 skillsPath: undefined,
                 maxSteps: 30,
+                fileTools: 'write-edit',
             },
         });
     });
@@ -61,6 +62,7 @@ describe('loadConfig', () => {
                 reasoningEffort: undefined,
                 skillsPath: undefined,
                 maxSteps: 30,
+                fileTools: 'write-edit',
             },
         });
     });
@@ -138,6 +140,7 @@ describe('loadConfig', () => {
                 MODEL_REASONING_EFFORT: 'extreme',
                 MAX_STEPS: 'lots',
                 MAX_TURNS: '5',
+                FILE_TOOLS: 'both',
             }),
         ).toEqual({
             ok: false,
@@ -146,6 +149,36 @@ describe('loadConfig', () => {
                 expect.stringContaining('MODEL_REASONING_EFFORT'),
                 expect.stringContaining('MAX_STEPS must be'),
                 'MAX_TURNS is now MAX_STEPS; rename it in your settings.',
+                'FILE_TOOLS must be write-edit or apply-patch; got "both".',
+            ],
+        });
+    });
+
+    test.each([
+        ['write-edit', 'write-edit'],
+        ['apply-patch', 'apply-patch'],
+        [' apply-patch ', 'apply-patch'],
+        ['  ', 'write-edit'],
+    ])('FILE_TOOLS=%j offers the file tools %j', (value, fileTools) => {
+        expect(loadConfig({ FILE_TOOLS: value })).toMatchObject({ ok: true, value: { fileTools } });
+    });
+
+    test.each(['both', 'edit', 'apply_patch', 'APPLY-PATCH'])(
+        'FILE_TOOLS=%j is refused',
+        (value) => {
+            expect(loadConfig({ FILE_TOOLS: value })).toEqual({
+                ok: false,
+                error: [`FILE_TOOLS must be write-edit or apply-patch; got "${value}".`],
+            });
+        },
+    );
+
+    test("an unknown provider doesn't hide an invalid FILE_TOOLS", () => {
+        expect(loadConfig({ MODEL_PROVIDER: 'anthropic', FILE_TOOLS: 'both' })).toEqual({
+            ok: false,
+            error: [
+                'MODEL_PROVIDER must be one of lmstudio, openai; got "anthropic".',
+                'FILE_TOOLS must be write-edit or apply-patch; got "both".',
             ],
         });
     });
