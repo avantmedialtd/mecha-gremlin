@@ -58,7 +58,7 @@ In each step, the session SHALL:
 - **THEN** the session yields one `final` step with the text "42" and ends, one request was sent, and its history ends with that reply's `message` item
 
 #### Scenario: One tool round trip
-- **WHEN** the model's first reply calls `read_file`, `call_1`, and its second answers
+- **WHEN** the model's first reply calls `read`, `call_1`, and its second answers
 - **THEN** two requests were sent. The second request's `input` is:
   1. the first request's `input`;
   2. then the first reply's output items;
@@ -80,11 +80,11 @@ When a reply is `calls`, the session SHALL handle the calls one at a time, in ou
 - **THEN** the handler runs for `call_a` before `call_b`, and their outputs follow the reply's items in the history, in that order
 
 #### Scenario: Unknown tool
-- **WHEN** the model calls `write_file` and only `read_file` exists
-- **THEN** the call's output says `write_file` is unknown and lists `read_file`, and the model is called again
+- **WHEN** the model calls `delete` and only `read` exists
+- **THEN** the call's output says `delete` is unknown and lists `read`, and the model is called again
 
 #### Scenario: Invalid arguments
-- **WHEN** the model calls `read_file` with arguments that fail validation
+- **WHEN** the model calls `read` with arguments that fail validation
 - **THEN** the handler doesn't run, and the call's output is the validation error
 
 #### Scenario: Handler throws

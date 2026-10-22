@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The agent's entry point, which chooses a model by provider (the model loaded in LM Studio by default, or a named model from any OpenAI-compatible service), has it carry out a task through the agent loop with a shell, `read_file` and skills, and logs the answer, with its configuration, its failure behaviour, and how it stops the session's processes. It runs on Bun, with `bun run agent`, or on Node, with `bun run agent:node`.
+The agent's entry point, which chooses a model by provider (the model loaded in LM Studio by default, or a named model from any OpenAI-compatible service), has it carry out a task through the agent loop with a shell, `read`, the file tools `FILE_TOOLS` chooses and skills, and logs the answer, with its configuration, its failure behaviour, and how it stops the session's processes. It runs on Bun, with `bun run agent`, or on Node, with `bun run agent:node`.
 ## Requirements
 ### Requirement: Carry out a task through the agent loop, and log the answer
 Running the agent, `bun run agent [task…]` from the repository root, SHALL:
@@ -10,9 +10,9 @@ Running the agent, `bun run agent [task…]` from the repository root, SHALL:
 2. take the task from the arguments, joined with spaces. With no arguments, the task SHALL be "Use the playwright-cli skill to find the title of https://example.com";
 3. load the skills `SKILLS_PATH` lists (`skills`);
 4. run the agent loop, with a step limit of `MAX_STEPS`, with:
-   - the tools `read_file`, rooted at the working directory with the loaded skills' directories, then `shell`, in the working directory, then `activate_skill` when any skill is loaded;
+   - the tools `read`, rooted at the working directory with the loaded skills' directories; then the file tools `FILE_TOOLS` chooses, rooted at the working directory: `write` and `edit` for `write-edit`, or `apply_patch` for `apply-patch`; then `shell`, in the working directory; then `activate_skill` when any skill is loaded;
    - a starting `developer` item that:
-     - says the model carries out tasks on this computer with a shell and `read_file`;
+     - says the model carries out tasks on this computer with a shell, `read` for reading text files, and the file tools on offer for writing and changing them;
      - gives the working directory's real path, and says that paths commands print are relative to it;
      - asks for a brief final answer;
      - ends with the skills catalog, when any skill is loaded;
@@ -32,15 +32,15 @@ Every model call SHALL go to the OpenAI-compatible Responses endpoint at `{MODEL
 
 #### Scenario: The tools offered
 - **WHEN** `SKILLS_PATH` names a root holding the skill `pdf`
-- **THEN** the first request's tools are `read_file`, `shell` and `activate_skill`, in that order, and its `developer` item ends with the catalog listing `pdf`
+- **THEN** the first request's tools are `read`, `write`, `edit`, `shell` and `activate_skill`, in that order, and its `developer` item ends with the catalog listing `pdf`
 
 #### Scenario: Without skills
 - **WHEN** `SKILLS_PATH` is unset
-- **THEN** the first request's tools are `read_file` and `shell`, and its `developer` item mentions no skills
+- **THEN** the first request's tools are `read`, `write`, `edit` and `shell`, and its `developer` item mentions no skills
 
 #### Scenario: The working directory
 - **WHEN** `WORK_DIR` is a symbolic link to a directory holding `notes.txt`
-- **THEN** the `developer` item and the `asking` record give that directory's real path, `read_file` reads `notes.txt` there, and `shell` runs its commands there
+- **THEN** the `developer` item and the `asking` record give that directory's real path, `read` reads `notes.txt` there, `write` and `edit` write there, and `shell` runs its commands there
 
 #### Scenario: Answer after running a command
 - **WHEN** the model's first reply calls `shell` with `{"command":"echo 42"}`, and its second answers "\n\nIt printed 42."
@@ -49,6 +49,14 @@ Every model call SHALL go to the OpenAI-compatible Responses endpoint at `{MODEL
 #### Scenario: The step limit comes from the settings
 - **WHEN** `MAX_STEPS` is 3, and every reply calls a tool
 - **THEN** exactly 3 requests are sent
+
+#### Scenario: The patch tool set
+- **WHEN** `FILE_TOOLS` is `apply-patch` and `SKILLS_PATH` is unset
+- **THEN** the first request's tools are `read`, `apply_patch` and `shell`, in that order, no request offers `write` or `edit`, and the `developer` item names `apply_patch`
+
+#### Scenario: The developer item names the default file tools
+- **WHEN** `FILE_TOOLS` is unset
+- **THEN** the `developer` item names `read`, `write` and `edit`, and doesn't name `apply_patch`
 
 ### Requirement: Log each model call and tool call
 The agent SHALL log, through the structured logger:
@@ -61,7 +69,7 @@ The agent SHALL log, through the structured logger:
   - then an `info` record `tool result` with the fields `tool` and `bytes`, or a `warn` record `tool failed` with the fields `tool` and `error`.
 
 #### Scenario: Records of a tool round trip
-- **WHEN** no skill is loaded, the model's first reply calls `read_file` for `package.json`, and its second answers
+- **WHEN** no skill is loaded, the model's first reply calls `read` for `package.json`, and its second answers
 - **THEN** the records are, in order: `asking`, `model call` with `step` 1 and its token counts, `tool call` with `arguments` `{ "path": "package.json" }`, `tool result` with the output's size in bytes, `model call` with `step` 2, and `answer`
 
 #### Scenario: The asking record
@@ -77,7 +85,7 @@ The agent SHALL log, through the structured logger:
 - **THEN** the `tool result` record's `bytes` counts bytes, not characters
 
 #### Scenario: A failed call
-- **WHEN** `read_file` refuses `.env`
+- **WHEN** `read` refuses `.env`
 - **THEN** a `warn` record `tool failed` carries the tool's error
 
 ### Requirement: Choose the model according to the provider
@@ -130,15 +138,16 @@ The agent SHALL read `MODEL_PROVIDER` (`lmstudio` or `openai`; default `lmstudio
 - The agent SHALL validate all settings before any network call. If any is invalid or missing, it SHALL exit with code 1 and log an `error` record for each invalid or missing variable, naming it.
 
 It SHALL also read, whatever the provider:
-- `WORK_DIR`, the working directory of `read_file` and `shell`. It defaults to the current directory, and a relative path resolves against the current directory. It SHALL name an existing directory, and SHALL be used by its real path, with symbolic links resolved.
+- `WORK_DIR`, the working directory of `read`, the file tools and `shell`. It defaults to the current directory, and a relative path resolves against the current directory. It SHALL name an existing directory, and SHALL be used by its real path, with symbolic links resolved.
 - `SKILLS_PATH`, the skills roots (`skills`). When it's unset, no skill is loaded.
 - `MAX_STEPS`, the session's step limit: a positive whole number written in decimal digits, defaulting to 30.
+- `FILE_TOOLS`, which file tools the model gets: `write-edit` (the default) for `write` and `edit`, or `apply-patch` for `apply_patch`.
 
 `MAX_TURNS`, the step limit's former name, SHALL be invalid whenever it is set, whatever its value, with an `error` record saying that it is now `MAX_STEPS`.
 
 #### Scenario: Defaults apply
 - **WHEN** none of the variables is set
-- **THEN** the provider is `lmstudio`, the base URL is `http://127.0.0.1:1234/v1`, the key is `lm-studio`, no model is configured, the reasoning effort is `none`, the working directory is the current directory, no skill is loaded, and the step limit is 30
+- **THEN** the provider is `lmstudio`, the base URL is `http://127.0.0.1:1234/v1`, the key is `lm-studio`, no model is configured, the reasoning effort is `none`, the working directory is the current directory, no skill is loaded, the step limit is 30, and the file tools are `write` and `edit`
 
 #### Scenario: Another provider's defaults
 - **WHEN** `MODEL_PROVIDER` is `openai` and `MODEL_API_KEY` and `MODEL` are set
@@ -179,6 +188,10 @@ It SHALL also read, whatever the provider:
 #### Scenario: Every problem is reported
 - **WHEN** `MODEL_PROVIDER` is `openai` with neither `MODEL_API_KEY` nor `MODEL` set, and `WORK_DIR` doesn't exist
 - **THEN** no network call is made, three `error` records name `MODEL_API_KEY`, `MODEL` and `WORK_DIR`, and the exit code is 1
+
+#### Scenario: An invalid file tools setting
+- **WHEN** `FILE_TOOLS` is `both`
+- **THEN** no network call is made, an `error` record names `FILE_TOOLS` and its valid values, `write-edit` and `apply-patch`, and the exit code is 1
 
 ### Requirement: Actionable failure messages
 The agent SHALL exit with code 1 and log an `error` record whose message names the cause and a next step, in each of these cases:

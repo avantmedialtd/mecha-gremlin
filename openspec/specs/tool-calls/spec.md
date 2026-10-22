@@ -19,8 +19,8 @@ The `core` package SHALL provide a `Tool<Args>` type made of a `name`, a `descri
 - as `parameters`, the schema's input JSON Schema, requested with target `draft-07`, without its top-level `$schema` key.
 
 #### Scenario: Function tool from a schema
-- **WHEN** a tool named `read_file`, described as "Read a file", has a schema whose `draft-07` input JSON Schema is `{ "$schema": "http://json-schema.org/draft-07/schema#", "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"], "additionalProperties": false }`
-- **THEN** `toFunctionTool` returns `type` `"function"`, `name` `read_file`, `description` "Read a file", `strict: true`, and `parameters` equal to that JSON Schema without the `$schema` key
+- **WHEN** a tool named `read`, described as "Read a file", has a schema whose `draft-07` input JSON Schema is `{ "$schema": "http://json-schema.org/draft-07/schema#", "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"], "additionalProperties": false }`
+- **THEN** `toFunctionTool` returns `type` `"function"`, `name` `read`, `description` "Read a file", `strict: true`, and `parameters` equal to that JSON Schema without the `$schema` key
 
 #### Scenario: The JSON Schema is requested as draft-07
 - **WHEN** `toFunctionTool` converts a tool
@@ -33,7 +33,7 @@ The `core` package SHALL provide a `Tool<Args>` type made of a `name`, a `descri
 - otherwise, `empty`.
 
 #### Scenario: Calls win over text
-- **WHEN** the output holds a `reasoning` item, a `message` item whose text is "\n\n", and a `function_call` item for `read_file`
+- **WHEN** the output holds a `reasoning` item, a `message` item whose text is "\n\n", and a `function_call` item for `read`
 - **THEN** the result is `calls` with that one call
 
 #### Scenario: Several calls keep their order
@@ -121,3 +121,4 @@ A tool call's outcome SHALL be a `Result` holding text either way: a success, `o
 #### Scenario: Unknown item type
 - **WHEN** the history holds an item of type `made_up`
 - **THEN** `toInput` returns `ok: false` with an error naming `made_up`, and doesn't throw
+

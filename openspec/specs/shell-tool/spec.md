@@ -26,7 +26,7 @@ When bash ran, the outcome SHALL succeed, whatever the exit code. Its text SHALL
 3. `stdout:` and the captured stdout, when it isn't empty;
 4. `stderr:` and the captured stderr, when it isn't empty;
 5. `(no output)`, when both streams are empty;
-6. when either stream was cut, a line saying how to see the rest: write the output to a file in the working directory, then search it with `grep`, or print the part needed with `sed -n` or `tail -c`, because `read_file` shows only a file's first 32 KiB.
+6. when either stream was cut, a line saying how to see the rest: write the output to a file in the working directory, then read it a part at a time with the `read` tool's `offset` and `limit`, search it with `grep`, or print the part needed with `sed -n` or `tail -c`.
 
 The outcome SHALL fail only when bash can't be started, or when the shell has been closed. When the working directory no longer exists, the error SHALL name it and say so.
 

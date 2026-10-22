@@ -123,7 +123,7 @@ Every other key SHALL be ignored, `allowed-tools` included. When the agent finds
 
 ### Requirement: List the skills in the developer item
 `core` SHALL provide `renderCatalog(skills)`. Its text SHALL:
-- start with an instruction to call `activate_skill` with a skill's name before starting a task that matches its description, and to read a skill's own files with `read_file`, by absolute path;
+- start with an instruction to call `activate_skill` with a skill's name before starting a task that matches its description, and to read a skill's own files with the `read` tool, by absolute path;
 - then list every skill in an `<available_skills>` element, each as a `<skill>` element holding a `<name>` and a `<description>` element, sorted by name;
 - escape `&`, `<` and `>` in names and descriptions.
 

@@ -54,8 +54,8 @@ A message that spans several lines SHALL keep its first line in place. Each of i
 - **THEN** the record's line is followed by `  text:` and each of the two lines, indented by four spaces
 
 #### Scenario: A multi-line message
-- **WHEN** an `error` record's message is "The model call failed." and "Try again." on two lines, with the field `tool: "read_file"`
-- **THEN** the record's line is `HH:MM:SS ERROR The model call failed. tool=read_file`, and the next line is `    Try again.`
+- **WHEN** an `error` record's message is "The model call failed." and "Try again." on two lines, with the field `tool: "read"`
+- **THEN** the record's line is `HH:MM:SS ERROR The model call failed. tool=read`, and the next line is `    Try again.`
 
 #### Scenario: Windows line breaks
 - **WHEN** a field's value is "one\r\ntwo"
@@ -69,7 +69,7 @@ A message that spans several lines SHALL keep its first line in place. Each of i
 With `LOG_FORMAT` set to `json`, each record SHALL be written as one line holding a JSON object. The object holds `time` (ISO 8601), `level` and `message`, then the fields.
 
 #### Scenario: A record as JSON
-- **WHEN** `LOG_FORMAT` is `json` and an `info` record "tool call" is logged with the fields `tool: "read_file"` and `arguments: { path: "a.txt" }`
+- **WHEN** `LOG_FORMAT` is `json` and an `info` record "tool call" is logged with the fields `tool: "read"` and `arguments: { path: "a.txt" }`
 - **THEN** the line is a JSON object with `time`, `level` `info`, `message` "tool call", `tool` and `arguments` as an object
 
 ### Requirement: The log format is checked first
