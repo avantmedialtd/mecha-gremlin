@@ -56,11 +56,12 @@ describe('Responses adapter', () => {
         ]);
     });
 
-    test("takes no header, organization, project or log level from the SDK's environment", async () => {
+    test("takes no header, key, organization, project or log level from the SDK's environment", async () => {
         vi.stubEnv(
             'OPENAI_CUSTOM_HEADERS',
             'Authorization: Bearer env-key\n x-extra : injected\nnot a header',
         );
+        vi.stubEnv('OPENAI_ADMIN_KEY', 'admin-env-key');
         vi.stubEnv('OPENAI_ORG_ID', 'org-env');
         vi.stubEnv('OPENAI_PROJECT_ID', 'proj-env');
         vi.stubEnv('OPENAI_LOG', 'debug');
