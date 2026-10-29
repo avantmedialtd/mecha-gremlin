@@ -1,7 +1,8 @@
 import { mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type ToolOutcome, toFunctionTool } from '@mecha-gremlin/core/tools';
+import type { ToolOutcome } from '@mecha-gremlin/core/tools';
+import { toFunctionTool } from '../../src/model/responses-tools.ts';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { type Limits, type Shell, type ShellOptions, createShell } from '../../src/tools/shell.ts';

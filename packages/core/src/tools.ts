@@ -1,4 +1,3 @@
-import type { FunctionTool, ResponseOutputItem } from 'openai/resources/responses/responses';
 import { type Err, type Result, err, ok } from './result.ts';
 import type { StandardJSONSchemaV1, StandardSchemaV1 } from './standard-schema.ts';
 
@@ -15,58 +14,25 @@ export type Tool<Args = unknown> = {
 /** A failure's error is shown to the model, so write it for the model to act on. */
 export type ToolOutcome = Result<string, string>;
 
-export type ToolCall = Extract<ResponseOutputItem, { type: 'function_call' }>;
+/** The view needed by the loop; the native call remains in the provider's history. */
+export type ToolCall = {
+    readonly call_id: string;
+    readonly name: string;
+    readonly arguments: string;
+};
 
 export type Reply =
     | { readonly kind: 'calls'; readonly calls: readonly ToolCall[] }
     | { readonly kind: 'final'; readonly text: string }
     | { readonly kind: 'empty' };
 
-/**
- * Draft-07 is the dialect the `openai` SDK's own helpers request, and `$schema` constrains
- * nothing. `strict` makes OpenAI constrain generation to the schema; LM Studio ignores it, so
- * `validateArgs` still checks every call.
- */
-export const toFunctionTool = (tool: Tool): FunctionTool => {
+/** Use the same schema for provider requests and local validation errors. */
+export const toolJsonSchema = (tool: Tool): Record<string, unknown> => {
     const { $schema: _dialect, ...parameters } = tool.schema['~standard'].jsonSchema.input({
         target: 'draft-07',
     });
 
-    return {
-        type: 'function',
-        name: tool.name,
-        description: tool.description,
-        parameters,
-        strict: true,
-    };
-};
-
-/**
- * Calls win over text because models pair a call with a blank or chatty message (Brief R11). A
- * refusal counts as the answer, so the user sees it instead of "no answer".
- */
-export const classify = (output: readonly ResponseOutputItem[]): Reply => {
-    const calls = output.filter((item): item is ToolCall => item.type === 'function_call');
-
-    if (calls.length > 0) {
-        return { kind: 'calls', calls };
-    }
-
-    let text = '';
-
-    for (const item of output) {
-        if (item.type !== 'message') {
-            continue;
-        }
-
-        for (const part of item.content) {
-            text += part.type === 'refusal' ? part.refusal : part.text;
-        }
-    }
-
-    text = text.trim();
-
-    return text === '' ? { kind: 'empty' } : { kind: 'final', text };
+    return parameters;
 };
 
 const issuePath = (issue: StandardSchemaV1.Issue): string => {
@@ -95,7 +61,7 @@ export const validateArgs = async <Args>(
 
         // `jsonSchema.input` may throw for a target the library doesn't support.
         try {
-            schema = JSON.stringify(toFunctionTool(tool).parameters);
+            schema = JSON.stringify(toolJsonSchema(tool));
         } catch {
             return err(problem);
         }

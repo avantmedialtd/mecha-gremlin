@@ -2,58 +2,55 @@
 
 ## Purpose
 
-The core library's pure contract for tool calling over the Responses API: tool definitions and their `FunctionTool` form, classifying a model call's output, validating call arguments, building call outputs, and turning chat history into request input.
+Tool calling across providers: Gremlin-owned tool definitions and replies, their Responses function-tool form, classifying a completed reply, validating call arguments, and building each provider's next request from the history.
 ## Requirements
 ### Requirement: Tools are defined by a name, a description and a Standard Schema
-The `core` package SHALL provide a `Tool<Args>` type made of a `name`, a `description` and a `schema`. The schema SHALL be any object implementing both the Standard Schema v1 interface (`~standard.validate`) and the Standard JSON Schema interface (`~standard.jsonSchema`). `core` SHALL declare these interfaces itself, as types, and SHALL NOT depend on a schema library.
+The `core` package SHALL provide a `Tool<Args>` type made of a `name`, a `description` and a `schema`. The schema SHALL be any object implementing both the Standard Schema v1 interface (`~standard.validate`) and the Standard JSON Schema interface (`~standard.jsonSchema`). `core` SHALL declare these interfaces itself, as types, and SHALL NOT depend on a schema library or either provider SDK. Its tool, call, reply and history types SHALL be Gremlin-owned rather than SDK aliases.
 
-#### Scenario: No schema library in core
-- **WHEN** `packages/core/package.json` is read
-- **THEN** its `dependencies` and `peerDependencies` name no package other than `openai`
+#### Scenario: No schema library or provider SDK in core
+- **WHEN** `packages/core/package.json` and its public types are read
+- **THEN** they contain no dependency or type import for a schema library, `openai` or `@anthropic-ai/sdk`
 
 ### Requirement: Convert a tool to a Responses function tool
-`toFunctionTool(tool)` SHALL return a Responses API function tool with:
-- `type` `"function"`;
-- the tool's `name` and `description`;
-- `strict: true`;
-- as `parameters`, the schema's input JSON Schema, requested with target `draft-07`, without its top-level `$schema` key.
+The shared tool definition SHALL provide its input JSON Schema requested with target `draft-07`, without the top-level `$schema` key. The Responses adapter SHALL convert it to a function tool with `type` `function`, the tool's name and description, `strict: true`, and that schema as `parameters`. The Anthropic adapter SHALL use the same schema as its client tool's `input_schema` without requesting Anthropic strict mode. Wire-format conversion SHALL not require an SDK type in `core`.
 
 #### Scenario: Function tool from a schema
-- **WHEN** a tool named `read`, described as "Read a file", has a schema whose `draft-07` input JSON Schema is `{ "$schema": "http://json-schema.org/draft-07/schema#", "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"], "additionalProperties": false }`
-- **THEN** `toFunctionTool` returns `type` `"function"`, `name` `read`, `description` "Read a file", `strict: true`, and `parameters` equal to that JSON Schema without the `$schema` key
+- **WHEN** a tool named `read`, described as "Read a file", has a draft-07 input schema containing a `$schema` key, an object property `path`, a required `path` and `additionalProperties: false`
+- **THEN** its Responses function tool has `type` `function`, the same name and description, `strict: true`, and that schema without `$schema` as `parameters`
 
 #### Scenario: The JSON Schema is requested as draft-07
-- **WHEN** `toFunctionTool` converts a tool
-- **THEN** it calls the schema's `~standard.jsonSchema.input` with `target` `draft-07`
+- **WHEN** either adapter converts a tool
+- **THEN** its schema's `~standard.jsonSchema.input` is called with target `draft-07`
+
+#### Scenario: Anthropic keeps non-strict constraints
+- **WHEN** the input JSON Schema contains a numeric minimum
+- **THEN** the Anthropic tool retains it in `input_schema` and does not enable strict tool use
 
 ### Requirement: Classify a model call's output
-`classify(output)` SHALL classify the output items of a completed model call, the model's reply, as exactly one of:
-- `calls`, when there is at least one `function_call` item: every `function_call` item, in output order, whatever text the output also holds;
-- otherwise, `final`, when the text is non-empty after trimming whitespace. The text is the concatenation, in order, of every `message` item's `output_text` and `refusal` parts. The result carries the trimmed text;
-- otherwise, `empty`.
+The shared `Reply` type SHALL distinguish `calls`, `final` and `empty` using Gremlin-owned types. The provider adapter SHALL derive the reply from the completed native response without replacing or mutating its replay data. When there is at least one client tool call, the reply SHALL be `calls` containing every call in output order, whatever text the output also holds. Otherwise nonempty trimmed text SHALL be `final`; a textual refusal SHALL count as answer text. Otherwise the reply SHALL be `empty`. A call view SHALL identify the call, tool name and raw JSON arguments for local validation.
 
 #### Scenario: Calls win over text
-- **WHEN** the output holds a `reasoning` item, a `message` item whose text is "\n\n", and a `function_call` item for `read`
-- **THEN** the result is `calls` with that one call
+- **WHEN** a reply holds reasoning or thinking, whitespace text and a client call for `read`
+- **THEN** it is `calls` with that call and the native reasoning, text and call data remain in history
 
 #### Scenario: Several calls keep their order
-- **WHEN** the output holds two `function_call` items, `call_a` then `call_b`
-- **THEN** the result is `calls` with `call_a` then `call_b`
+- **WHEN** a completed reply holds client calls A then B
+- **THEN** its `calls` view lists A then B
 
 #### Scenario: The answer is trimmed
-- **WHEN** the output holds one `message` item with the text "\n\nThe check script runs the linter."
-- **THEN** the result is `final` with the text "The check script runs the linter."
+- **WHEN** the reply's text is "\n\nThe check script runs the linter."
+- **THEN** its result is `final` with text "The check script runs the linter."
 
-#### Scenario: Text from several messages is joined
-- **WHEN** the output holds two `message` items with the texts "Hello, " and "world"
-- **THEN** the result is `final` with the text "Hello, world"
+#### Scenario: Text from several parts is joined
+- **WHEN** the reply holds text parts "Hello, " and "world"
+- **THEN** the final text is "Hello, world"
 
 #### Scenario: A refusal is the answer
-- **WHEN** the output holds a `message` item whose only part is a `refusal`, "I can't help with that."
-- **THEN** the result is `final` with the text "I can't help with that."
+- **WHEN** a completed reply's only answer text is a refusal, "I can't help with that."
+- **THEN** the result is `final` with that text
 
 #### Scenario: Nothing to act on
-- **WHEN** the output holds only a `reasoning` item and a `message` item whose text is whitespace
+- **WHEN** a reply holds only reasoning or thinking and whitespace text
 - **THEN** the result is `empty`
 
 ### Requirement: Validate a call's arguments
@@ -63,7 +60,7 @@ The `core` package SHALL provide a `Tool<Args>` type made of a `name`, a `descri
 3. require the parsed value to be a JSON object, not an array, `null`, string, number or boolean;
 4. validate it with the schema's `~standard.validate`, awaiting the result when it is a promise. When the validator throws or rejects, the `error` SHALL say that validating the arguments failed, with the thrown error's message.
 
-Every `error` SHALL name the tool, say what was wrong, and end with the tool's expected JSON Schema: the same `parameters` that `toFunctionTool` produces. When that JSON Schema can't be produced, because the schema's `~standard.jsonSchema.input` throws, the `error` SHALL end without it. For a schema failure, it SHALL list each issue with its path and the validator's message. Paths are dot-separated, and the root is shown as `(root)`.
+Every `error` SHALL name the tool, say what was wrong, and end with the tool's expected draft-07 input JSON Schema without its top-level `$schema`, the same schema offered to the model. When that JSON Schema can't be produced, because the schema's `~standard.jsonSchema.input` throws, the `error` SHALL end without it. For a schema failure, it SHALL list each issue with its path and the validator's message. Paths are dot-separated, and the root is shown as `(root)`.
 
 #### Scenario: Valid arguments
 - **WHEN** `raw` is `{"path":"package.json"}` and the schema accepts it
@@ -102,23 +99,27 @@ Every `error` SHALL name the tool, say what was wrong, and end with the tool's e
 - **THEN** the result is `ok: false`, and `error` says the arguments must be a JSON object and ends there, without a JSON Schema
 
 ### Requirement: Build call outputs and the next request's input from the history
-A tool call's outcome SHALL be a `Result` holding text either way: a success, `ok(output)`, or a failure, `err(error)`. `toOutputItem(callId, outcome)` SHALL return a `function_call_output` item with that `call_id`. Its `output` SHALL be the success's value, or `Error: ` followed by the failure's error.
+A tool outcome SHALL be a `Result` holding text either way: `ok(output)` or `err(error)`. The session history SHALL retain Gremlin-authored inputs and outcomes plus opaque provider-tagged native assistant replay data in order. The provider adapter SHALL build valid next-request input without mutating the stored native data. Responses tool outcomes SHALL become `function_call_output` items with the call ID and success text, or `Error: ` followed by the failure text. The Responses adapter SHALL use the SDK's `toResponseInputItems` to replay items, retaining its existing removal of SDK-only fields and omission of known non-replayable items. Anthropic outcomes SHALL become grouped `tool_result` blocks as `anthropic-messages` specifies.
 
-`toInput(history)` SHALL turn a history of Responses items, kept as received, into the input for the next request. That is every replayable item, in order, with SDK-only fields removed, as the `openai` SDK's `toResponseInputItems` does. It SHALL return `ok(input)`. When the history holds an item the SDK can't replay, it SHALL return `err(message)` naming the item's type, and SHALL NOT throw.
+An unsupported native item or a history belonging to another provider SHALL return `err(message)` without throwing; it SHALL NOT be silently converted to a different provider's history. `core` SHALL not call an SDK replay helper.
 
-#### Scenario: Successful call
-- **WHEN** `toOutputItem("call_1", ok("file contents"))` is called
-- **THEN** it returns `{ type: "function_call_output", call_id: "call_1", output: "file contents" }`
+#### Scenario: Successful Responses call
+- **WHEN** call `call_1` succeeds with "file contents"
+- **THEN** its Responses input item is `{ type: "function_call_output", call_id: "call_1", output: "file contents" }`
 
-#### Scenario: Failed call
-- **WHEN** `toOutputItem("call_1", err("no such file: x.txt"))` is called
-- **THEN** the item's `output` is "Error: no such file: x.txt"
+#### Scenario: Failed Responses call
+- **WHEN** call `call_1` fails with "no such file: x.txt"
+- **THEN** its Responses output is "Error: no such file: x.txt"
 
-#### Scenario: History round trip
-- **WHEN** the history holds a developer message, a user message, a `reasoning` item, a `message` item, a `function_call` item carrying `parsed_arguments`, and a `function_call_output` item
-- **THEN** `toInput` returns all six items in the same order, and the `function_call` item no longer has `parsed_arguments`
+#### Scenario: Responses history round trip
+- **WHEN** Responses history holds a developer message, a user message, a reasoning item, a message, a function call carrying `parsed_arguments`, and a function-call output
+- **THEN** the adapter produces replayable input in the same order, strips the SDK-only `parsed_arguments`, and leaves the stored history unchanged
 
-#### Scenario: Unknown item type
-- **WHEN** the history holds an item of type `made_up`
-- **THEN** `toInput` returns `ok: false` with an error naming `made_up`, and doesn't throw
+#### Scenario: Unknown native item type
+- **WHEN** the history holds a Responses item of type `made_up`
+- **THEN** replay returns `ok: false` with an error naming `made_up` and doesn't throw
+
+#### Scenario: Cross-provider replay is refused
+- **WHEN** a session configured for Anthropic is given native Responses history from an OpenAI session
+- **THEN** session creation fails with a history/provider error before a model request is sent
 

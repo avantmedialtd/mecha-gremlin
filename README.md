@@ -6,7 +6,7 @@ A self-hosted, scheduled agent runner, in early development. The design and its 
 
 | Package | What it is |
 |---|---|
-| [`packages/core`](packages/core) | `@mecha-gremlin/core`: stateless functions. `callModel` calls the model once over the Responses API, streamed, and returns the reply or a classified error. The tool-calling pieces are tools defined by any [Standard Schema](https://standardschema.dev) library, `classify` for a model call's output, `validateArgs`, `toOutputItem`, and `toInput`, which replays the chat history. `skills` checks a SKILL.md and renders the skills catalog and a skill's activation, `output` caps a command's output to its start and end as it streams in, and `patch` parses a patch in Codex's V4A format and applies its changes to a file's text. |
+| [`packages/core`](packages/core) | `@mecha-gremlin/core`: stateless, provider-independent types and functions. `model-call`, `history` and `statistics` define Gremlin's call, native replay and typed provider statistics contracts. `tools` defines tools through any [Standard Schema](https://standardschema.dev) library and validates their arguments. `skills` checks a SKILL.md and renders the skills catalog and a skill's activation, `output` caps a command's output as it streams in, and `patch` parses and applies Codex's V4A patches. Core depends on neither model SDK. |
 | [`packages/yaml`](packages/yaml) | `@mecha-gremlin/yaml`: `parseYaml`, which uses Bun's built-in parser, `Bun.YAML`, on Bun, and the [`yaml`](https://www.npmjs.com/package/yaml) package elsewhere. The two give the same values for everything frontmatter uses. |
 | [`packages/process`](packages/process) | `@mecha-gremlin/process`: `spawnProcess`, which uses `Bun.spawn` on Bun and `node:child_process` elsewhere, and gives the process the same shape on both: its pid, its output as web streams, a promise of how it exited, and `unref()`. |
 | [`packages/agent`](packages/agent) | `@mecha-gremlin/agent`: the agent. It carries out a task in an agent loop, with a shell, file tools and skills. It runs on Bun or Node. |
@@ -14,7 +14,7 @@ A self-hosted, scheduled agent runner, in early development. The design and its 
 Inside `packages/agent/src`, the code is grouped by concern:
 - `main`: the entry point, and its helpers for the arguments, the log fields and the failure messages;
 - `config`;
-- `model`: model choice and LM Studio's API;
+- `model`: model choice, LM Studio's model list, and the Responses and Anthropic Messages adapters;
 - `session`: the agent loop, as a session that yields each step's result;
 - `skills`: finding and reading the skills `SKILLS_PATH` lists;
 - `exec`: running a command, its environment, and stopping a session's processes at the end;
@@ -31,60 +31,48 @@ No package has index files: every import names the file it uses. The `package.js
 
 - [Bun](https://bun.com) 1.4 or later.
 - [Node.js](https://nodejs.org) 26 or later, for `bun run agent:node` and `bun run test:node`, and so for `bun run check`.
-- An OpenAI-compatible model server. By default that's a local [LM Studio](https://lmstudio.ai), with its server running (`lms server start`) and **a model loaded** (`lms load <model>`, or load one in the app). The agent never makes LM Studio load a model on demand. A browsing task needs the model loaded with a larger context than LM Studio's default: see [Set up for browsing](#set-up-for-browsing).
-- For the default task, [playwright-cli](https://www.npmjs.com/package/@playwright/cli) (`npm install -g @playwright/cli`) and [Google Chrome](https://www.google.com/chrome/), which playwright-cli drives by default.
+- A configured model: [LM Studio](https://lmstudio.ai), an OpenAI Responses endpoint, or the direct Claude API. For LM Studio, start the server (`lms server start`) and load the **named** model (`lms load <model>`, or load one in the app). The agent never loads a model on demand. A browsing task needs more context than LM Studio's default: see [Set up for browsing](#set-up-for-browsing).
+- For browsing with the example skill, [playwright-cli](https://www.npmjs.com/package/@playwright/cli) and [Google Chrome](https://www.google.com/chrome/).
 
 ## Run
 
-Once, before the first run, install the dependencies, and set `SKILLS_PATH` in `.env` to playwright-cli's skills. Without it, the default task's skill isn't loaded, and the model has only the shell and the file tools.
+Install dependencies, then put the required settings for your provider in a local `.env` file (see [Configuration](#configuration)). A task is required on every run; no browsing task runs by default.
 
 ```sh
 bun install
-echo "SKILLS_PATH=$(npm root -g)/@playwright/cli/skills" >> .env
 ```
 
 Then:
 
 ```sh
-bun run agent                                                # finds example.com's title with the playwright-cli skill
-bun run agent 'Which runtime does README.md describe?'       # a task of your own, quoted
-bun run agent:node 'Which runtime does README.md describe?'  # the same, on Node
+WORK_DIR=. bun run agent 'Which runtime does README.md describe?'       # a task of your own, quoted
+WORK_DIR=. bun run agent:node 'Which runtime does README.md describe?'  # the same, on Node
 ```
 
-The command is `bun run agent [task…]` on Bun, or `bun run agent:node [task…]` on Node, with the same arguments and settings. The arguments, joined with spaces, are the task. With none, the agent uses the playwright-cli skill to find the title of https://example.com.
+These ask about this repository's README, so `WORK_DIR=.` points them at it; a setting on the command line overrides `.env`.
+
+The command is `bun run agent <task…>` on Bun, or `bun run agent:node <task…>` on Node, with the same arguments and settings. The arguments, joined with spaces, are the task. Missing or blank tasks fail before any network request.
 
 **Quote the task,** in single quotes unless it holds one. The shell reads `?`, `*`, `&`, `;`, `!` and `$` itself: in zsh, macOS's default shell, an unquoted `?` stops the command with "no matches found" before Bun runs.
 
-The model carries out the task with its tools, offered in this order: `read`; `write` and `edit`, or `apply_patch` in their place when `FILE_TOOLS` is `apply-patch`; `shell`; and `activate_skill` when skills are loaded. The loop runs until it answers, for at most `MAX_STEPS` steps, 30 by default. A question about a file usually takes two steps: one to read it and one to answer. A browsing task takes many more, about two for each page action. On a local 27B model, a model call took from 15 seconds to about 2 minutes in testing, growing with the size of what the model reads.
+The model carries out the task with its tools, offered in this order: `read`; `write` and `edit`, or `apply_patch` in their place when `FILE_TOOLS` is `apply-patch`; `shell`; and `activate_skill` when skills are loaded. The loop runs until it answers, for at most the configured `MAX_STEPS`. A question about a file usually takes two steps: one to read it and one to answer. A browsing task takes many more, about two for each page action. On a local 27B model, a model call took from 15 seconds to about 2 minutes in testing, growing with the size of what the model reads.
 
 Everything is logged to stdout as structured records, one per line:
 - the skills loaded, and any that couldn't be;
 - the task, with the run's ID and the working directory;
-- each model call's token usage, including the input tokens served from the model server's cache;
+- each model call's provider-specific statistics, including reported usage, cache counts and rate-limit headers, even when a call fails;
 - each tool call and its result;
 - the answer;
 - the processes stopped when the session ends, if there were any;
 - errors.
 
-The default output is formatted for reading. This is the default task on a local 9B model:
+With `LOG_FORMAT=pretty`, records are formatted for reading. A model-call line includes the provider's statistics rather than only a few common token counts:
 
 ```text
-22:01:54 INFO  skills names=["playwright-cli"]
-22:01:54 INFO  asking model=ornith-1.5-9b-mlx baseUrl=http://127.0.0.1:1234/v1 run=2880845d workDir=/Users/you/gremlin-work task="Use the playwright-cli skill to find the title of https://example.com"
-22:02:03 INFO  model call step=1 inputTokens=812 cachedTokens=0 outputTokens=48 reasoningTokens=32 seconds=9.2
-22:02:03 INFO  tool call tool=activate_skill arguments={"name":"playwright-cli"}
-22:02:03 INFO  tool result tool=activate_skill bytes=15906
-22:02:35 INFO  model call step=2 inputTokens=4827 cachedTokens=889 outputTokens=156 reasoningTokens=127 seconds=31.2
-22:02:35 INFO  tool call tool=shell arguments={"command":"playwright-cli open https://example.com"}
-22:02:35 INFO  tool result tool=shell bytes=296
-22:02:41 INFO  model call step=3 inputTokens=5147 cachedTokens=5017 outputTokens=49 reasoningTokens=17 seconds=5.3
-22:02:41 INFO  tool call tool=shell arguments={"command":"playwright-cli close"}
-22:02:41 INFO  tool result tool=shell bytes=54
-22:02:43 INFO  model call step=4 inputTokens=5265 cachedTokens=5226 outputTokens=28 reasoningTokens=15 seconds=2
-22:02:43 INFO  answer text="The title of https://example.com is **Example Domain**."
+22:02:03 INFO  model call step=1 providerStats={"provider":"openai","usage":{"kind":"partial","value":{"input_tokens":812,"output_tokens":48}},"rateLimits":{}} seconds=9.2
 ```
 
-`LOG_FORMAT=json` writes each record as a JSON object instead, with its time in ISO 8601.
+`LOG_FORMAT=json` writes each record as a JSON object instead, with its time in ISO 8601. Usage is marked `complete`, `partial` or `unavailable`; absent counts aren't turned into zero. Claude leaves out the usage fields that don't apply to a reply, so its complete usage shows only those it reported. Claude input counts distinguish uncached input, cache writes and cache reads. Its total input is the sum of those three; Responses input already includes cached input. Thinking and reasoning tokens are included in output tokens.
 
 ### The file tools
 
@@ -92,7 +80,7 @@ The default output is formatted for reading. This is the default task on a local
 
 The model writes and changes files with one of two sets of tools, which `FILE_TOOLS` chooses. The two are never offered together:
 
-- **`write-edit`, the default:** `write` creates or replaces a whole file, creating missing directories, and `edit` replaces exact text in a file. Its `old_string` must occur exactly once, unless `replace_all` is set.
+- **`write-edit`:** `write` creates or replaces a whole file, creating missing directories, and `edit` replaces exact text in a file. Its `old_string` must occur exactly once, unless `replace_all` is set.
 - **`apply-patch`:** `apply_patch` takes a patch in the V4A format of OpenAI's Codex, which adds, updates, moves and deletes files. It finds the lines to change leniently, as Codex does, and changes nothing unless the whole patch applies.
 
 The four tools share a fence. They refuse:
@@ -132,7 +120,7 @@ WORK_DIR=~/gremlin-work SKILLS_PATH=$(npm root -g)/@playwright/cli/skills \
 ### Set up for browsing
 
 - **Load the model with at least 32k of context.** The skill's instructions are about 4k tokens, and one page's snapshot can be 8k, while LM Studio loads models with 8k unless told otherwise: `lms load <model> --context-length 32768`, then check the loaded context with `lms ps`.
-- **Give the agent a working directory of its own,** outside the repository, such as `~/gremlin-work` above. Commands run there, and playwright-cli writes its snapshots there, in `.playwright-cli/`. With `WORK_DIR` unset it's the current directory; in this repository, `.playwright/` and `.playwright-cli/` are gitignored.
+- **Give the agent a working directory of its own,** outside the repository, such as `~/gremlin-work` above. Commands run there, and playwright-cli writes its snapshots there, in `.playwright-cli/`. `WORK_DIR` is required; in this repository, `.playwright/` and `.playwright-cli/` are gitignored.
 - **Turn on LM Studio's token auth:** "Require Authentication" in its server settings, with one of its tokens in `.env` as `MODEL_API_KEY`. It keeps other local processes and web pages away from LM Studio's API, though not this shell.
 - **Keep keys in `.env`, not on the command line,** where a command could read them with `ps -E -p $PPID`. Neither this nor a dedicated `WORK_DIR` stops a command that goes looking.
 
@@ -142,24 +130,51 @@ Settings come from the environment, and from a local `.env` file, which is gitig
 - **On Bun,** `.env` is read along with `.env.local`, and a file for `NODE_ENV` (`.env.development` when it's unset).
 - **On Node,** only `.env` is read, through the `--env-file-if-exists` flag in `agent:node`. Without a `.env`, Node prints ".env not found. Continuing without it." to stderr, and carries on.
 
-| Variable | Default with `lmstudio` | Default with `openai` | Meaning |
-|---|---|---|---|
-| `MODEL_PROVIDER` | `lmstudio` | | How the model is chosen: `lmstudio` asks LM Studio which model is loaded; `openai`, for OpenAI or any other OpenAI-compatible service, needs `MODEL` |
-| `MODEL_BASE_URL` | `http://127.0.0.1:1234/v1` | `https://api.openai.com/v1` | The OpenAI-compatible API's base URL |
-| `MODEL_API_KEY` | `lm-studio` | required | Bearer key. Any value works while LM Studio's "Require Authentication" is off |
-| `MODEL` | the first loaded model | required | The model to use. With `lmstudio` it must be loaded |
-| `MODEL_REASONING_EFFORT` | `none` | the model's default | Sent as `reasoning.effort`; `none` keeps local reasoning models quick |
-| `LOG_FORMAT` | `pretty` | `pretty` | `pretty` formats the log for reading; `json` writes one JSON object per record |
-| `WORK_DIR` | the current directory | the current directory | The shell's working directory, and the file tools' root. A relative path resolves against the current directory |
-| `SKILLS_PATH` | none | none | The directories that hold skills, separated by `:` (see [Skills](#skills)). A relative entry resolves against the current directory |
-| `MAX_STEPS` | `30` | `30` | The most steps a session takes: a positive whole number. It was `MAX_TURNS` until it was renamed, and the agent refuses the old name |
-| `FILE_TOOLS` | `write-edit` | `write-edit` | The tools that write files (see [The file tools](#the-file-tools)): `write-edit` offers `write` and `edit`; `apply-patch` offers `apply_patch` in their place |
+There are no implicit provider, model or operational settings. The Claude cache policy below is the only new provider default. Missing or invalid settings are reported together before networking.
 
-For example, to use OpenAI instead, with `MODEL_API_KEY=sk-…` in `.env`:
+| Variable | Required | Meaning |
+|---|---|---|
+| `MODEL_PROVIDER` | Yes | `lmstudio`, `openai` or `anthropic` |
+| `MODEL_BASE_URL` | Yes | HTTP(S) base URL. Responses examples: `http://127.0.0.1:1234/v1` or `https://api.openai.com/v1`. For Claude, use `https://api.anthropic.com` or a proxy prefix: the SDK appends `/v1/messages` itself. |
+| `MODEL_API_KEY` | Yes | Provider API key or LM Studio token. With LM Studio authentication off, any explicitly supplied nonempty value works. |
+| `MODEL` | Yes | The model to use; LM Studio verifies this key or instance ID is already loaded. |
+| `MODEL_REASONING_EFFORT` | Yes | Responses: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Anthropic: `low`, `medium`, `high`, `xhigh`, `max`. Check that the selected model supports the value. |
+| `MODEL_MAX_OUTPUT_TOKENS` | Anthropic only | Positive safe integer in decimal digits, sent as Claude's per-call `max_tokens`. Rejected for Responses providers. |
+| `ANTHROPIC_WORKSPACE_ID` | No | Optional Anthropic workspace ID for a key that needs one. |
+| `LOG_FORMAT` | Yes | `pretty` or `json`. |
+| `WORK_DIR` | Yes | Existing directory for the shell and file tools. A relative path resolves against the current directory; the real path is used. |
+| `MAX_STEPS` | Yes | Maximum model calls in a session, a positive whole number. The old name `MAX_TURNS` is rejected. |
+| `FILE_TOOLS` | Yes | `write-edit` or `apply-patch` (see [The file tools](#the-file-tools)). |
+| `SKILLS_PATH` | No | Skill roots separated by `:`. If absent, no skills are loaded and no other directory is searched. |
 
-```sh
-MODEL_PROVIDER=openai MODEL=gpt-5.5 bun run agent
+For example, with LM Studio already serving a loaded model, a `.env` can contain:
+
+```dotenv
+MODEL_PROVIDER=lmstudio
+MODEL_BASE_URL=http://127.0.0.1:1234/v1
+MODEL_API_KEY=replace-with-your-lm-studio-token
+MODEL=your-loaded-model
+MODEL_REASONING_EFFORT=none
+MAX_STEPS=30
+FILE_TOOLS=write-edit
+LOG_FORMAT=pretty
+WORK_DIR=/absolute/path/to/existing/workdir
 ```
+
+For the direct Claude API, replace the provider-specific lines with an Anthropic API key and a model available to your account, and keep the explicit operational settings above:
+
+```dotenv
+MODEL_PROVIDER=anthropic
+MODEL_BASE_URL=https://api.anthropic.com
+MODEL_API_KEY=replace-with-your-anthropic-api-key
+MODEL=claude-sonnet-4-6
+MODEL_REASONING_EFFORT=medium
+MODEL_MAX_OUTPUT_TOKENS=4096
+```
+
+Claude uses the native Messages API, not a Claude subscription or an OpenAI compatibility endpoint. Every request enables automatic five-minute prompt caching; cache writes can cost more, and a hit depends on prompt length, prefix matching and cache lifetime. The agent reports the actual cache usage instead of promising a hit. Each request also asks for Claude's cache diagnostics against the previous reply, so a model call's `diagnostics` names what changed when the cache couldn't reuse that request's prefix; `null` means nothing did, or it is the first call. Tool schemas retain their constraints and are validated locally; Anthropic strict-tool mode is not enabled. Signed thinking and other native assistant blocks stay in the session's in-memory history, and a session cannot switch providers. History is not persisted to a database.
+
+**Migrating:** Existing `.env` files must now supply every required setting and every invocation must supply a task. LM Studio no longer selects its first loaded model. Consumers of the old OpenAI-shaped core `callModel`, `toInput`, `toOutputItem`, `toFunctionTool` and `classify` exports must use Gremlin's provider-neutral core types and the agent's provider adapters instead. No persisted history migration is needed.
 
 ## Develop
 
@@ -191,7 +206,7 @@ bun run mutation       # Stryker mutation testing on Bun, which fails below 100%
 - **Functions never change their arguments.**
   - A parameter can't be reassigned, nor its properties assigned (`no-param-reassign`).
   - Every typed parameter must be readonly all the way down (`typescript/prefer-readonly-parameter-types`), so TypeScript rejects a write or a `push` through it. The code's own object types are readonly for that reason.
-  - Types from other packages can't be made readonly, so `.oxlintrc.json` allows them by name. The `openai` SDK's request type is readonly only on top, and `callModel`'s parameter for it is exempt inline.
+  - Types from other packages can't always be made readonly, so `.oxlintrc.json` allows them by name or a narrow adapter boundary exempts them inline.
 - **Linting uses type information,** through `oxlint-tsgolint`. That also turns on the type-aware rules in the enabled categories, such as `no-floating-promises`. Two of them are adjusted:
   - Tests may use type assertions (`no-unsafe-type-assertion` is off there), since they build malformed values on purpose.
   - `consistent-return` is off: TypeScript's `noImplicitReturns` checks the same thing, and knows when a switch covers every case.

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import type { Config } from '../../src/config/config.ts';
+import { type Config, loadConfig } from '../../src/config/config.ts';
 import { keyRejected, resolveModel, unreachable } from '../../src/model/model.ts';
 
 const OPENAI: Config = {
@@ -7,10 +7,12 @@ const OPENAI: Config = {
     baseUrl: 'https://api.example.com/v1',
     apiKey: 'sk-test',
     model: 'gpt-test',
-    reasoningEffort: undefined,
+    reasoningEffort: 'low',
     skillsPath: undefined,
     maxSteps: 30,
     fileTools: 'write-edit',
+    logFormat: 'json',
+    workDir: '/',
 };
 
 describe('resolveModel', () => {
@@ -18,11 +20,10 @@ describe('resolveModel', () => {
         expect(await resolveModel(OPENAI)).toEqual({ ok: true, value: { model: 'gpt-test' } });
     });
 
-    // loadConfig already requires MODEL here, but resolveModel doesn't count on it.
-    test('fails without MODEL with any provider but LM Studio', async () => {
-        expect(await resolveModel({ ...OPENAI, model: undefined })).toEqual({
+    test('configuration rejects a missing MODEL before model selection', () => {
+        expect(loadConfig({ MODEL_PROVIDER: 'openai' })).toMatchObject({
             ok: false,
-            error: 'MODEL is required with MODEL_PROVIDER=openai.',
+            error: expect.arrayContaining([expect.stringContaining('MODEL is required')]),
         });
     });
 });
@@ -37,6 +38,23 @@ describe('keyRejected', () => {
     test('names the base URL with any other provider', () => {
         expect(keyRejected(OPENAI, 403)).toBe(
             'https://api.example.com/v1 rejected the API key (HTTP 403). Check MODEL_API_KEY.',
+        );
+    });
+
+    test('mentions the workspace for an Anthropic key', () => {
+        expect(
+            keyRejected(
+                {
+                    ...OPENAI,
+                    provider: 'anthropic',
+                    reasoningEffort: 'low',
+                    maxOutputTokens: 4096,
+                    workspaceId: undefined,
+                },
+                401,
+            ),
+        ).toBe(
+            'https://api.example.com/v1 rejected the API key (HTTP 401). Check MODEL_API_KEY and ANTHROPIC_WORKSPACE_ID if required.',
         );
     });
 });

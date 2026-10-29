@@ -62,10 +62,18 @@ jobs:
             # `bash -e`, so the exit code is caught rather than ending the step.
             - name: Start the agent on Node
               env:
+                  MODEL_PROVIDER: lmstudio
                   MODEL_BASE_URL: http://127.0.0.1:9/v1
+                  MODEL_API_KEY: ci-local-key
+                  MODEL: ci-model
+                  MODEL_REASONING_EFFORT: none
+                  MAX_STEPS: '1'
+                  FILE_TOOLS: write-edit
+                  LOG_FORMAT: json
+                  WORK_DIR: .
               run: |
                   status=0
-                  output=$(bun run agent:node 2>&1) || status=$?
+                  output=$(bun run agent:node 'Check startup' 2>&1) || status=$?
                   echo "$output"
 
                   if [[ $status -ne 1 || $output != *"Can't reach LM Studio"* ]]; then

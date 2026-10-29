@@ -7,11 +7,13 @@ const LMSTUDIO: Config = {
     provider: 'lmstudio',
     baseUrl: 'http://127.0.0.1:1234/v1',
     apiKey: 'lm-studio',
-    model: undefined,
+    model: 'test-model',
     reasoningEffort: 'none',
     skillsPath: undefined,
     maxSteps: 30,
     fileTools: 'write-edit',
+    logFormat: 'json',
+    workDir: '/',
 };
 
 const OPENAI: Config = {
@@ -19,14 +21,41 @@ const OPENAI: Config = {
     baseUrl: 'https://api.example.com/v1',
     apiKey: 'sk-test',
     model: 'gpt-test',
-    reasoningEffort: undefined,
+    reasoningEffort: 'low',
     skillsPath: undefined,
     maxSteps: 30,
     fileTools: 'write-edit',
+    logFormat: 'json',
+    workDir: '/',
+};
+
+const ANTHROPIC: Config = {
+    provider: 'anthropic',
+    baseUrl: 'https://api.anthropic.com',
+    apiKey: 'sk-ant-test',
+    model: 'claude-test',
+    reasoningEffort: 'medium',
+    maxOutputTokens: 4096,
+    workspaceId: undefined,
+    skillsPath: undefined,
+    maxSteps: 30,
+    fileTools: 'write-edit',
+    logFormat: 'json',
+    workDir: '/',
+};
+
+const stats = {
+    number: 1,
+    providerStats: {
+        provider: 'openai' as const,
+        usage: { kind: 'unavailable' as const },
+        rateLimits: {},
+    },
+    seconds: 1,
 };
 
 const modelCallFailed = (error: ModelCallError, config: Config = OPENAI): string => {
-    return failure({ kind: 'model_call_failed', error }, config);
+    return failure({ kind: 'model_call_failed', error, stats }, config);
 };
 
 describe('Actionable failure messages', () => {
@@ -44,7 +73,7 @@ describe('Actionable failure messages', () => {
         [
             'a rejected request',
             { kind: 'bad_request', status: 400, detail: '400 unknown model' },
-            'The model server at https://api.example.com/v1 rejected the request (400 unknown model). Check that MODEL and MODEL_REASONING_EFFORT suit it.',
+            'The model server at https://api.example.com/v1 rejected the request (400 unknown model). Check that MODEL, MODEL_REASONING_EFFORT and any MODEL_MAX_OUTPUT_TOKENS suit it.',
         ],
         [
             'a server error',
@@ -83,6 +112,17 @@ describe('Actionable failure messages', () => {
         );
     });
 
+    test("an incomplete Claude reply names Claude's output-token limit", () => {
+        const error: ModelCallError = {
+            kind: 'incomplete',
+            detail: 'the response is incomplete: max_tokens',
+        };
+
+        expect(modelCallFailed(error, ANTHROPIC)).toBe(
+            'The model stopped before finishing its reply (the response is incomplete: max_tokens). Try a narrower task, or, if it stopped at max_tokens, raise MODEL_MAX_OUTPUT_TOKENS from 4096.',
+        );
+    });
+
     test('another unreachable provider', () => {
         expect(modelCallFailed({ kind: 'unreachable', detail: 'Connection error.' })).toBe(
             "Can't reach https://api.example.com/v1 (Connection error.). Check MODEL_BASE_URL.",
@@ -91,21 +131,19 @@ describe('Actionable failure messages', () => {
 
     test('a rejected key', () => {
         expect(modelCallFailed({ kind: 'auth', status: 403, detail: '403 forbidden' })).toBe(
-            'https://api.example.com/v1 rejected the API key (HTTP 403). Check MODEL_API_KEY.',
+            'https://api.example.com/v1 rejected the API key (HTTP 403). Check MODEL_API_KEY. (403 forbidden)',
         );
     });
 
     test("the step limit counts the session's own steps", () => {
-        const stats = { number: 3, usage: undefined, seconds: 1 };
+        const stepStats = { ...stats, number: 3 };
 
-        expect(failure({ kind: 'step_limit', stats }, OPENAI)).toBe(
+        expect(failure({ kind: 'step_limit', stats: stepStats }, OPENAI)).toBe(
             "The model didn't answer within 3 steps: it was still calling tools. Try a narrower task, or raise MAX_STEPS.",
         );
     });
 
     test('no answer', () => {
-        const stats = { number: 1, usage: undefined, seconds: 1 };
-
         expect(failure({ kind: 'empty', stats }, OPENAI)).toBe(
             'The model gave no answer: its reply had neither text nor tool calls. Try again, or rephrase the task.',
         );
@@ -113,7 +151,7 @@ describe('Actionable failure messages', () => {
 
     test("a history the SDK can't replay", () => {
         expect(failure({ kind: 'history', error: 'Unsupported item type: made_up' }, OPENAI)).toBe(
-            "The conversation can't be continued (Unsupported item type: made_up). The model sent something the openai SDK can't replay; try updating it.",
+            "The conversation can't be continued (Unsupported item type: made_up). Check the history and provider, or try updating the provider SDK.",
         );
     });
 });

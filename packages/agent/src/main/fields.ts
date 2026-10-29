@@ -10,13 +10,10 @@ export const parsed = (raw: string): Json => {
     }
 };
 
-export const modelCallFields = ({ number, usage, seconds }: StepStats): Fields => {
+export const modelCallFields = ({ number, providerStats, seconds }: StepStats): Fields => {
     return {
         step: number,
-        inputTokens: usage?.input_tokens,
-        cachedTokens: usage?.input_tokens_details?.cached_tokens,
-        outputTokens: usage?.output_tokens,
-        reasoningTokens: usage?.output_tokens_details?.reasoning_tokens,
+        providerStats,
         seconds: Math.round(seconds * 10) / 10,
     };
 };

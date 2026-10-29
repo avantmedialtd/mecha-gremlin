@@ -12,11 +12,13 @@ const config: Config = {
     provider: 'lmstudio',
     baseUrl: 'http://lmstudio.test:1234/v1',
     apiKey: 'test-key',
-    model: undefined,
+    model: 'prism-ml/bonsai-27b',
     reasoningEffort: 'none',
     skillsPath: undefined,
     maxSteps: 30,
     fileTools: 'write-edit',
+    logFormat: 'json',
+    workDir: '/',
 };
 
 /** A `/api/v1/models` payload, shaped like LM Studio 0.4's. */
@@ -41,10 +43,13 @@ describe('pickModel', () => {
             { key: 'prism-ml/bonsai-27b', instances: ['prism-ml/bonsai-27b'] },
         );
 
-        expect(pickModel(payload)).toEqual({ ok: true, value: { model: 'prism-ml/bonsai-27b' } });
+        expect(pickModel(payload, 'prism-ml/bonsai-27b')).toEqual({
+            ok: true,
+            value: { model: 'prism-ml/bonsai-27b' },
+        });
     });
 
-    test('uses the first of several and says so', () => {
+    test('does not choose the first of several when MODEL is absent', () => {
         const payload = modelsPayload(
             { key: 'a', instances: ['a'] },
             { key: 'b', instances: ['b'] },
@@ -52,10 +57,16 @@ describe('pickModel', () => {
         const choice = pickModel(payload);
 
         expect(choice).toMatchObject({
-            ok: true,
-            value: { model: 'a', note: expect.stringContaining('first of 2') },
+            ok: false,
+            error: expect.stringContaining('MODEL is required'),
         });
-        expect(choice).toMatchObject({ value: { note: expect.stringContaining('Set MODEL') } });
+    });
+
+    test('does not choose a model when MODEL contains only whitespace', () => {
+        expect(pickModel(modelsPayload({ key: 'a', instances: ['a'] }), '   ')).toEqual({
+            ok: false,
+            error: 'MODEL is required with MODEL_PROVIDER=lmstudio; name a loaded model.',
+        });
     });
 
     test('accepts a configured instance id or model key that is loaded', () => {
@@ -91,11 +102,11 @@ describe('pickModel', () => {
     });
 
     test('fails when no model is loaded', () => {
-        const choice = pickModel(modelsPayload({ key: 'a' }, { key: 'b' }));
+        const choice = pickModel(modelsPayload({ key: 'a' }, { key: 'b' }), 'a');
 
         expect(choice).toMatchObject({
             ok: false,
-            error: expect.stringContaining('lms load <model>'),
+            error: expect.stringContaining('lms load a'),
         });
     });
 
@@ -105,7 +116,7 @@ describe('pickModel', () => {
             type: 'embedding',
             instances: ['nomic-embed'],
         });
-        const choice = pickModel(payload);
+        const choice = pickModel(payload, 'nomic-embed');
 
         expect(choice).toMatchObject({
             ok: false,
@@ -114,7 +125,7 @@ describe('pickModel', () => {
     });
 
     test('an LLM without loaded_instances is not loaded', () => {
-        expect(pickModel({ models: [{ type: 'llm', key: 'a' }] })).toMatchObject({
+        expect(pickModel({ models: [{ type: 'llm', key: 'a' }] }, 'a')).toMatchObject({
             ok: false,
             error: expect.stringContaining('No model is loaded'),
         });
@@ -125,7 +136,11 @@ describe('pickModel', () => {
             models: [{ type: 'llm', key: 'a', loaded_instances: [{ id: 1 }, null, { id: 'a:2' }] }],
         };
 
-        expect(pickModel(payload)).toEqual({ ok: true, value: { model: 'a:2' } });
+        expect(pickModel(payload, 'a:2')).toEqual({ ok: true, value: { model: 'a:2' } });
+        expect(pickModel(payload, 'other')).toEqual({
+            ok: false,
+            error: 'MODEL is "other", but that model isn\'t loaded in LM Studio. Loaded: a:2. Load it with `lms load other`.',
+        });
     });
 
     // Each case is wrapped in its own row: test.each spreads array rows into arguments.

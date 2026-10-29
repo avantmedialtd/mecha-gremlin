@@ -1,10 +1,11 @@
 import type { HistoryItem } from '@mecha-gremlin/core/history';
-import { ok } from '@mecha-gremlin/core/result';
-import { type ToolOutcome, toFunctionTool } from '@mecha-gremlin/core/tools';
-import type { ResponseUsage } from 'openai/resources/responses/responses';
+import { err, ok } from '@mecha-gremlin/core/result';
+import type { ToolOutcome } from '@mecha-gremlin/core/tools';
+import type { ResponseOutputItem, ResponseUsage } from 'openai/resources/responses/responses';
 import { describe, expect, test, vi } from 'vitest';
 import { z } from 'zod';
 import type { Config } from '../../src/config/config.ts';
+import { toFunctionTool } from '../../src/model/responses-tools.ts';
 import {
     type Session,
     type SessionOptions,
@@ -27,6 +28,10 @@ import {
 } from '../fake-model.ts';
 
 const START: HistoryItem[] = [
+    { kind: 'instruction', text: 'Read files before answering.' },
+    { kind: 'user', text: 'What does the check script run?' },
+];
+const WIRE_START = [
     { role: 'developer', content: 'Read files before answering.' },
     { role: 'user', content: 'What does the check script run?' },
 ];
@@ -36,15 +41,32 @@ const CONFIG: Config = {
     baseUrl: 'http://model.test/v1',
     apiKey: 'test-key',
     model: 'test-model',
-    reasoningEffort: undefined,
+    reasoningEffort: 'none',
     skillsPath: undefined,
     maxSteps: 30,
     fileTools: 'write-edit',
+    logFormat: 'json',
+    workDir: '/',
 };
 
-const output = (callId: string, text: string): HistoryItem => {
+const output = (callId: string, text: string) => {
     return { type: 'function_call_output', call_id: callId, output: text };
 };
+const native = (data: readonly ResponseOutputItem[]): HistoryItem => ({
+    kind: 'native',
+    provider: 'openai',
+    data,
+});
+const historyOutput = (callId: string, outcome: ToolOutcome): HistoryItem => ({
+    kind: 'tool_result',
+    callId,
+    outcome,
+});
+const callView = ({ call_id, name, arguments: args }: ReturnType<typeof call>) => ({
+    call_id,
+    name,
+    arguments: args,
+});
 
 const recordingTool = (
     run: (path: string) => Promise<ToolOutcome> = async (path) => ok(`contents of ${path}`),
@@ -67,7 +89,15 @@ const recordingTool = (
 };
 
 const stats = (number: number, callUsage: ResponseUsage = usage()): StepStats => {
-    return { number, usage: callUsage, seconds: 1.5 };
+    return {
+        number,
+        providerStats: {
+            provider: 'openai',
+            usage: { kind: 'complete', value: callUsage },
+            rateLimits: {},
+        },
+        seconds: 1.5,
+    };
 };
 
 const start = async (config: Config, options: SessionOptions): Promise<Session> => {
@@ -129,7 +159,7 @@ const LM_STUDIO: Config = {
     ...CONFIG,
     provider: 'lmstudio',
     baseUrl: 'http://lmstudio.test:1234/v1',
-    model: undefined,
+    model: 'prism-ml/bonsai-27b',
 };
 
 describe('Create a session from the configuration and a step limit', () => {
@@ -155,7 +185,7 @@ describe('Create a session from the configuration and a step limit', () => {
         ]);
     });
 
-    test('with several models loaded, a note says which one', async () => {
+    test('with several models loaded, the configured model is used', async () => {
         const second = { type: 'llm', key: 'qwen3', loaded_instances: [{ id: 'qwen3' }] };
         const { session } = await runSession(
             {
@@ -166,7 +196,8 @@ describe('Create a session from the configuration and a step limit', () => {
             LM_STUDIO,
         );
 
-        expect(session.note).toContain('Set MODEL to choose another.');
+        expect(session.model).toBe('prism-ml/bonsai-27b');
+        expect(session.note).toBeUndefined();
     });
 
     test("with no model to use, the session doesn't start", async () => {
@@ -192,18 +223,22 @@ describe('Alternate model calls and tool calls until the model answers', () => {
         });
 
         expect(steps).toEqual([{ kind: 'final', stats: stats(1), text: '42' }]);
-        expect(history).toEqual([...START, message('42')]);
+        expect(history).toEqual([...START, native([message('42')])]);
         expect(bodies).toHaveLength(1);
         expect(bodies[0]).toMatchObject({
             model: 'test-model',
-            input: START,
+            input: WIRE_START,
             stream: true,
             store: false,
         });
     });
 
     test('one tool round trip replays the whole history', async () => {
-        const afterCall = [...START, ...roundTrip, output('call_1', 'contents of package.json')];
+        const afterCall = [
+            ...START,
+            native(roundTrip),
+            historyOutput('call_1', ok('contents of package.json')),
+        ];
         const { steps, history, bodies } = await runSession({
             responses: script(
                 () => completed(roundTrip, usage(100)),
@@ -212,14 +247,18 @@ describe('Alternate model calls and tool calls until the model answers', () => {
         });
 
         expect(bodies).toHaveLength(2);
-        expect(bodies[1]?.input).toEqual(afterCall);
+        expect(bodies[1]?.input).toEqual([
+            ...WIRE_START,
+            ...roundTrip,
+            output('call_1', 'contents of package.json'),
+        ]);
         expect(steps).toEqual([
             {
                 kind: 'calls',
                 stats: stats(1, usage(100)),
                 calls: [
                     {
-                        call: roundTrip[1],
+                        call: callView(call('read', { path: 'package.json' }, 'call_1')),
                         outcome: { ok: true, value: 'contents of package.json' },
                     },
                 ],
@@ -230,7 +269,7 @@ describe('Alternate model calls and tool calls until the model answers', () => {
                 text: 'It runs the checks.',
             },
         ]);
-        expect(history).toEqual([...afterCall, message('\n\nIt runs the checks.')]);
+        expect(history).toEqual([...afterCall, native([message('\n\nIt runs the checks.')])]);
     });
 
     test('the client comes from the config', async () => {
@@ -261,9 +300,31 @@ describe('Alternate model calls and tool calls until the model answers', () => {
             { effort: 'low' },
         ]);
 
-        const unset = await runSession({ responses: readThenAnswer() });
+        const explicit = await runSession({ responses: readThenAnswer() });
 
-        expect(unset.bodies.map((body) => body && 'reasoning' in body)).toEqual([false, false]);
+        expect(explicit.bodies.map((body) => body?.reasoning)).toEqual([
+            { effort: 'none' },
+            { effort: 'none' },
+        ]);
+    });
+
+    test('the tools it runs are the tools it offers, whatever the caller does to its array', async () => {
+        const { fetch } = fakeFetch({ responses: readThenAnswer() });
+        vi.stubGlobal('fetch', fetch);
+        const tool = recordingTool();
+        const tools = [tool.handler];
+        const pending = createSession(CONFIG, { tools, history: START, maxSteps: 2 });
+        tools.pop();
+        const created = await pending;
+
+        if (!created.ok) {
+            throw new Error(created.error);
+        }
+
+        const first = await created.value.steps.next();
+
+        expect(first.value).toMatchObject({ kind: 'calls', calls: [{ outcome: { ok: true } }] });
+        expect(tool.paths).toEqual(['package.json']);
     });
 
     test('the session starts from a copy of the history it was given', async () => {
@@ -289,11 +350,10 @@ describe('Run every tool call in order and answer each exactly once', () => {
         expect(paths).toEqual(['a.txt', 'b.txt']);
         expect(history).toEqual([
             ...START,
-            a,
-            b,
-            output('call_a', 'contents of a.txt'),
-            output('call_b', 'contents of b.txt'),
-            message('Done.'),
+            native([a, b]),
+            historyOutput('call_a', ok('contents of a.txt')),
+            historyOutput('call_b', ok('contents of b.txt')),
+            native([message('Done.')]),
         ]);
     });
 
@@ -379,7 +439,7 @@ describe('Stop at the step limit', () => {
         expect(steps.map((step) => step.kind)).toEqual([...Array(7).fill('calls'), 'step_limit']);
         expect(last).toEqual({ kind: 'step_limit', stats: stats(8) });
         expect(history.at(-1)).toEqual(
-            output('call_7', 'Error: not run: the step limit was reached'),
+            historyOutput('call_7', err('not run: the step limit was reached')),
         );
     });
 
@@ -426,7 +486,7 @@ describe('End every session with a step, not a throw', () => {
             ),
         });
 
-        expect(last).toEqual({
+        expect(last).toMatchObject({
             kind: 'model_call_failed',
             error: {
                 kind: 'server_error',
@@ -436,8 +496,8 @@ describe('End every session with a step, not a throw', () => {
         });
         expect(history).toEqual([
             ...START,
-            ...roundTrip,
-            output('call_1', 'contents of package.json'),
+            native(roundTrip),
+            historyOutput('call_1', ok('contents of package.json')),
         ]);
     });
 
@@ -447,16 +507,22 @@ describe('End every session with a step, not a throw', () => {
         });
 
         expect(steps).toEqual([{ kind: 'empty', stats: stats(1) }]);
-        expect(history).toEqual([...START, reasoning()]);
+        expect(history).toEqual([...START, native([reasoning()])]);
         expect(bodies).toHaveLength(1);
     });
 
     test("a history that can't be replayed", async () => {
-        const broken = [...START, { type: 'made_up' } as unknown as HistoryItem];
-        const { steps, bodies } = await runSession({}, { history: broken });
+        const broken: HistoryItem[] = [
+            ...START,
+            { kind: 'native', provider: 'openai', data: [{ type: 'made_up' }] },
+        ];
+        const { fetch, requests } = fakeFetch();
+        vi.stubGlobal('fetch', fetch);
 
-        expect(steps).toEqual([{ kind: 'history', error: expect.stringContaining('made_up') }]);
-        expect(bodies).toHaveLength(0);
+        expect(
+            await createSession(CONFIG, { tools: [], history: broken, maxSteps: 2 }),
+        ).toMatchObject({ ok: false, error: expect.stringContaining('made_up') });
+        expect(requests).toHaveLength(0);
     });
 });
 
@@ -474,13 +540,13 @@ describe('Yield each step as it completes', () => {
         expect(modelCallBodies()).toHaveLength(1);
         expect(session.history).toEqual([
             ...START,
-            ...roundTrip,
-            output('call_1', 'contents of package.json'),
+            native(roundTrip),
+            historyOutput('call_1', ok('contents of package.json')),
         ]);
 
         expect((await session.steps.next()).value).toMatchObject({ kind: 'final' });
         expect(modelCallBodies()).toHaveLength(2);
-        expect(session.history.at(-1)).toEqual(message('Done.'));
+        expect(session.history.at(-1)).toEqual(native([message('Done.')]));
 
         expect(await session.steps.next()).toEqual({ done: true, value: undefined });
     });
@@ -502,9 +568,9 @@ describe('Yield each step as it completes', () => {
         expect(steps[0]).toMatchObject({
             kind: 'calls',
             calls: [
-                { call: a, outcome: { ok: true, value: '€' } },
+                { call: callView(a), outcome: { ok: true, value: '€' } },
                 {
-                    call: b,
+                    call: callView(b),
                     outcome: {
                         ok: false,
                         error: expect.stringContaining("don't match its schema"),

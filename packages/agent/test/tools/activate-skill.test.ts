@@ -1,7 +1,8 @@
 import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { type ToolOutcome, toFunctionTool } from '@mecha-gremlin/core/tools';
+import type { ToolOutcome } from '@mecha-gremlin/core/tools';
+import { toFunctionTool } from '../../src/model/responses-tools.ts';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import type { LoadedSkill } from '../../src/skills/skills.ts';
 import { activateSkillTool } from '../../src/tools/activate-skill.ts';

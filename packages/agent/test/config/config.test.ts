@@ -1,280 +1,326 @@
+import {
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    realpathSync,
+    rmSync,
+    symlinkSync,
+    writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
-import { loadConfig, loadLogFormat, loadWorkDir } from '../../src/config/config.ts';
+import { loadConfig, loadLogFormat } from '../../src/config/config.ts';
+
+const BASE = {
+    MODEL_PROVIDER: 'lmstudio',
+    MODEL_BASE_URL: 'http://localhost:1234/v1',
+    MODEL_API_KEY: 'key',
+    MODEL: 'model',
+    MODEL_REASONING_EFFORT: 'none',
+    MAX_STEPS: '30',
+    FILE_TOOLS: 'write-edit',
+    LOG_FORMAT: 'pretty',
+    WORK_DIR: '.',
+};
+
+// macOS's file system ignores case by default, so a path typed in another case names the same
+// directory there.
+const ignoresCase = (() => {
+    const probe = mkdtempSync(join(tmpdir(), 'gremlin-Case-'));
+
+    try {
+        return existsSync(probe.toLowerCase());
+    } finally {
+        rmSync(probe, { recursive: true, force: true });
+    }
+})();
 
 describe('loadConfig', () => {
-    test('defaults to a local LM Studio with nothing set', () => {
-        expect(loadConfig({})).toEqual({
-            ok: true,
-            value: {
-                provider: 'lmstudio',
-                baseUrl: 'http://127.0.0.1:1234/v1',
-                apiKey: 'lm-studio',
-                model: undefined,
-                reasoningEffort: 'none',
-                skillsPath: undefined,
-                maxSteps: 30,
-                fileTools: 'write-edit',
-            },
-        });
+    test('Responses configuration contains no Anthropic-only fields', () => {
+        const result = loadConfig(BASE);
+
+        if (!result.ok) {
+            throw new Error('configuration unexpectedly failed');
+        }
+
+        expect(result.value).not.toHaveProperty('maxOutputTokens');
+        expect(result.value).not.toHaveProperty('workspaceId');
     });
 
-    test('blank values count as unset', () => {
-        expect(loadConfig({ MODEL: '  ', MODEL_API_KEY: '' })).toMatchObject({
-            ok: true,
-            value: { model: undefined, apiKey: 'lm-studio' },
+    test('reports exact choice and integer diagnostics', () => {
+        expect(loadConfig({ ...BASE, FILE_TOOLS: undefined })).toEqual({
+            ok: false,
+            error: ['FILE_TOOLS is required; choose write-edit, apply-patch.'],
         });
-    });
-
-    test('trailing slashes on the base URL are removed', () => {
-        expect(loadConfig({ MODEL_BASE_URL: 'http://studio.local:1234/v1//' })).toMatchObject({
-            ok: true,
-            value: { baseUrl: 'http://studio.local:1234/v1' },
+        expect(loadConfig({ ...BASE, MAX_STEPS: '0' })).toEqual({
+            ok: false,
+            error: ['MAX_STEPS must be a positive whole number in decimal digits; got "0".'],
         });
-    });
-
-    test('model, key and reasoning effort are passed through', () => {
         expect(
             loadConfig({
-                MODEL: 'prism-ml/bonsai-27b',
-                MODEL_API_KEY: 'sk-lm-secret',
+                ...BASE,
+                MODEL_PROVIDER: 'anthropic',
                 MODEL_REASONING_EFFORT: 'low',
+                MODEL_MAX_OUTPUT_TOKENS: '0',
+            }),
+        ).toEqual({
+            ok: false,
+            error: [
+                'MODEL_MAX_OUTPUT_TOKENS must be a positive safe whole number in decimal digits; got "0".',
+            ],
+        });
+    });
+
+    test.each([
+        'MODEL_PROVIDER',
+        'MODEL_BASE_URL',
+        'MODEL_API_KEY',
+        'MODEL',
+        'MODEL_REASONING_EFFORT',
+        'MAX_STEPS',
+        'FILE_TOOLS',
+        'LOG_FORMAT',
+        'WORK_DIR',
+    ] as const)('requires %s and treats blanks as unset', (name) => {
+        for (const value of [undefined, '', '   ']) {
+            const result = loadConfig({ ...BASE, [name]: value });
+
+            expect(result.ok).toBe(false);
+
+            if (result.ok) {
+                throw new Error('configuration unexpectedly succeeded');
+            }
+
+            expect(result.error.some((problem) => problem.includes(name))).toBe(true);
+        }
+    });
+
+    test('trims settings and removes trailing slashes', () => {
+        expect(
+            loadConfig({
+                ...BASE,
+                MODEL_BASE_URL: ' http://localhost:1234/v1// ',
+                MODEL_API_KEY: ' key ',
+                MODEL: ' model ',
+                MODEL_REASONING_EFFORT: ' low ',
+                SKILLS_PATH: ' /skills:relative ',
             }),
         ).toMatchObject({
             ok: true,
             value: {
-                model: 'prism-ml/bonsai-27b',
-                apiKey: 'sk-lm-secret',
+                baseUrl: 'http://localhost:1234/v1',
+                apiKey: 'key',
+                model: 'model',
                 reasoningEffort: 'low',
+                skillsPath: '/skills:relative',
             },
         });
-    });
-
-    test('the openai provider has its own defaults and leaves reasoning to the model', () => {
-        expect(
-            loadConfig({ MODEL_PROVIDER: 'openai', MODEL_API_KEY: 'sk-test', MODEL: 'gpt-test' }),
-        ).toEqual({
-            ok: true,
-            value: {
-                provider: 'openai',
-                baseUrl: 'https://api.openai.com/v1',
-                apiKey: 'sk-test',
-                model: 'gpt-test',
-                reasoningEffort: undefined,
-                skillsPath: undefined,
-                maxSteps: 30,
-                fileTools: 'write-edit',
-            },
-        });
-    });
-
-    test('any other provider may use a base URL without a path', () => {
-        expect(
-            loadConfig({
-                MODEL_PROVIDER: 'openai',
-                MODEL_BASE_URL: 'https://models.example.com',
-                MODEL_API_KEY: 'sk-test',
-                MODEL: 'gpt-test',
-            }),
-        ).toMatchObject({ ok: true, value: { baseUrl: 'https://models.example.com' } });
-    });
-
-    test('the openai provider needs MODEL_API_KEY and MODEL', () => {
-        expect(loadConfig({ MODEL_PROVIDER: 'openai' })).toEqual({
-            ok: false,
-            error: [
-                expect.stringContaining('MODEL_API_KEY is required'),
-                expect.stringContaining('MODEL is required'),
-            ],
-        });
-    });
-
-    test.each([
-        [{ MODEL: 'gpt-test' }, 'MODEL_API_KEY is required'],
-        [{ MODEL_API_KEY: 'sk-test' }, 'MODEL is required'],
-    ])('the openai provider fails with only %j set', (env, problem) => {
-        expect(loadConfig({ MODEL_PROVIDER: 'openai', ...env })).toEqual({
-            ok: false,
-            error: [expect.stringContaining(problem)],
-        });
-    });
-
-    test('rejects an unknown provider, listing the known ones', () => {
-        expect(loadConfig({ MODEL_PROVIDER: 'anthropic' })).toEqual({
-            ok: false,
-            error: ['MODEL_PROVIDER must be one of lmstudio, openai; got "anthropic".'],
-        });
-    });
-
-    test.each([
-        'not a url',
-        'ftp://127.0.0.1:1234/v1',
-        'http://127.0.0.1:1234/v1?x=1',
-        'http://127.0.0.1:1234/v1#top',
-    ])('rejects MODEL_BASE_URL=%s', (value) => {
-        expect(loadConfig({ MODEL_BASE_URL: value })).toEqual({
-            ok: false,
-            error: [expect.stringContaining('MODEL_BASE_URL')],
-        });
-    });
-
-    test("explains that LM Studio's base URL ends in /v1", () => {
-        expect(loadConfig({ MODEL_BASE_URL: 'http://127.0.0.1:1234' })).toEqual({
-            ok: false,
-            error: [expect.stringContaining('ends in /v1')],
-        });
-    });
-
-    test('rejects an unknown reasoning effort, listing the known ones', () => {
-        expect(loadConfig({ MODEL_REASONING_EFFORT: 'extreme' })).toEqual({
-            ok: false,
-            error: [
-                'MODEL_REASONING_EFFORT must be one of none, minimal, low, medium, high, xhigh, max; got "extreme".',
-            ],
-        });
-    });
-
-    test('reports every invalid variable at once', () => {
-        expect(
-            loadConfig({
-                MODEL_BASE_URL: 'nope',
-                MODEL_REASONING_EFFORT: 'extreme',
-                MAX_STEPS: 'lots',
-                MAX_TURNS: '5',
-                FILE_TOOLS: 'both',
-            }),
-        ).toEqual({
-            ok: false,
-            error: [
-                expect.stringContaining('MODEL_BASE_URL'),
-                expect.stringContaining('MODEL_REASONING_EFFORT'),
-                expect.stringContaining('MAX_STEPS must be'),
-                'MAX_TURNS is now MAX_STEPS; rename it in your settings.',
-                'FILE_TOOLS must be write-edit or apply-patch; got "both".',
-            ],
-        });
-    });
-
-    test.each([
-        ['write-edit', 'write-edit'],
-        ['apply-patch', 'apply-patch'],
-        [' apply-patch ', 'apply-patch'],
-        ['  ', 'write-edit'],
-    ])('FILE_TOOLS=%j offers the file tools %j', (value, fileTools) => {
-        expect(loadConfig({ FILE_TOOLS: value })).toMatchObject({ ok: true, value: { fileTools } });
-    });
-
-    test.each(['both', 'edit', 'apply_patch', 'APPLY-PATCH'])(
-        'FILE_TOOLS=%j is refused',
-        (value) => {
-            expect(loadConfig({ FILE_TOOLS: value })).toEqual({
-                ok: false,
-                error: [`FILE_TOOLS must be write-edit or apply-patch; got "${value}".`],
-            });
-        },
-    );
-
-    test("an unknown provider doesn't hide an invalid FILE_TOOLS", () => {
-        expect(loadConfig({ MODEL_PROVIDER: 'anthropic', FILE_TOOLS: 'both' })).toEqual({
-            ok: false,
-            error: [
-                'MODEL_PROVIDER must be one of lmstudio, openai; got "anthropic".',
-                'FILE_TOOLS must be write-edit or apply-patch; got "both".',
-            ],
-        });
-    });
-
-    test('SKILLS_PATH is passed through, trimmed', () => {
-        expect(loadConfig({ SKILLS_PATH: ' /skills:relative ' })).toMatchObject({
-            ok: true,
-            value: { skillsPath: '/skills:relative' },
-        });
-        expect(loadConfig({ SKILLS_PATH: '   ' })).toMatchObject({
+        expect(loadConfig({ ...BASE, SKILLS_PATH: '  ' })).toMatchObject({
             ok: true,
             value: { skillsPath: undefined },
         });
     });
 
     test.each([
+        'not a url',
+        'ftp://localhost/v1',
+        'http://localhost/v1?x=1',
+        'http://localhost/v1#part',
+        'http://localhost/v1?',
+        'http://localhost/v1#',
+    ])('rejects MODEL_BASE_URL=%j', (url) => {
+        expect(loadConfig({ ...BASE, MODEL_BASE_URL: url })).toMatchObject({
+            ok: false,
+            error: [expect.stringContaining('MODEL_BASE_URL')],
+        });
+    });
+
+    test('the base-URL errors give the value they reject', () => {
+        expect(loadConfig({ ...BASE, MODEL_BASE_URL: 'localhost:1234/v1' })).toEqual({
+            ok: false,
+            error: [
+                'MODEL_BASE_URL must be an HTTP(S) URL without a query or fragment; got "localhost:1234/v1".',
+            ],
+        });
+        expect(loadConfig({ ...BASE, MODEL_BASE_URL: 'http://localhost:1234/' })).toEqual({
+            ok: false,
+            error: [
+                'MODEL_BASE_URL is LM Studio\'s OpenAI-compatible URL and must have a path such as /v1; got "http://localhost:1234".',
+            ],
+        });
+    });
+
+    test("takes no path on the Claude API's own origin, but takes a proxy's prefix", () => {
+        const anthropic = {
+            ...BASE,
+            MODEL_PROVIDER: 'anthropic',
+            MODEL_REASONING_EFFORT: 'medium',
+            MODEL_MAX_OUTPUT_TOKENS: '4096',
+        };
+
+        expect(
+            loadConfig({ ...anthropic, MODEL_BASE_URL: 'https://api.anthropic.com/v1/' }),
+        ).toEqual({
+            ok: false,
+            error: [
+                'MODEL_BASE_URL for the Claude API is https://api.anthropic.com, without a path: the SDK adds /v1/messages itself; got "https://api.anthropic.com/v1".',
+            ],
+        });
+        expect(
+            loadConfig({ ...anthropic, MODEL_BASE_URL: 'https://gateway.example/v1' }),
+        ).toMatchObject({ ok: true, value: { baseUrl: 'https://gateway.example/v1' } });
+    });
+
+    test('requires a path for LM Studio but accepts an Anthropic origin', () => {
+        expect(loadConfig({ ...BASE, MODEL_BASE_URL: 'http://localhost:1234' })).toMatchObject({
+            ok: false,
+            error: [expect.stringContaining('/v1')],
+        });
+        expect(
+            loadConfig({
+                ...BASE,
+                MODEL_PROVIDER: 'anthropic',
+                MODEL_BASE_URL: 'https://api.anthropic.com',
+                MODEL_REASONING_EFFORT: 'medium',
+                MODEL_MAX_OUTPUT_TOKENS: '4096',
+            }),
+        ).toMatchObject({ ok: true, value: { baseUrl: 'https://api.anthropic.com' } });
+    });
+
+    test.each(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])(
+        'accepts Responses effort %s',
+        (effort) => {
+            expect(
+                loadConfig({ ...BASE, MODEL_PROVIDER: 'openai', MODEL_REASONING_EFFORT: effort }),
+            ).toMatchObject({ ok: true, value: { reasoningEffort: effort } });
+        },
+    );
+
+    test.each(['low', 'medium', 'high', 'xhigh', 'max'])(
+        'accepts Anthropic effort %s',
+        (effort) => {
+            expect(
+                loadConfig({
+                    ...BASE,
+                    MODEL_PROVIDER: 'anthropic',
+                    MODEL_REASONING_EFFORT: effort,
+                    MODEL_MAX_OUTPUT_TOKENS: '4096',
+                }),
+            ).toMatchObject({ ok: true, value: { reasoningEffort: effort } });
+        },
+    );
+
+    test.each(['extreme', 'NONE'])('rejects unsupported effort %j', (effort) => {
+        expect(loadConfig({ ...BASE, MODEL_REASONING_EFFORT: effort })).toMatchObject({
+            ok: false,
+            error: [expect.stringContaining('MODEL_REASONING_EFFORT')],
+        });
+    });
+
+    test.each([
         ['1', 1],
-        ['3', 3],
-        ['12', 12],
         ['007', 7],
         [' 5 ', 5],
-    ])('MAX_STEPS=%j is a step limit of %d', (value, steps) => {
-        expect(loadConfig({ MAX_STEPS: value })).toMatchObject({
+    ])('accepts MAX_STEPS=%j', (raw, steps) => {
+        expect(loadConfig({ ...BASE, MAX_STEPS: raw })).toMatchObject({
             ok: true,
             value: { maxSteps: steps },
         });
     });
 
     test.each(['0', '-1', '2.5', 'lots', '+12', '1e3', '0x10', '2.0'])(
-        'MAX_STEPS=%j is refused',
-        (value) => {
-            expect(loadConfig({ MAX_STEPS: value })).toEqual({
+        'rejects MAX_STEPS=%j',
+        (raw) => {
+            expect(loadConfig({ ...BASE, MAX_STEPS: raw })).toMatchObject({
                 ok: false,
-                error: [`MAX_STEPS must be a positive whole number, such as 30; got "${value}".`],
+                error: [expect.stringContaining('MAX_STEPS')],
             });
         },
     );
 
-    test("an unknown provider doesn't hide an invalid MAX_STEPS", () => {
-        expect(loadConfig({ MODEL_PROVIDER: 'anthropic', MAX_STEPS: '0' })).toEqual({
-            ok: false,
-            error: [
-                'MODEL_PROVIDER must be one of lmstudio, openai; got "anthropic".',
-                'MAX_STEPS must be a positive whole number, such as 30; got "0".',
-            ],
+    test.each(['write-edit', 'apply-patch'])('accepts file tools %s', (value) => {
+        expect(loadConfig({ ...BASE, FILE_TOOLS: value })).toMatchObject({
+            ok: true,
+            value: { fileTools: value },
         });
     });
 
-    test.each([
-        ['alone', { MAX_TURNS: '5' }],
-        ['beside a valid MAX_STEPS', { MAX_TURNS: '5', MAX_STEPS: '12' }],
-    ])('MAX_TURNS is refused, set %s', (_where, env) => {
-        expect(loadConfig(env)).toEqual({
+    test.each(['both', 'edit', 'apply_patch', 'APPLY-PATCH'])('rejects file tools %j', (value) => {
+        expect(loadConfig({ ...BASE, FILE_TOOLS: value })).toMatchObject({
             ok: false,
-            error: ['MAX_TURNS is now MAX_STEPS; rename it in your settings.'],
+            error: [expect.stringContaining('FILE_TOOLS')],
         });
     });
 
-    test("an unknown provider doesn't hide MAX_TURNS", () => {
-        expect(loadConfig({ MODEL_PROVIDER: 'anthropic', MAX_TURNS: '5' })).toEqual({
-            ok: false,
-            error: [
-                'MODEL_PROVIDER must be one of lmstudio, openai; got "anthropic".',
-                'MAX_TURNS is now MAX_STEPS; rename it in your settings.',
-            ],
+    test('reports unrelated errors with an unknown provider and a former setting', () => {
+        const result = loadConfig({
+            ...BASE,
+            MODEL_PROVIDER: 'unknown',
+            MAX_STEPS: '0',
+            FILE_TOOLS: 'both',
+            MAX_TURNS: '',
         });
-    });
-});
 
-describe('loadWorkDir', () => {
-    test.each([
-        [undefined, undefined],
-        ['', undefined],
-        ['  ', undefined],
-        [' ../work ', '../work'],
-    ])('%j gives %j', (value, workDir) => {
-        expect(loadWorkDir({ WORK_DIR: value })).toBe(workDir);
+        expect(result.ok).toBe(false);
+
+        if (result.ok) {
+            throw new Error('configuration unexpectedly succeeded');
+        }
+
+        for (const name of ['MODEL_PROVIDER', 'MAX_STEPS', 'FILE_TOOLS', 'MAX_TURNS']) {
+            expect(result.error.some((problem) => problem.includes(name))).toBe(true);
+        }
+    });
+
+    test('uses the real path of WORK_DIR and rejects files', () => {
+        const root = mkdtempSync(join(tmpdir(), 'gremlin-config-'));
+
+        try {
+            symlinkSync(root, `${root}-link`);
+            writeFileSync(join(root, 'file'), 'x');
+
+            expect(loadConfig({ ...BASE, WORK_DIR: `${root}-link` })).toMatchObject({
+                ok: true,
+                value: { workDir: realpathSync(root) },
+            });
+            expect(loadConfig({ ...BASE, WORK_DIR: join(root, 'file') })).toMatchObject({
+                ok: false,
+                error: [expect.stringContaining('WORK_DIR')],
+            });
+        } finally {
+            rmSync(`${root}-link`);
+            rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    // Node's own realpathSync keeps the case a path was typed in; pwd prints the directory's.
+    test.runIf(ignoresCase)('spells WORK_DIR as its directory is named on disk', () => {
+        const root = mkdtempSync(join(tmpdir(), 'gremlin-config-'));
+
+        try {
+            mkdirSync(join(root, 'Notes'));
+
+            expect(loadConfig({ ...BASE, WORK_DIR: join(root, 'notes') })).toMatchObject({
+                ok: true,
+                value: { workDir: join(realpathSync.native(root), 'Notes') },
+            });
+        } finally {
+            rmSync(root, { recursive: true, force: true });
+        }
     });
 });
 
 describe('loadLogFormat', () => {
     test.each([
-        [undefined, 'pretty'],
-        ['', 'pretty'],
-        ['  ', 'pretty'],
         ['pretty', 'pretty'],
         ['json', 'json'],
         [' json ', 'json'],
-    ])('%j means %j', (value, format) => {
-        expect(loadLogFormat({ LOG_FORMAT: value })).toEqual({ ok: true, value: format });
+    ] as const)('%j selects %s', (raw, format) => {
+        expect(loadLogFormat({ LOG_FORMAT: raw })).toBe(format);
     });
 
-    test.each(['JSON', 'xml'])('%j is refused', (value) => {
-        expect(loadLogFormat({ LOG_FORMAT: value })).toEqual({
-            ok: false,
-            error: `LOG_FORMAT must be pretty or json; got "${value}".`,
-        });
+    test.each([undefined, '', '  ', 'JSON', 'xml'])('has no format for %j', (raw) => {
+        expect(loadLogFormat({ LOG_FORMAT: raw })).toBeUndefined();
     });
 });

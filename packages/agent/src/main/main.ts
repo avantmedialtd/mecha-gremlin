@@ -1,8 +1,5 @@
-import { realpath, stat } from 'node:fs/promises';
-import { resolve } from 'node:path';
-import { type Result, err, ok } from '@mecha-gremlin/core/result';
 import { renderCatalog } from '@mecha-gremlin/core/skills';
-import { type FileTools, loadConfig, loadLogFormat, loadWorkDir } from '../config/config.ts';
+import { type FileTools, loadConfig, loadLogFormat } from '../config/config.ts';
 import { createLogger } from '../log/log.ts';
 import { createSession } from '../session/session.ts';
 import { loadSkills } from '../skills/skills.ts';
@@ -41,41 +38,21 @@ const fileToolsFor = (fileTools: FileTools, workDir: string): ToolHandler[] => {
         : [writeTool(workDir), editTool(workDir)];
 };
 
-// Its real path is used everywhere: on macOS /tmp and /var are links, and a path built from pwd
-// would fail the file tools' lexical checks.
-const findWorkDir = async (raw: string | undefined): Promise<Result<string, string>> => {
-    const path = resolve(process.cwd(), raw ?? '');
-    const problem = `WORK_DIR must name an existing directory; ${path} isn't one.`;
-
-    try {
-        const real = await realpath(path);
-
-        return (await stat(real)).isDirectory() ? ok(real) : err(problem);
-    } catch {
-        return err(problem);
-    }
-};
-
 const run = async (args: readonly string[]): Promise<number> => {
-    const format = loadLogFormat(process.env);
-    const log = createLogger(format.ok ? format.value : 'pretty');
+    // An invalid LOG_FORMAT is one of the errors loadConfig reports, which still need a format.
+    const log = createLogger(loadLogFormat(process.env) ?? 'pretty');
     const fail = (message: string): number => {
         log.error(message);
         return 1;
     };
 
-    if (!format.ok) {
-        return fail(format.error);
-    }
-
-    // WORK_DIR is checked even when the other settings are wrong, so every problem is reported.
     const loaded = loadConfig(process.env);
-    const workDir = await findWorkDir(loadWorkDir(process.env));
+    const parsedTask = parseArgs(args);
 
-    if (!loaded.ok || !workDir.ok) {
+    if (!loaded.ok || !parsedTask.ok) {
         const problems = [
             ...(loaded.ok ? [] : loaded.error),
-            ...(workDir.ok ? [] : [workDir.error]),
+            ...(parsedTask.ok ? [] : [parsedTask.error]),
         ];
 
         for (const problem of problems) {
@@ -86,7 +63,8 @@ const run = async (args: readonly string[]): Promise<number> => {
     }
 
     const config = loaded.value;
-    const task = parseArgs(args);
+    const workDir = config.workDir;
+    const task = parsedTask.value;
     const { skills, notLoaded, warnings } = await loadSkills(config.skillsPath, process.cwd());
 
     for (const { path, reason } of notLoaded) {
@@ -102,7 +80,7 @@ const run = async (args: readonly string[]): Promise<number> => {
     }
 
     const runId = crypto.randomUUID().slice(0, 8);
-    const shell = createShell({ workDir: workDir.value, runId, parentEnv: process.env });
+    const shell = createShell({ workDir, runId, parentEnv: process.env });
     let interrupted: HandledSignal | undefined;
     let finishing: Promise<void> | undefined;
 
@@ -145,21 +123,21 @@ const run = async (args: readonly string[]): Promise<number> => {
     }
 
     try {
-        const preamble = instructions(workDir.value, config.fileTools);
+        const preamble = instructions(workDir, config.fileTools);
         const developer = skills.length > 0 ? `${preamble}\n\n${renderCatalog(skills)}` : preamble;
         const created = await createSession(config, {
             tools: [
                 readTool(
-                    workDir.value,
+                    workDir,
                     skills.map((skill) => skill.directory),
                 ),
-                ...fileToolsFor(config.fileTools, workDir.value),
+                ...fileToolsFor(config.fileTools, workDir),
                 shell.handler,
                 ...(skills.length > 0 ? [activateSkillTool(skills)] : []),
             ],
             history: [
-                { role: 'developer', content: developer },
-                { role: 'user', content: task },
+                { kind: 'instruction', text: developer },
+                { kind: 'user', text: task },
             ],
             maxSteps: config.maxSteps,
         });
@@ -170,15 +148,11 @@ const run = async (args: readonly string[]): Promise<number> => {
 
         const session = created.value;
 
-        if (session.note) {
-            log.info(session.note);
-        }
-
         log.info('asking', {
             model: session.model,
             baseUrl: config.baseUrl,
             run: runId,
-            workDir: workDir.value,
+            workDir,
             task,
         });
 

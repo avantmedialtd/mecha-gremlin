@@ -1,4 +1,4 @@
-import { type Result, err, ok } from '@mecha-gremlin/core/result';
+import { type Result, ok } from '@mecha-gremlin/core/result';
 import type { Config } from '../config/config.ts';
 import { fetchModels, lmStudioKeyRejected, lmStudioUnreachable, pickModel } from './lmstudio.ts';
 
@@ -19,10 +19,7 @@ export const resolveModel = async (config: Config): Promise<ModelChoice> => {
         return pickModel(models.value, config.model);
     }
 
-    // loadConfig requires MODEL for every provider except lmstudio.
-    return config.model === undefined
-        ? err(`MODEL is required with MODEL_PROVIDER=${config.provider}.`)
-        : ok({ model: config.model });
+    return ok({ model: config.model });
 };
 
 /** The message for a rejected API key, with the provider's own fix where there is one. */
@@ -31,7 +28,9 @@ export const keyRejected = (config: Config, status: number): string => {
         return lmStudioKeyRejected(status);
     }
 
-    return `${config.baseUrl} rejected the API key (HTTP ${status}). Check MODEL_API_KEY.`;
+    return config.provider === 'anthropic'
+        ? `${config.baseUrl} rejected the API key (HTTP ${status}). Check MODEL_API_KEY and ANTHROPIC_WORKSPACE_ID if required.`
+        : `${config.baseUrl} rejected the API key (HTTP ${status}). Check MODEL_API_KEY.`;
 };
 
 export const unreachable = (config: Config, detail: string): string => {

@@ -1,17 +1,12 @@
-import { type HistoryItem, toInput, toOutputItem } from '@mecha-gremlin/core/history';
-import { type ModelCallError, callModel } from '@mecha-gremlin/core/model-call';
+import type { HistoryItem } from '@mecha-gremlin/core/history';
+import type { ModelCallError } from '@mecha-gremlin/core/model-call';
 import { type Result, err, ok } from '@mecha-gremlin/core/result';
-import {
-    type Reply,
-    type ToolCall,
-    type ToolOutcome,
-    classify,
-    toFunctionTool,
-} from '@mecha-gremlin/core/tools';
-import OpenAI from 'openai';
-import type { ResponseUsage } from 'openai/resources/responses/responses';
+import type { ProviderStatistics } from '@mecha-gremlin/core/statistics';
+import type { Reply, ToolCall, ToolOutcome } from '@mecha-gremlin/core/tools';
 import type { Config } from '../config/config.ts';
+import { createAnthropicAdapter } from '../model/anthropic-call.ts';
 import { resolveModel } from '../model/model.ts';
+import { createResponsesAdapter } from '../model/responses-call.ts';
 import type { ToolHandler } from '../tools/tool-handler.ts';
 
 export type SessionOptions = {
@@ -22,32 +17,28 @@ export type SessionOptions = {
 
 export type StepStats = {
     readonly number: number;
-    readonly usage: ResponseUsage | undefined;
+    readonly providerStats: ProviderStatistics;
     readonly seconds: number;
 };
 
-export type CallResult = {
-    readonly call: ToolCall;
-    readonly outcome: ToolOutcome;
-};
+export type CallResult = { readonly call: ToolCall; readonly outcome: ToolOutcome };
 
-/**
- * The result of one step. A step that asks the user for input, and takes the reply back before
- * the session goes on, is meant to join these later.
- */
 export type SessionStep =
     | { readonly kind: 'calls'; readonly stats: StepStats; readonly calls: readonly CallResult[] }
     | (Exclude<Reply, { kind: 'calls' }> & { readonly stats: StepStats })
     | { readonly kind: 'step_limit'; readonly stats: StepStats }
-    | { readonly kind: 'model_call_failed'; readonly error: ModelCallError }
+    | {
+          readonly kind: 'model_call_failed';
+          readonly error: ModelCallError;
+          readonly stats: StepStats;
+      }
     | { readonly kind: 'history'; readonly error: string };
 
 export type Session = {
     readonly model: string;
-    /** Set when the model was picked out of several loaded ones. */
     readonly note?: string;
     readonly steps: AsyncGenerator<SessionStep, void, undefined>;
-    /** Grows as the session runs. While the caller handles a step, the session is paused. */
+    /** Grows as the session runs; the generator is paused while the caller handles a step. */
     readonly history: readonly HistoryItem[];
 };
 
@@ -74,7 +65,6 @@ const runCall = async (
     }
 };
 
-/** Choosing the model can fail before any model call: LM Studio may have none loaded. */
 export const createSession = async (
     config: Config,
     { tools, history: initial, maxSteps }: SessionOptions,
@@ -83,70 +73,102 @@ export const createSession = async (
         return err(`maxSteps must be a positive integer; got ${maxSteps}.`);
     }
 
-    const choice = await resolveModel(config);
+    // Copy primitive settings and history envelopes before any await: a caller cannot change a
+    // running session's provider or instructions by mutating its inputs. The tools offered and the
+    // handlers that run them come from the same array, read once: changing the tools mid-session
+    // invalidates the prompt cache (Brief R3.4).
+    const sessionConfig = { ...config };
+    const history = initial.map((entry) => ({ ...entry }));
+    const definitions = tools.map((handler) => handler.tool);
+    const handlers = new Map(tools.map((handler) => [handler.tool.name, handler]));
+    let adapter;
+
+    try {
+        adapter =
+            sessionConfig.provider === 'anthropic'
+                ? createAnthropicAdapter(sessionConfig, definitions)
+                : createResponsesAdapter(sessionConfig, definitions);
+    } catch (error) {
+        return err(
+            `Can't prepare model tools: ${error instanceof Error ? error.message : String(error)}`,
+        );
+    }
+
+    const checked = adapter.validateHistory(history);
+
+    if (!checked.ok) {
+        return checked;
+    }
+
+    const choice = await resolveModel(sessionConfig);
 
     if (!choice.ok) {
         return choice;
     }
 
     const { model, note } = choice.value;
-    const client = new OpenAI({ baseURL: config.baseUrl, apiKey: config.apiKey, maxRetries: 0 });
-    const reasoning =
-        config.reasoningEffort === undefined ? undefined : { effort: config.reasoningEffort };
-    // Once per session: changing the tools mid-session invalidates the prompt cache (Brief R3.4).
-    const functionTools = tools.map((handler) => toFunctionTool(handler.tool));
-    const handlers = new Map(tools.map((handler) => [handler.tool.name, handler]));
-    const history = [...initial];
 
     const run = async function* (): AsyncGenerator<SessionStep, void, undefined> {
         for (let number = 1; ; number++) {
-            const input = toInput(history);
+            const checkedHistory = adapter.validateHistory(history);
 
-            if (!input.ok) {
-                yield { kind: 'history', error: input.error };
+            if (!checkedHistory.ok) {
+                yield { kind: 'history', error: checkedHistory.error };
                 return;
             }
 
             const started = performance.now();
-            // An unset `reasoning` drops out of the JSON body.
-            const result = await callModel(client, {
-                model,
-                input: input.value,
-                tools: functionTools,
-                reasoning,
-            });
+            const result = await adapter.call({ model, history });
+            const seconds = (performance.now() - started) / 1000;
 
             if (!result.ok) {
-                yield { kind: 'model_call_failed', error: result.error };
+                const providerStats: ProviderStatistics = result.error.providerStats ?? {
+                    provider: sessionConfig.provider,
+                    usage: { kind: 'unavailable' },
+                    rateLimits: {},
+                };
+                yield {
+                    kind: 'model_call_failed',
+                    error: result.error,
+                    stats: { number, seconds, providerStats },
+                };
                 return;
             }
 
-            const { response, usage } = result.value;
-            history.push(...response.output);
-            const stats = { number, usage, seconds: (performance.now() - started) / 1000 };
+            const { native, reply, providerStats } = result.value;
+            history.push(native);
+            const stats = { number, providerStats, seconds };
 
-            const next = classify(response.output);
+            if (reply.kind !== 'calls') {
+                yield { ...reply, stats };
+                return;
+            }
 
-            if (next.kind !== 'calls') {
-                yield { ...next, stats };
+            // Every call needs an outcome before the history can be replayed (Brief 4.5). A reply
+            // that the next request couldn't replay runs none of its tools.
+            const notRun = reply.calls.map((call): HistoryItem => ({
+                kind: 'tool_result',
+                callId: call.call_id,
+                outcome: NOT_RUN,
+            }));
+            const replayable = adapter.validateHistory([...history, ...notRun]);
+
+            if (!replayable.ok) {
+                yield { kind: 'history', error: replayable.error };
                 return;
             }
 
             if (number >= maxSteps) {
-                // Every call needs an output before the history can be replayed (Brief 4.5).
-                for (const call of next.calls) {
-                    history.push(toOutputItem(call.call_id, NOT_RUN));
-                }
-
+                history.push(...notRun);
                 yield { kind: 'step_limit', stats };
                 return;
             }
 
             const calls: CallResult[] = [];
 
-            for (const call of next.calls) {
+            for (const call of reply.calls) {
                 const outcome = await runCall(call, handlers);
-                history.push(toOutputItem(call.call_id, outcome));
+                history.push({ kind: 'tool_result', callId: call.call_id, outcome });
                 calls.push({ call, outcome });
             }
 

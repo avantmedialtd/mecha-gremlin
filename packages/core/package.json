@@ -5,11 +5,5 @@
     "type": "module",
     "exports": {
         "./*": "./src/*.ts"
-    },
-    "devDependencies": {
-        "openai": "^7.32.0"
-    },
-    "peerDependencies": {
-        "openai": "^7.32.0"
     }
 }

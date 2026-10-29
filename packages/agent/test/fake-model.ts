@@ -91,6 +91,7 @@ export const loadedBonsai = {
 export type FakeServer = {
     readonly models?: () => Response;
     readonly responses?: (n: number) => Response;
+    readonly messages?: (n: number) => Response;
 };
 
 export type RecordedRequest = {
@@ -118,6 +119,14 @@ export const fakeFetch = (server: FakeServer = {}) => {
             const n = modelCalls++;
 
             return server.responses?.(n) ?? completed([message('Hi there!')]);
+        }
+
+        if (url.endsWith('/v1/messages')) {
+            const n = modelCalls++;
+
+            return (
+                server.messages?.(n) ?? new Response('no scripted Messages reply', { status: 500 })
+            );
         }
 
         return new Response('not found', { status: 404 });

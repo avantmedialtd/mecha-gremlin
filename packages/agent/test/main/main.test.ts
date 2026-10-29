@@ -15,11 +15,10 @@ import {
     script,
 } from '../fake-model.ts';
 import { freshRunId, helperCommand, isGone, stopLeftovers, track } from '../exec/processes.ts';
+import { claudeReply } from '../fake-anthropic.ts';
 
-// main.ts runs as soon as it's imported, so it's never imported here at the top: `startAgent`
-// fakes the globals it reads, then imports it afresh. Its default task is spelled out for the same
-// reason.
-const DEFAULT_TASK = 'Use the playwright-cli skill to find the title of https://example.com';
+// The test helper supplies a task explicitly; the application no longer supplies one.
+const TEST_TASK = 'Carry out the test task.';
 
 /** Each test sets or clears all of these, so settings in your shell can't leak in. */
 const SETTINGS = [
@@ -29,6 +28,8 @@ const SETTINGS = [
     'MODEL_API_KEY',
     'MODEL',
     'MODEL_REASONING_EFFORT',
+    'MODEL_MAX_OUTPUT_TOKENS',
+    'ANTHROPIC_WORKSPACE_ID',
     'WORK_DIR',
     'SKILLS_PATH',
     'MAX_STEPS',
@@ -114,7 +115,9 @@ const parseRecords = (output: string): LogRecord[] => {
 };
 
 const modelCallsOf = (requests: readonly RecordedRequest[]): RecordedRequest[] => {
-    return requests.filter((request) => request.url.endsWith('/v1/responses'));
+    return requests.filter(
+        (request) => request.url.endsWith('/v1/responses') || request.url.endsWith('/v1/messages'),
+    );
 };
 
 /**
@@ -122,8 +125,23 @@ const modelCallsOf = (requests: readonly RecordedRequest[]): RecordedRequest[] =
  * every field, unless a test asks for another format; the formatted output has its own tests. The
  * run ID is a fresh one, which the signal guard vouches for.
  */
-const startAgent = (env: Settings = {}, server: FakeServer = {}, args: readonly string[] = []) => {
-    const settings: Settings = { LOG_FORMAT: 'json', ...env };
+const startAgent = (
+    env: Settings = {},
+    server: FakeServer = {},
+    args: readonly string[] = [TEST_TASK],
+) => {
+    const settings: Settings = {
+        LOG_FORMAT: 'json',
+        MODEL_PROVIDER: 'lmstudio',
+        MODEL_BASE_URL: 'http://127.0.0.1:1234/v1',
+        MODEL_API_KEY: 'lm-studio',
+        MODEL: 'prism-ml/bonsai-27b',
+        MODEL_REASONING_EFFORT: 'none',
+        MAX_STEPS: '30',
+        FILE_TOOLS: 'write-edit',
+        WORK_DIR: cwd,
+        ...env,
+    };
 
     for (const name of SETTINGS) {
         vi.stubEnv(name, settings[name]);
@@ -169,7 +187,7 @@ const startAgent = (env: Settings = {}, server: FakeServer = {}, args: readonly 
 const runAgent = async (
     env: Settings = {},
     server: FakeServer = {},
-    args: readonly string[] = [],
+    args: readonly string[] = [TEST_TASK],
 ) => {
     const started = startAgent(env, server, args);
     await started.done;
@@ -202,7 +220,24 @@ const errors = (records: readonly LogRecord[]): string[] => {
 const callOutputs = (request: RecordedRequest | undefined): unknown[] => {
     const input = (request?.body?.input ?? []) as readonly { type?: string; output?: unknown }[];
 
-    return input.filter((item) => item.type === 'function_call_output').map((item) => item.output);
+    if (input.length > 0) {
+        return input
+            .filter((item) => item.type === 'function_call_output')
+            .map((item) => item.output);
+    }
+
+    const messages = (request?.body?.messages ?? []) as readonly {
+        role?: string;
+        content?: unknown;
+    }[];
+
+    return messages.flatMap((item) =>
+        Array.isArray(item.content)
+            ? item.content
+                  .filter((block) => block.type === 'tool_result')
+                  .map((block) => block.content)
+            : [],
+    );
 };
 
 const toolNames = (request: RecordedRequest | undefined): unknown[] => {
@@ -247,14 +282,16 @@ const heldModelCall = () => {
 };
 
 describe('Carry out a task through the agent loop, and log the answer', { timeout: 15_000 }, () => {
-    test('the default task', async () => {
-        const { modelCall } = await runAgent();
+    test.each([[[]], [[' ', '  ']]])(
+        'a missing or blank task fails without a request',
+        async (args) => {
+            const { code, requests, records } = await runAgent({}, {}, args);
 
-        expect(modelCall?.body?.input).toEqual([
-            { role: 'developer', content: expect.any(String) },
-            { role: 'user', content: DEFAULT_TASK },
-        ]);
-    });
+            expect(code).toBe(1);
+            expect(errors(records)).toEqual([expect.stringContaining('task is required')]);
+            expect(requests).toHaveLength(0);
+        },
+    );
 
     test('a task from the arguments', async () => {
         const { modelCall } = await runAgent({}, {}, [
@@ -426,15 +463,12 @@ describe('Carry out a task through the agent loop, and log the answer', { timeou
         ]);
     });
 
-    test('the default step limit is 30', async () => {
-        const { modelCalls } = await runAgent(
-            {},
-            {
-                responses: (n) => completed([call('read', { path: 'package.json' }, `call_${n}`)]),
-            },
-        );
+    test('the step limit is required', async () => {
+        const { modelCalls, records, code } = await runAgent({ MAX_STEPS: undefined });
 
-        expect(modelCalls).toHaveLength(30);
+        expect(code).toBe(1);
+        expect(errors(records)).toEqual([expect.stringContaining('MAX_STEPS')]);
+        expect(modelCalls).toHaveLength(0);
     });
 });
 
@@ -453,12 +487,41 @@ const daemonOf = (request: RecordedRequest | undefined): number => {
     return track(Number(/stdout:\n(\d+)$/.exec(String(output))?.[1]));
 };
 
+const anthropicSettings: Settings = {
+    MODEL_PROVIDER: 'anthropic',
+    MODEL_BASE_URL: 'https://api.anthropic.test',
+    MODEL_API_KEY: 'key',
+    MODEL: 'claude-test',
+    MODEL_REASONING_EFFORT: 'medium',
+    MODEL_MAX_OUTPUT_TOKENS: '4096',
+};
+
 describe("Stop the session's processes when the agent ends", { timeout: 15_000 }, () => {
     test('a process left behind is stopped, once', async () => {
         const { code, records, modelCalls } = await runAgent(
             {},
             leaveDaemon(() => completed([message('Started it.')])),
         );
+        const daemon = daemonOf(modelCalls[1]);
+
+        expect(code).toBe(0);
+        expect(all(records, 'stopped')).toEqual([
+            expect.objectContaining({ level: 'info', count: 1 }),
+        ]);
+        expect(isGone(daemon)).toBe(true);
+    });
+
+    test('a process left behind by Claude is stopped', async () => {
+        const { code, records, modelCalls } = await runAgent(anthropicSettings, {
+            messages: script(
+                () =>
+                    claudeReply({
+                        name: 'shell',
+                        args: { command: helperCommand('leave', 'ignore') },
+                    }),
+                () => claudeReply({ text: 'Started it.' }),
+            ),
+        });
         const daemon = daemonOf(modelCalls[1]);
 
         expect(code).toBe(0);
@@ -598,16 +661,26 @@ describe('Log each model call and tool call', () => {
                 baseUrl: 'http://127.0.0.1:1234/v1',
                 run: runId,
                 workDir: realCwd,
-                task: DEFAULT_TASK,
+                task: TEST_TASK,
             },
             {
                 level: 'info',
                 message: 'model call',
                 step: 1,
-                inputTokens: 349,
-                cachedTokens: 256,
-                outputTokens: 26,
-                reasoningTokens: 12,
+                providerStats: {
+                    provider: 'lmstudio',
+                    usage: {
+                        kind: 'complete',
+                        value: {
+                            input_tokens: 349,
+                            input_tokens_details: { cached_tokens: 256, cache_write_tokens: 0 },
+                            output_tokens: 26,
+                            output_tokens_details: { reasoning_tokens: 12 },
+                            total_tokens: 375,
+                        },
+                    },
+                    rateLimits: {},
+                },
                 seconds: 1.5,
             },
             {
@@ -627,6 +700,37 @@ describe('Log each model call and tool call', () => {
         ]);
         expect(records).toHaveLength(6);
         expect(records.every((record) => !Number.isNaN(Date.parse(record.time)))).toBe(true);
+    });
+
+    test('Claude statistics appear in both JSON and pretty logs without the API key', async () => {
+        const json = await runAgent(anthropicSettings, {
+            messages: () => claudeReply({ text: 'Done' }),
+        });
+
+        expect(json.code).toBe(0);
+        expect(find(json.records, 'model call')).toMatchObject({
+            providerStats: {
+                provider: 'anthropic',
+                usage: {
+                    kind: 'complete',
+                    value: {
+                        input_tokens: 10,
+                        output_tokens: 2,
+                        cache_read_input_tokens: 0,
+                        cache_creation_input_tokens: 0,
+                    },
+                },
+            },
+        });
+        expect(json.output).not.toContain('"apiKey"');
+        const pretty = await runAgent(
+            { ...anthropicSettings, LOG_FORMAT: 'pretty' },
+            { messages: () => claudeReply({ text: 'Done' }) },
+        );
+
+        expect(pretty.code).toBe(0);
+        expect(pretty.output).toContain('providerStats={"provider":"anthropic"');
+        expect(pretty.output).toContain('"cache_read_input_tokens":0');
     });
 
     test('the asking record', async () => {
@@ -768,6 +872,7 @@ describe('Log each model call and tool call', () => {
             level: 'info',
             message: 'model call',
             step: 1,
+            providerStats: { provider: 'lmstudio', usage: { kind: 'unavailable' }, rateLimits: {} },
             seconds: 1.5,
         });
     });
@@ -785,27 +890,67 @@ describe('Log each model call and tool call', () => {
             level: 'info',
             message: 'model call',
             step: 1,
-            inputTokens: 10,
-            outputTokens: 5,
+            providerStats: {
+                provider: 'lmstudio',
+                usage: {
+                    kind: 'partial',
+                    value: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+                },
+                rateLimits: {},
+            },
             seconds: 1.5,
         });
     });
+
+    test('a failed model call logs reported usage before the final error', async () => {
+        const reported = { input_tokens: 10, output_tokens: 5, total_tokens: 15 };
+        const incomplete = new Response(
+            `event: response.incomplete\ndata: ${JSON.stringify({
+                type: 'response.incomplete',
+                response: {
+                    status: 'incomplete',
+                    output: [],
+                    usage: reported,
+                    incomplete_details: { reason: 'max_output_tokens' },
+                },
+            })}\n\n`,
+            {
+                headers: {
+                    'content-type': 'text/event-stream',
+                    'x-ratelimit-remaining-tokens': '42',
+                },
+            },
+        );
+        const { code, records } = await runAgent({}, { responses: () => incomplete });
+
+        expect(code).toBe(1);
+        expect(records.map((record) => record.message)).toEqual([
+            'asking',
+            'model call',
+            expect.stringContaining('stopped before finishing'),
+        ]);
+        expect(find(records, 'model call')).toMatchObject({
+            providerStats: {
+                provider: 'lmstudio',
+                usage: { kind: 'partial', value: reported },
+                rateLimits: { 'x-ratelimit-remaining-tokens': '42' },
+            },
+        });
+        expect(find(records, 'answer')).toBeUndefined();
+    });
 });
 
-describe('Formatted output by default', () => {
-    test('without LOG_FORMAT, each record is a line to read', async () => {
-        const { output, runId } = await runAgent({ LOG_FORMAT: undefined }, readThenAnswer);
+describe('Formatted output when selected', () => {
+    test('pretty records expose the full provider statistics', async () => {
+        const { output, runId } = await runAgent({ LOG_FORMAT: 'pretty' }, readThenAnswer);
         const lines = output.trim().split('\n');
 
         expect(lines.every((line) => /^\d\d:\d\d:\d\d (INFO |WARN |ERROR) /.test(line))).toBe(true);
-        expect(lines.map((line) => line.slice(9))).toEqual([
-            `INFO  asking model=prism-ml/bonsai-27b baseUrl=http://127.0.0.1:1234/v1 run=${runId} workDir=${realCwd} task="${DEFAULT_TASK}"`,
-            'INFO  model call step=1 inputTokens=349 cachedTokens=256 outputTokens=26 reasoningTokens=12 seconds=1.5',
-            'INFO  tool call tool=read arguments={"path":"package.json"}',
-            `INFO  tool result tool=read bytes=${Buffer.byteLength(PACKAGE_JSON)}`,
-            'INFO  model call step=2 inputTokens=349 cachedTokens=256 outputTokens=26 reasoningTokens=12 seconds=1.5',
-            'INFO  answer text="It runs the checks."',
-        ]);
+        expect(lines[0]).toContain(`run=${runId}`);
+        expect(lines.filter((line) => line.includes('model call'))).toHaveLength(2);
+        expect(lines[1]).toContain('providerStats={"provider":"lmstudio"');
+        expect(lines[1]).toContain('"cache_write_tokens":0');
+        expect(lines.at(-1)).toContain('answer text="It runs the checks."');
     });
 
     test('an unknown LOG_FORMAT fails before anything else', async () => {
@@ -813,8 +958,22 @@ describe('Formatted output by default', () => {
 
         expect(code).toBe(1);
         expect(output).toMatch(
-            /^\d\d:\d\d:\d\d ERROR LOG_FORMAT must be pretty or json; got "xml"\.\n$/,
+            /^\d\d:\d\d:\d\d ERROR LOG_FORMAT must be one of pretty, json; got "xml"\.\n$/,
         );
+        expect(requests).toHaveLength(0);
+    });
+
+    test('an invalid LOG_FORMAT does not hide other startup errors', async () => {
+        const { code, output, requests } = await runAgent({
+            LOG_FORMAT: 'xml',
+            MAX_STEPS: '0',
+            WORK_DIR: 'missing',
+        });
+
+        expect(code).toBe(1);
+        expect(output).toContain('LOG_FORMAT');
+        expect(output).toContain('MAX_STEPS');
+        expect(output).toContain('WORK_DIR');
         expect(requests).toHaveLength(0);
     });
 
@@ -874,6 +1033,8 @@ describe('Read the configuration from the environment, and validate it at start-
     test('every problem is reported', async () => {
         const { code, records, requests } = await runAgent({
             MODEL_PROVIDER: 'openai',
+            MODEL_API_KEY: undefined,
+            MODEL: undefined,
             WORK_DIR: 'missing',
         });
 
@@ -891,7 +1052,7 @@ describe('Read the configuration from the environment, and validate it at start-
 
         expect(code).toBe(1);
         expect(errors(records)).toEqual([
-            'FILE_TOOLS must be write-edit or apply-patch; got "both".',
+            'FILE_TOOLS must be one of write-edit, apply-patch; got "both".',
         ]);
         expect(requests).toHaveLength(0);
     });
@@ -998,7 +1159,12 @@ describe('Actionable failure messages', () => {
 
     test("another provider that can't be reached", async () => {
         const { code, records } = await runAgent(
-            { MODEL_PROVIDER: 'openai', MODEL_API_KEY: 'sk-test', MODEL: 'gpt-test' },
+            {
+                MODEL_PROVIDER: 'openai',
+                MODEL_BASE_URL: 'https://api.openai.com/v1',
+                MODEL_API_KEY: 'sk-test',
+                MODEL: 'gpt-test',
+            },
             {
                 responses: () => {
                     throw new TypeError('Unable to connect');
@@ -1013,7 +1179,7 @@ describe('Actionable failure messages', () => {
     });
 });
 
-describe('run with LM Studio (the default provider)', () => {
+describe('run with explicitly configured LM Studio', () => {
     test('asks the loaded model and logs its answer', async () => {
         const { code, records, modelCall } = await runAgent();
 
@@ -1085,7 +1251,7 @@ describe('run with LM Studio (the default provider)', () => {
         expect(modelCall).toBeUndefined();
     });
 
-    test('with several models loaded, says which it chose and how to choose another', async () => {
+    test('with several models loaded, uses the explicitly named model', async () => {
         const twoLoaded = {
             models: [
                 {
@@ -1108,17 +1274,23 @@ describe('run with LM Studio (the default provider)', () => {
         expect(code).toBe(0);
         expect(records[0]).toMatchObject({
             level: 'info',
-            message:
-                'Using prism-ml/bonsai-27b, the first of 2 loaded models (prism-ml/bonsai-27b, qwen2.5-0.5b-instruct-mlx). Set MODEL to choose another.',
+            message: 'asking',
+            model: 'prism-ml/bonsai-27b',
         });
         expect(modelCall?.body).toMatchObject({ model: 'prism-ml/bonsai-27b' });
     });
 });
 
 describe('run with another OpenAI-compatible provider', () => {
-    const openai = { MODEL_PROVIDER: 'openai', MODEL_API_KEY: 'sk-test', MODEL: 'gpt-test' };
+    const openai = {
+        MODEL_PROVIDER: 'openai',
+        MODEL_BASE_URL: 'https://api.openai.com/v1',
+        MODEL_API_KEY: 'sk-test',
+        MODEL: 'gpt-test',
+        MODEL_REASONING_EFFORT: 'low',
+    };
 
-    test("uses the named model without asking LM Studio, and the model's own reasoning default", async () => {
+    test('uses the named model and explicit effort without asking LM Studio', async () => {
         const { code, records, requests, modelCall } = await runAgent(openai);
 
         expect(code).toBe(0);
@@ -1129,11 +1301,15 @@ describe('run with another OpenAI-compatible provider', () => {
             authorization: 'Bearer sk-test',
             body: { model: 'gpt-test' },
         });
-        expect(modelCall?.body).not.toHaveProperty('reasoning');
+        expect(modelCall?.body).toHaveProperty('reasoning', { effort: 'low' });
     });
 
     test('needs MODEL and MODEL_API_KEY, and fails before any network call', async () => {
-        const { code, records, requests } = await runAgent({ MODEL_PROVIDER: 'openai' });
+        const { code, records, requests } = await runAgent({
+            MODEL_PROVIDER: 'openai',
+            MODEL_API_KEY: undefined,
+            MODEL: undefined,
+        });
 
         expect(code).toBe(1);
         expect(errors(records)).toEqual([

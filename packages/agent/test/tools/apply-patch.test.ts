@@ -11,7 +11,8 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type ToolOutcome, toFunctionTool } from '@mecha-gremlin/core/tools';
+import type { ToolOutcome } from '@mecha-gremlin/core/tools';
+import { toFunctionTool } from '../../src/model/responses-tools.ts';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { applyPatchTool } from '../../src/tools/apply-patch.ts';
 

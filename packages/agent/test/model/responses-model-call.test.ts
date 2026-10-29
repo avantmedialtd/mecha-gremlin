@@ -1,25 +1,36 @@
-import { readFile } from 'node:fs/promises';
 import { describe, expect, test, vi } from 'vitest';
-import OpenAI from 'openai';
-import { callModel } from '../src/model-call.ts';
+import type { ModelCallOptions, ModelCallRequest } from '@mecha-gremlin/core/model-call';
+import type { ModelAdapter } from '../../src/model/adapter.ts';
+import { classifyRequestError } from '../../src/model/errors.ts';
+import { createResponsesAdapter } from '../../src/model/responses-call.ts';
 
 type Handler = (url: string, init: RequestInit | undefined) => Response | Promise<Response>;
 
-/** A real OpenAI client whose HTTP layer is `handler`; records each JSON request body. */
+/** A real Responses adapter whose HTTP layer is `handler`; records each JSON request body. */
 const makeClient = (handler: Handler) => {
     const bodies: Record<string, unknown>[] = [];
-    const client = new OpenAI({
-        apiKey: 'test-key',
-        baseURL: 'http://model.test/v1',
-        maxRetries: 0,
-        fetch: async (input, init) => {
-            if (typeof init?.body === 'string') {
-                bodies.push(JSON.parse(init.body));
-            }
+    vi.stubGlobal('fetch', async (input: string | URL | Request, init?: RequestInit) => {
+        if (typeof init?.body === 'string') {
+            bodies.push(JSON.parse(init.body));
+        }
 
-            return handler(input instanceof Request ? input.url : String(input), init);
-        },
+        return handler(input instanceof Request ? input.url : String(input), init);
     });
+    const client = createResponsesAdapter(
+        {
+            provider: 'openai',
+            apiKey: 'test-key',
+            baseUrl: 'http://model.test/v1',
+            model: 'test-model',
+            reasoningEffort: 'low',
+            maxSteps: 2,
+            fileTools: 'write-edit',
+            logFormat: 'json',
+            workDir: '/',
+            skillsPath: undefined,
+        },
+        [],
+    );
 
     return { client, bodies };
 };
@@ -73,7 +84,12 @@ const usage = {
 };
 
 const created = { type: 'response.created', response: responseObject({ status: 'in_progress' }) };
-const request = { model: 'test-model', input: 'Hi!' };
+const request = {
+    model: 'test-model',
+    history: [{ kind: 'user' as const, text: 'Hi!' }],
+};
+const callModel = (client: ModelAdapter, params: ModelCallRequest, options?: ModelCallOptions) =>
+    client.call(params, options);
 
 describe('Return the reply text and usage when the call completes', () => {
     test('a completed call returns the reply text and usage', async () => {
@@ -93,9 +109,8 @@ describe('Return the reply text and usage when the call completes', () => {
         expect(result).toMatchObject({
             ok: true,
             value: {
-                text: 'Hello there!',
-                usage: { output_tokens: 12 },
-                response: { id: 'resp_1' },
+                reply: { kind: 'final', text: 'Hello there!' },
+                providerStats: { usage: { value: { output_tokens: 12 } } },
             },
         });
     });
@@ -116,7 +131,10 @@ describe('Return the reply text and usage when the call completes', () => {
 
         const result = await callModel(client, request);
 
-        expect(result).toMatchObject({ ok: true, value: { text: 'Hi!' } });
+        expect(result).toMatchObject({
+            ok: true,
+            value: { reply: { kind: 'final', text: 'Hi!' } },
+        });
     });
 
     test('the text leaves out refusals and tool calls', async () => {
@@ -144,7 +162,10 @@ describe('Return the reply text and usage when the call completes', () => {
 
         const result = await callModel(client, request);
 
-        expect(result).toMatchObject({ ok: true, value: { text: 'Partly.' } });
+        expect(result).toMatchObject({
+            ok: true,
+            value: { reply: { kind: 'calls', calls: [{ call_id: 'call_1' }] } },
+        });
     });
 });
 
@@ -161,7 +182,7 @@ describe('Call the model once, streamed and stateless', () => {
 
         expect(bodies[0]).toMatchObject({
             model: 'test-model',
-            input: 'Hi!',
+            input: [{ role: 'user', content: 'Hi!' }],
             stream: true,
             store: false,
         });
@@ -193,7 +214,10 @@ describe("Classify a call's failures as values", () => {
 
         const result = await callModel(client, request);
 
-        expect(result).toEqual({ ok: false, error: { kind, status, detail: `${status} boom` } });
+        expect(result).toMatchObject({
+            ok: false,
+            error: { kind, status, detail: `${status} boom` },
+        });
     });
 
     test('a connection failure is unreachable, with its cause', async () => {
@@ -203,7 +227,7 @@ describe("Classify a call's failures as values", () => {
 
         const result = await callModel(client, request);
 
-        expect(result).toEqual({
+        expect(result).toMatchObject({
             ok: false,
             error: { kind: 'unreachable', detail: 'Connection error. (fetch failed)' },
         });
@@ -231,12 +255,7 @@ describe("Classify a call's failures as values", () => {
         ['null', null, 'null'],
         ['an object whose status is not a number', { status: '500' }, '[object Object]'],
     ])('anything else the client throws is fatal: %s', async (_name, thrown, detail) => {
-        const { client } = makeClient(() => sse(created));
-        vi.spyOn(client.responses, 'create').mockRejectedValue(thrown);
-
-        const result = await callModel(client, request);
-
-        expect(result).toEqual({ ok: false, error: { kind: 'fatal', detail } });
+        expect(classifyRequestError(thrown)).toEqual({ kind: 'fatal', detail });
     });
 
     test('a response that ends incomplete is incomplete, with the reason', async () => {
@@ -268,7 +287,7 @@ describe("Classify a call's failures as values", () => {
 
         const result = await callModel(client, request);
 
-        expect(result).toEqual({
+        expect(result).toMatchObject({
             ok: false,
             error: { kind: 'incomplete', detail: 'the response is incomplete' },
         });
@@ -303,7 +322,7 @@ describe("Classify a call's failures as values", () => {
 
         const result = await callModel(client, request);
 
-        expect(result).toEqual({
+        expect(result).toMatchObject({
             ok: false,
             error: { kind: 'failed', detail: 'the response failed' },
         });
@@ -334,7 +353,7 @@ describe("Classify a call's failures as values", () => {
 
         const result = await callModel(client, request);
 
-        expect(result).toEqual({
+        expect(result).toMatchObject({
             ok: false,
             error: { kind: 'failed', detail: 'the stream ended without a terminal event' },
         });
@@ -347,7 +366,7 @@ describe("Classify a call's failures as values", () => {
 
         const result = await callModel(client, request, { signal: controller.signal });
 
-        expect(result).toEqual({
+        expect(result).toMatchObject({
             ok: false,
             error: { kind: 'aborted', detail: 'the model call was aborted' },
         });
@@ -379,17 +398,10 @@ describe("Classify a call's failures as values", () => {
             const pending = callModel(client, request, { signal: controller.signal });
             setTimeout(() => controller.abort(), 20);
 
-            expect(await pending).toMatchObject({ ok: false, error: { kind: 'aborted' } });
+            expect(await pending).toMatchObject({
+                ok: false,
+                error: { kind: 'aborted', detail: 'the model call was aborted' },
+            });
         },
     );
-});
-
-// That core never reads the environment, writes to the console or uses Bun APIs is enforced by
-// oxlint (the packages/core/src override in .oxlintrc.json), not by scanning source text here.
-describe('Core stays free of configuration and side effects', () => {
-    test('openai is a peer dependency', async () => {
-        const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
-
-        expect(pkg.peerDependencies).toHaveProperty('openai');
-    });
 });

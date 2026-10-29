@@ -19,6 +19,7 @@
 > - **2026-10-16, evening:** R15 records what "turn" means elsewhere, how other agent loops count and stop, and how LM Studio handles `tool_choice:"none"`. C8 proposes a finalize turn at the turn limit ahead of the budgets (D20), and C13 proposes calling the loop's unit a step (D21). D20 is open. D21 was decided the same evening, and the change `turn-to-step` carries it out.
 > - **2026-10-21:** D22 names the package that carries out a task `agent`: it serves nothing, and "server" also meant the model server and the exec server. 4.2 puts it beside M1's `app`, which runs agents. The change `server-to-agent` renames it.
 > - **2026-10-22:** R16 surveys the tools ten coding harnesses give a model to write files. D23 records the choice: `read`, `write` and `edit` by default, renaming `read_file`, and `apply_patch` in place of `write` and `edit` by the `FILE_TOOLS` setting. C4's table, ▸4 and M1's slice name them. The change `file-write-tools` adds them.
+> - **2026-10-27:** D24 adds the direct Claude API beside OpenAI and LM Studio. One shared loop calls provider-specific Responses or Messages adapters; `core` depends on neither SDK. The in-memory history keeps provider-native replay data, and statistics retain each provider's named fields. Configuration and the task are explicit. The change `add-anthropic-support` carries this out; database persistence and new OpenAI encrypted-reasoning behavior remain separate work.
 
 ---
 
@@ -51,6 +52,8 @@ Primary goal: solve my own problem. Secondary: the core may become an open-sourc
 | Repo | Single public monorepo with workspaces | See layering. No two-repo split, no symlinks. |
 
 ▸ How each settled decision stands after research: 3.0. None has been reversed. One has been widened: the server runs on Bun or Node (D19, 2026-10-16).
+
+▸ Later update: D24 revises the one-client and no-Claude decisions, using direct Claude API access alongside Responses providers.
 
 ## Layering
 
@@ -843,15 +846,15 @@ A survey of ten harnesses on 2026-10-21/22, for the `file-write-tools` change an
 
 ## 3.0 Status of the original brief
 
-**Settled decisions.** None has been reversed. One has been widened since: the runtime (D19, 2026-10-16).
+**Settled decisions.** The 2026-10-11 assessment below is historical. The runtime was widened by D19, and the one-client and no-Claude decisions were revised by D24 on 2026-10-27.
 
 | Area | Status after research |
 |---|---|
 | Language/runtime | Holds. Bun 1.4.3 is current (2026-10-10). Watch out: Bun reads the `tsconfig.json` of the directory it's started from (R6.2, C7). It has built-in cron (R8), which bears on D6. **Widened by D19 (2026-10-16):** the server runs on Bun or Node, through two small packages that use Bun's built-ins on Bun (R14). |
 | Database | Holds. Everything the scheduler needs is reachable from TypeORM: `FOR UPDATE SKIP LOCKED`, partial unique indexes, `ON CONFLICT DO NOTHING`, `jsonb` and native `vector` columns (R6.3, R10). |
 | ORM | Holds, with conditions. TypeORM 1.1.2 is healthy, but its CI doesn't run on Bun. Four transpiler gotchas are verified on Bun 1.4.3, and the migration and minify items are [M] (R6.2). See C7 and S1. |
-| LLM client | Holds: the `openai` SDK covers the Responses API natively. Two qualifications. LM Studio should always run with token auth (C3, 4.9), so "a dummy key locally" becomes a real token. SIWC's namespace rule for function tools may need its own code path (C2, S4). The separate Known-risks premise, "stick to mainstream chat-completions", has shifted: on OpenAI, Chat Completions can't call tools on GPT-5.4+ with reasoning (R2.2), while the LM Studio pass on its own still recommends it there (R5.8). See C1; D1 is open. |
-| Models | Holds. New: a ChatGPT subscription can now pay for your own calls through SIWC plan usage. That covers Plus and Pro; for other plans the sources conflict (R1.2, C2). |
+| LLM client | **Revised by D24:** `openai` serves Responses for OpenAI and LM Studio; `@anthropic-ai/sdk` serves Claude's native Messages API. Both live in `agent`, behind the shared loop; `core` has no SDK dependency. The earlier Responses and SIWC research (C1, C2) remains applicable to those providers. |
+| Models | **Revised by D24:** Claude is supported through a direct API key, not a Claude subscription. OpenAI and LM Studio remain supported. The earlier SIWC plan-usage findings and their open eligibility questions remain in R1.2 and C2. |
 | Deployment and isolation | Holds. On macOS, LM Studio has to run on the host, outside compose (R9). Where the boundary sits: C3. |
 | Repo | Holds. Proposal: one `core` package with subpath exports (D10). |
 
@@ -870,6 +873,7 @@ A survey of ten harnesses on 2026-10-21/22, for the `file-write-tools` change an
 These are **proposals, not decisions**. Each links to a decision in Part 5. "Brief says" quotes or paraphrases Part 1.
 
 ### C1. Use the Responses API, not Chat Completions
+- **2026-10-27 update:** D24 keeps Responses for OpenAI and LM Studio, but Claude uses its native Messages API. The original single-wire-format proposal and its reasoning below are retained as historical context.
 - **Brief says:** "stick to mainstream chat-completions plus tool-calling" (Known risks).
 - **Proposal:** make the Responses API the only wire format for every backend. Use it statelessly (`store:false`, replaying the full input including reasoning items) and always streamed.
 - **Why:**
@@ -1150,6 +1154,8 @@ This draft assumes the recommended option for every decision in Part 5. Sections
 
 **Words (D21, 2026-10-16).** This draft predates D21, and says "turn" for one model request. From the change `turn-to-step` on, the code calls that request a *model call*, and a model call with the tool calls in its reply a *step*. A *turn* is a user's whole exchange. So read 4.3's `runTurn` as `callModel`, its `Turn` as `Reply`, `keepLastTurns` as a count of steps, and the finalize turn as a finalize step.
 
+**Provider boundary (D24, 2026-10-27).** The draft below predates Claude support. Current code uses an SDK-free `core` and one provider-bound session, with SDK-specific wire conversion in `agent`. OpenAI and LM Studio use Responses; Claude uses native streamed Messages with an API key. The shared loop does not switch providers. Native assistant output and Gremlin-authored inputs and outcomes stay in the in-memory history; provider statistics have complete, partial and unavailable states and named provider-specific usage, diagnostics and rate-limit fields. This change does not implement the future database, compaction, retry or budget designs below.
+
 ## 4.1 Architecture (D1, D2, D3)
 
 ```
@@ -1166,11 +1172,12 @@ This draft assumes the recommended option for every decision in Part 5. Sections
  │             │                                     │ • NO route to db  │   │
  │             │                                     └─────────┬─────────┘   │
  └─────────────┼───────────────────────────────────────────────┼─────────────┘
-               │ Responses API (stream, store:false)           │ bind mounts
+               │ Responses / Messages (streamed)              │ bind mounts
        ┌───────┴──────────┐                                    ▼
        ▼                  ▼                           ~/notes, ~/projects, skills/
  api.openai.com     LM Studio on the host (Metal GPU; can't run in a container on macOS)
  key | SIWC         host.docker.internal:1234, token auth on
+ api.anthropic.com  direct API key, native Messages
 ```
 
 ## 4.2 Monorepo layout (D10)
@@ -1184,13 +1191,13 @@ mecha-gremlin/                          public repo
 ├── .gitleaks.toml                      + pre-commit hook and CI job (M1)
 ├── packages/
 │   ├── core/                           @mecha-gremlin/core: stateless functions, publishable;
-│   │                                   `openai` as a peerDependency, plus one JSON Schema validator
+│   │                                   Gremlin-owned types; no provider SDK or schema-library dependency
 │   ├── yaml/                           @mecha-gremlin/yaml: Bun.YAML on Bun, the yaml package
 │   │                                   elsewhere (D19)
 │   ├── process/                        @mecha-gremlin/process: Bun.spawn on Bun,
 │   │                                   node:child_process elsewhere (D19)
 │   ├── agent/                          @mecha-gremlin/agent: one run: the model choice, the loop,
-│   │                                   tools and skills (D22)
+│   │                                   tools, skills and provider SDK adapters (D22, D24)
 │   ├── app/                            entities, migrations, scheduler, app tools, CLI `gremlin`;
 │   │                                   runs agents
 │   │   ├── tsconfig.json               "extends": "../../tsconfig.json"; Bun reads the tsconfig of
@@ -1218,6 +1225,8 @@ Run gitleaks on the private repo too. If you'd rather version the secrets, encry
 `yaml` and `process` are packages of their own (D19). Each adapts one thing to the runtime, so `core` stays free of runtime APIs and of the `yaml` dependency.
 
 ## 4.3 Core library (signatures)
+
+**Current boundary (D24):** `core/model-call` declares the provider-neutral request, result and error; `core/history` declares ordered inputs, outcomes and opaque provider-tagged native responses; `core/statistics` declares full provider-discriminated usage and diagnostics; and `core/tools` defines Standard Schema tools and local validation. Responses and Messages calls, request conversion, streaming and replay are in `agent/model`. The signatures below are the older design draft, not the current public API.
 
 ```ts
 // @mecha-gremlin/core: stateless; data in, data out.
@@ -1285,6 +1294,8 @@ applyCompaction(items: ResponseInputItem[], plan: CompactionPlan,
 "The caller orchestrates" means the app's loop is about 60 lines over these functions. The README ships the same loop as a reference implementation.
 
 ## 4.4 Data model: TypeORM entities (D5, D7)
+
+This is a future persistence draft. D24 adds only in-memory provider-native history; its database encoding, lossless replay and interaction with `toStorable` need a separate design.
 
 ```
  Task ──────────────< Run ───────────────< Item         conversation; append-only
@@ -1363,6 +1374,8 @@ applyCompaction(items: ResponseInputItem[], plan: CompactionPlan,
 
 ## 4.5 Agent loop
 
+**Current loop (D24):** bind one provider and model, copy the starting history, stream a model call, retain its native response, run locally validated client tools sequentially, append one outcome per call and yield before the next request. On the last allowed step, calls are recorded as not run. The retries, budgets, nudges, finalize step and persisted events in the draft below are not implemented by D24.
+
 ```
  prepare: load task snapshot, freeze tools + preamble, build run input (now(), carried state)
     │
@@ -1422,6 +1435,8 @@ applyCompaction(items: ResponseInputItem[], plan: CompactionPlan,
 | Process crash mid-run | At the next boot, the lock-holding daemon (4.8) marks `running` runs `abandoned`, and the exec server kills leftover processes. For `catch_up: once` tasks the fire is re-armed. The next run's input carries a note built from the abandoned run's items and events: its status, and the tool calls it started |
 
 ## 4.6 Request layout for caching
+
+**Claude (D24):** every native Messages request uses top-level automatic ephemeral caching with a five-minute TTL. System instructions and ordered tool schemas stay fixed; cache hits depend on the provider's thresholds and lifetime. Cache reads and writes are reported separately, not assumed. Responses behavior remains as before.
 
 ```
  order sent to the model                       changes when…          cache
@@ -1670,7 +1685,7 @@ The `migrate` service also runs `gremlin prune` on demand: `docker compose run -
 
 | ID | Decision | Options | Recommendation | Status |
 |---|---|---|---|---|
-| D1 | LLM wire API | Responses only · Chat Completions only · both behind a thin adapter | **Responses only** (C1) | open |
+| D1 | LLM wire API | Responses only · Chat Completions only · both behind a thin adapter | **Responses only** was the original recommendation (C1) | open for the broader future design; D24 decides the current Responses and Messages adapters |
 | D2 | OpenAI auth order | API key first · SIWC first · both at once | **API key first; SIWC in M5, after S4 and Q9** (C2) | open |
 | D3 | Where the shell and file tools run | Workspace container · app container | **Workspace container** (C3) | open |
 | D4 | What a skill is | SKILL.md plus a few app tools · JSON Schema plus handler (as briefed) · SKILL.md plus typed sidecars | **SKILL.md plus a few app tools** (C4) | open |
@@ -1693,6 +1708,7 @@ The `migrate` service also runs `gremlin prune` on demand: `docker compose run -
 | D21 | What "turn" names | One model request, as now · a user's whole exchange, with "step" for a model request and the calls it asked for, and "model call" for the request alone (R15.1) | **Step, before M1** (C13) | **decided 2026-10-16: Step.** The change `turn-to-step` carries it out, after the `model-hello` and `model-turn` capabilities became `server` and `model-call` |
 | D22 | What the package that carries out a task is called | `server`, as now · `agent`, with M1's `app` around it · `agent` now, renamed `app` at M1 · `app`, 4.2's name · `gremlin`, the CLI's | **`agent`, with `app` around it**: it runs one agent, and "server" also names the model server and the exec server (C3) | **decided 2026-10-21: agent.** The change `server-to-agent` carries it out |
 | D23 | The file tools, and their names | `write_file` beside `read_file`, as C4 first listed them · a whole-file write and an exact edit, `write` and `edit`, as in Claude Code, pi, opencode and Goose · Codex's `apply_patch` alone · both sets at once (R16) | **`read`, `write` and `edit`, with `apply_patch` in place of `write` and `edit` by a setting**: the pair most harnesses give every model, and the format GPT models are trained on as the alternative. Both at once would give two ways to do one thing (C4) | **decided 2026-10-22: `read` (renaming `read_file`), `write` and `edit` by default, and `apply_patch` instead with `FILE_TOOLS=apply-patch`.** The change `file-write-tools` carries it out |
+| D24 | Claude and the provider boundary | Responses only · native Claude Messages beside Responses · a separate agent loop | **One loop, native provider adapters**; no SDK in `core` | **decided 2026-10-27:** direct Claude API key and `@anthropic-ai/sdk`; five-minute automatic caching; native in-memory replay; complete typed provider statistics; explicit settings and task. No database persistence or provider switching. `add-anthropic-support` carries it out. |
 
 ## Open questions
 

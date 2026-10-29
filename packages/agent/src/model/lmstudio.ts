@@ -96,8 +96,7 @@ const loadedModels = (payload: unknown): readonly LoadedModel[] | undefined => {
 
 /**
  * Chooses the model to talk to from a `/api/v1/models` payload. Only LLMs with a loaded
- * instance qualify. A configured model must match a loaded instance id or model key;
- * otherwise the first loaded instance is used.
+ * instance qualify. The configured model must match a loaded instance ID or model key.
  */
 export const pickModel = (payload: unknown, configured?: string): ModelChoice => {
     const loaded = loadedModels(payload);
@@ -110,37 +109,20 @@ export const pickModel = (payload: unknown, configured?: string): ModelChoice =>
 
     const instanceIds = loaded.flatMap((model) => model.instanceIds);
 
-    if (configured !== undefined) {
-        if (
-            loaded.some(
-                (model) => model.key === configured || model.instanceIds.includes(configured),
-            )
-        ) {
-            return ok({ model: configured });
-        }
-
-        const loadedList =
-            instanceIds.length > 0 ? `Loaded: ${instanceIds.join(', ')}.` : 'No model is loaded.';
-
-        return err(
-            `MODEL is "${configured}", but that model isn't loaded in LM Studio. ${loadedList} Load it with \`lms load ${configured}\`.`,
-        );
+    if (configured === undefined || configured.trim() === '') {
+        return err('MODEL is required with MODEL_PROVIDER=lmstudio; name a loaded model.');
     }
 
-    const [first] = instanceIds;
-
-    if (first === undefined) {
-        return err(
-            'No model is loaded in LM Studio. Load one with `lms load <model>` or in the LM Studio app; models are never loaded on demand.',
-        );
+    if (
+        loaded.some((model) => model.key === configured || model.instanceIds.includes(configured))
+    ) {
+        return ok({ model: configured });
     }
 
-    if (instanceIds.length > 1) {
-        return ok({
-            model: first,
-            note: `Using ${first}, the first of ${instanceIds.length} loaded models (${instanceIds.join(', ')}). Set MODEL to choose another.`,
-        });
-    }
+    const loadedList =
+        instanceIds.length > 0 ? `Loaded: ${instanceIds.join(', ')}.` : 'No model is loaded.';
 
-    return ok({ model: first });
+    return err(
+        `MODEL is "${configured}", but that model isn't loaded in LM Studio. ${loadedList} Load it with \`lms load ${configured}\`.`,
+    );
 };
