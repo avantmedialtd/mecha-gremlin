@@ -19,7 +19,7 @@ concurrency:
     cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-    BUN_VERSION: 1.4.3
+    BUN_VERSION: 1.4.4
     # Node runs every test again (`bun run test:node`), and starts the agent.
     NODE_VERSION: 26
 
