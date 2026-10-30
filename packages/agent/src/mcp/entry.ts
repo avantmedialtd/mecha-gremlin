@@ -691,11 +691,13 @@ const headersOf = (fields: Fields): Read<readonly Named[]> => {
 };
 
 // Bun's fetch sends even a request to 127.0.0.1 or localhost through HTTP_PROXY, headers
-// included, unless NO_PROXY names the host (Brief R18.1).
+// included, unless NO_PROXY names the host (Brief R18.1). The scheme is the one fetch will use:
+// the URL parser drops spaces and control characters around a URL, and tabs and newlines in it,
+// so its text can hide a plain http.
 const plainHttpProblems = (url: Template, headers: readonly Named[]): string[] => {
     const referenced = hasReference(url) || headers.some(([, value]) => hasReference(value));
 
-    return referenced && /^http:/i.test(render(url, SAMPLE))
+    return referenced && URL.parse(render(url, SAMPLE))?.protocol === 'http:'
         ? [
               'The url is plain http, but it or a header holds a reference: use https, since even a request to 127.0.0.1 may go through a proxy.',
           ]

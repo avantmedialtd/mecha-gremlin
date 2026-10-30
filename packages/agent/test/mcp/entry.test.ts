@@ -705,6 +705,35 @@ describe('Headers and URLs', () => {
         expect(problems(http({ url: 'https://docs.example.com/${X}' }))).toEqual([]);
     });
 
+    test('plain HTTP hidden in the text, as the URL parser reads it', () => {
+        const plainHttp =
+            'The url is plain http, but it or a header holds a reference: use https, since even a request to 127.0.0.1 may go through a proxy.';
+        const headers = { Authorization: 'Bearer ${T}' };
+
+        expect(problems(http({ url: ' http://127.0.0.1:8080/mcp', headers }))).toEqual([plainHttp]);
+        expect(problems(http({ url: '\u0001http://127.0.0.1:8080/mcp', headers }))).toEqual([
+            plainHttp,
+        ]);
+        expect(problems(http({ url: 'ht\ttp://127.0.0.1:8080/mcp', headers }))).toEqual([
+            plainHttp,
+        ]);
+        expect(problems(http({ url: 'h\nttp://127.0.0.1:8080/mcp', headers }))).toEqual([
+            plainHttp,
+        ]);
+        expect(problems(http({ url: ' https://127.0.0.1:8080/mcp', headers }))).toEqual([]);
+    });
+
+    test("a URL that doesn't parse, with a reference", () => {
+        expect(
+            problems(
+                http({
+                    url: 'http://127.0.0.1:8080:9/mcp',
+                    headers: { Authorization: 'Bearer ${T}' },
+                }),
+            ),
+        ).toEqual(["The url isn't a URL."]);
+    });
+
     test('every problem at once', () => {
         expect(
             problems(
