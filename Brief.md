@@ -21,6 +21,7 @@
 > - **2026-10-22:** R16 surveys the tools ten coding harnesses give a model to write files. D23 records the choice: `read`, `write` and `edit` by default, renaming `read_file`, and `apply_patch` in place of `write` and `edit` by the `FILE_TOOLS` setting. C4's table, ▸4 and M1's slice name them. The change `file-write-tools` adds them.
 > - **2026-10-27:** D24 adds the direct Claude API beside OpenAI and LM Studio. One shared loop calls provider-specific Responses or Messages adapters; `core` depends on neither SDK. The in-memory history keeps provider-native replay data, and statistics retain each provider's named fields. Configuration and the task are explicit. The change `add-anthropic-support` carries this out; database persistence and new OpenAI encrypted-reasoning behavior remain separate work.
 > - **2026-10-29:** R17 records the research for MCP servers: TypeORM and SQLite on Bun and Node, SQLite against the Postgres design, the MCP TypeScript SDK's client, MCP authorization with a probe of 27 OAuth servers, and how twelve harnesses act as MCP clients. C14 proposes SQLite in a data folder in place of Postgres, and C15 the TypeORM conventions it needs. C16 proposes MCP servers that need no OAuth first, C17 the login command and a lease for token refresh, and C18 MCP tools in the agent. D25–D35 are open. R17.6 records spike S6 the same day, and D25–D28 were decided: SQLite for good, through `better-sqlite3` 13, in a package of its own, `@mecha-gremlin/store`, with a required `DATA_DIR`. The change `add-persistence` carries them out. R18 records the research for the MCP client's design, and 4.12 drafts the design, with D36 and D37 open.
+> - **2026-10-29, later:** the change `add-persistence` adds `store` to 4.2's layout, with the `credential` table and its refresh lease. Every run opens the database in `DATA_DIR` before any network request, and the file tools refuse the folder. TypeORM's own loggers print a failed migration whatever its `logging` option says, so the store gives TypeORM a logger that prints nothing.
 
 ---
 
@@ -1865,10 +1866,12 @@ mecha-gremlin/                          public repo
 │   │                                   elsewhere (D19)
 │   ├── process/                        @mecha-gremlin/process: Bun.spawn on Bun,
 │   │                                   node:child_process elsewhere (D19)
+│   ├── store/                          @mecha-gremlin/store: SQLite in the data folder, DATA_DIR,
+│   │                                   through TypeORM and better-sqlite3 (D25–D28)
 │   ├── agent/                          @mecha-gremlin/agent: one run: the model choice, the loop,
 │   │                                   tools, skills and provider SDK adapters (D22, D24)
-│   ├── app/                            entities, migrations, scheduler, app tools, CLI `gremlin`;
-│   │                                   runs agents
+│   ├── app/                            scheduler, app tools, CLI `gremlin`; runs agents. Its
+│   │                                   entities and migrations are in `store` (D27)
 │   │   ├── tsconfig.json               "extends": "../../tsconfig.json"; Bun reads the tsconfig of
 │   │   │                               the directory it starts in, not the file's nearest (R6.2)
 │   │   └── db/init/                    creates the gremlin_owner and gremlin_app roles (4.4)
@@ -1892,6 +1895,8 @@ Run gitleaks on the private repo too. If you'd rather version the secrets, encry
 `core` is one package with subpath exports (`@mecha-gremlin/core/turn`, `…/compaction`, and so on) rather than six micro-packages. The app imports `core` only through those public exports, so the boundary stays real.
 
 `yaml` and `process` are packages of their own (D19). Each adapts one thing to the runtime, so `core` stays free of runtime APIs and of the `yaml` dependency.
+
+`store` is a package of its own too (D27): the agent, the login command and M1's app all use it, and it keeps TypeORM and better-sqlite3's native addon in one place.
 
 ## 4.3 Core library (signatures)
 

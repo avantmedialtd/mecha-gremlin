@@ -4,6 +4,7 @@ import {
     mkdir,
     mkdtemp,
     readFile,
+    realpath,
     rm,
     stat,
     symlink,
@@ -20,6 +21,8 @@ import { applyPatchTool } from '../../src/tools/apply-patch.ts';
 // when the test ends.
 let base: string;
 let root: string;
+// Inside the root, as a data folder may be, by its real path, as loadConfig records it.
+let dataDir: string;
 
 const APP = 'const a = 1;\nconst b = 2;\n';
 
@@ -33,6 +36,8 @@ beforeEach(async () => {
     await mkdir(join(root, 'src'));
     await writeFile(join(root, 'src', 'a.ts'), 'export const a = 1;\n');
     await mkdir(join(root, 'docs'));
+    dataDir = join(await realpath(root), 'data');
+    await mkdir(dataDir);
 });
 
 afterEach(async () => {
@@ -40,7 +45,7 @@ afterEach(async () => {
 });
 
 const apply = (...lines: readonly string[]): Promise<ToolOutcome> => {
-    return applyPatchTool(root).invoke(
+    return applyPatchTool(root, dataDir).invoke(
         JSON.stringify({ patch: ['*** Begin Patch', ...lines, '*** End Patch'].join('\n') }),
     );
 };
@@ -64,7 +69,7 @@ const CHANGE_APP = ['*** Update File: app.ts', '@@', '-const b = 2;', '+const b 
 
 describe("Accept a patch in Codex's V4A format", () => {
     test('the model sees a closed schema', () => {
-        const tool = toFunctionTool(applyPatchTool(root).tool);
+        const tool = toFunctionTool(applyPatchTool(root, dataDir).tool);
 
         expect(tool).toMatchObject({ type: 'function', name: 'apply_patch', strict: true });
         expect(tool.parameters).toEqual({
@@ -76,7 +81,7 @@ describe("Accept a patch in Codex's V4A format", () => {
     });
 
     test('the description explains the format, with an example', () => {
-        expect(applyPatchTool(root).tool.description).toBe(
+        expect(applyPatchTool(root, dataDir).tool.description).toBe(
             `Add, change, move or delete files with a patch. Nothing is changed unless the whole patch applies. The patch is text in this envelope:
 
 *** Begin Patch
@@ -105,7 +110,7 @@ Example:
     });
 
     test('a patch that does not parse changes nothing', async () => {
-        const outcome = await applyPatchTool(root).invoke(
+        const outcome = await applyPatchTool(root, dataDir).invoke(
             JSON.stringify({ patch: '*** Begin Patch\n*** Add File: new.txt\n+x\n' }),
         );
 
@@ -267,6 +272,41 @@ describe('Add, delete, update and move files under the working directory', () =>
             error: '".env" is an environment file. The apply_patch tool doesn\'t write those: they hold secrets.',
         });
         expect(await contentsOf('.env')).toBe('MODEL_API_KEY=sk-live-secret');
+        await expectAppUnchanged();
+    });
+
+    test('adding a file in the data folder', async () => {
+        expect(await apply(...CHANGE_APP, '*** Add File: data/x.txt', '+x')).toEqual({
+            ok: false,
+            error: '"data/x.txt" is inside the data folder. The apply_patch tool doesn\'t write there: it holds the agent\'s database.',
+        });
+        expect(await exists('data/x.txt')).toBe(false);
+        await expectAppUnchanged();
+    });
+
+    test('a move into the data folder', async () => {
+        expect(
+            await apply(
+                '*** Update File: app.ts',
+                '*** Move to: data/app.ts',
+                ...CHANGE_APP.slice(1),
+            ),
+        ).toEqual({
+            ok: false,
+            error: '"data/app.ts" is inside the data folder. The apply_patch tool doesn\'t write there: it holds the agent\'s database.',
+        });
+        expect(await exists('data/app.ts')).toBe(false);
+        await expectAppUnchanged();
+    });
+
+    test('a link into the data folder', async () => {
+        await symlink(dataDir, join(root, 'to-data'));
+
+        expect(await apply(...CHANGE_APP, '*** Add File: to-data/x.txt', '+x')).toEqual({
+            ok: false,
+            error: '"to-data/x.txt" is inside the data folder. The apply_patch tool doesn\'t write there: it holds the agent\'s database.',
+        });
+        expect(await exists('data/x.txt')).toBe(false);
         await expectAppUnchanged();
     });
 

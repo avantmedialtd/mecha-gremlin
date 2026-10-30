@@ -47,6 +47,7 @@ const CONFIG: Config = {
     fileTools: 'write-edit',
     logFormat: 'json',
     workDir: '/',
+    dataDir: '/data',
 };
 
 const output = (callId: string, text: string) => {

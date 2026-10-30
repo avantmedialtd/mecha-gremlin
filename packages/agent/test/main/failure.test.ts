@@ -14,6 +14,7 @@ const LMSTUDIO: Config = {
     fileTools: 'write-edit',
     logFormat: 'json',
     workDir: '/',
+    dataDir: '/data',
 };
 
 const OPENAI: Config = {
@@ -27,6 +28,7 @@ const OPENAI: Config = {
     fileTools: 'write-edit',
     logFormat: 'json',
     workDir: '/',
+    dataDir: '/data',
 };
 
 const ANTHROPIC: Config = {
@@ -42,6 +44,7 @@ const ANTHROPIC: Config = {
     fileTools: 'write-edit',
     logFormat: 'json',
     workDir: '/',
+    dataDir: '/data',
 };
 
 const stats = {

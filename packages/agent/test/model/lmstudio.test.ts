@@ -19,6 +19,7 @@ const config: Config = {
     fileTools: 'write-edit',
     logFormat: 'json',
     workDir: '/',
+    dataDir: '/data',
 };
 
 /** A `/api/v1/models` payload, shaped like LM Studio 0.4's. */

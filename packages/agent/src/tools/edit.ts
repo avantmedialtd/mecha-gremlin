@@ -76,12 +76,12 @@ const notFound = (name: string, text: string, old: string): string => {
         : message;
 };
 
-const edit = async (root: string, args: Edit): Promise<ToolOutcome> => {
+const edit = async (root: string, dataDir: string, args: Edit): Promise<ToolOutcome> => {
     const { path, old_string: old, new_string: replacement, replace_all: replaceAll } = args;
     const name = JSON.stringify(path);
 
     try {
-        const fenced = await fenceWrite(root, 'edit', path);
+        const fenced = await fenceWrite(root, dataDir, 'edit', path);
 
         if (!fenced.ok) {
             return fenced;
@@ -127,8 +127,8 @@ const edit = async (root: string, args: Edit): Promise<ToolOutcome> => {
     }
 };
 
-export const editTool = (root: string): ToolHandler => {
+export const editTool = (root: string, dataDir: string): ToolHandler => {
     return defineTool({ name: 'edit', description: DESCRIPTION, schema: EditArgs }, (args) =>
-        edit(root, args),
+        edit(root, dataDir, args),
     );
 };

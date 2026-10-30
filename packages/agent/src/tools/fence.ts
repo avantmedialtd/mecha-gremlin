@@ -38,20 +38,25 @@ const exists = async (path: string): Promise<boolean> => {
 };
 
 /**
- * The read tool's check: the path must be inside the root or a skill directory, as written and
- * with links resolved, and neither name may be an environment file's. Gives the real path to read.
- * A missing file, like any other I/O error, rejects, for the tool to report. The skill directories
- * are real paths already, as loadSkills records them.
+ * The read tool's check: the path must be inside the root or a skill directory, and outside the
+ * data folder, as written and with links resolved, and neither name may be an environment file's.
+ * Gives the real path to read. A missing file, like any other I/O error, rejects, for the tool to
+ * report. The skill directories and the data folder are real paths already, as loadSkills and
+ * loadConfig record them.
  */
 export const fenceRead = async (
     root: string,
     skillDirectories: readonly string[],
+    dataDir: string,
     path: string,
 ): Promise<Result<string, string>> => {
     const name = JSON.stringify(path);
     const outside = err(`${name} is outside the directories the read tool may read.`);
     const secret = err(
         `${name} is an environment file. The read tool doesn't read those: they hold secrets.`,
+    );
+    const data = err(
+        `${name} is inside the data folder. The read tool doesn't read there: it holds the agent's database.`,
     );
     // A path that's outside lexically is refused without touching the disk at all.
     const target = resolve(root, path);
@@ -64,11 +69,20 @@ export const fenceRead = async (
         return secret;
     }
 
-    // Again with symbolic links resolved, so a link can't lead outside or to a secret.
+    if (isInside(dataDir, target)) {
+        return data;
+    }
+
+    // Again with symbolic links resolved, so a link can't lead outside, to a secret or into the
+    // data folder.
     const real = await realpath(target);
 
     if (!isInsideAny([await realpath(root), ...skillDirectories], real)) {
         return outside;
+    }
+
+    if (isInside(dataDir, real)) {
+        return data;
     }
 
     return isEnvFile(real) ? secret : ok(real);
@@ -76,13 +90,15 @@ export const fenceRead = async (
 
 /**
  * The check of the tools that write: the path must be inside the root, which skill directories
- * aren't, as written and with links resolved, and neither name may be an environment file's. The
- * target need not exist: then the real path of its nearest existing ancestor decides, so a linked
- * directory can't lead outside even when the tool creates directories below it. Gives the
- * target's real path. Messages name the tool, since several tools share them.
+ * aren't, and outside the data folder, as written and with links resolved, and neither name may be
+ * an environment file's. The target need not exist: then the real path of its nearest existing
+ * ancestor decides, so a linked directory can't lead outside even when the tool creates
+ * directories below it. Gives the target's real path. Messages name the tool, since several tools
+ * share them. The data folder is a real path already, as loadConfig records it.
  */
 export const fenceWrite = async (
     root: string,
+    dataDir: string,
     tool: string,
     path: string,
 ): Promise<Result<string, string>> => {
@@ -93,6 +109,9 @@ export const fenceWrite = async (
     const secret = err(
         `${name} is an environment file. The ${tool} tool doesn't write those: they hold secrets.`,
     );
+    const data = err(
+        `${name} is inside the data folder. The ${tool} tool doesn't write there: it holds the agent's database.`,
+    );
     const target = resolve(root, path);
 
     if (!isInside(resolve(root), target)) {
@@ -101,6 +120,10 @@ export const fenceWrite = async (
 
     if (isEnvFile(target)) {
         return secret;
+    }
+
+    if (isInside(dataDir, target)) {
+        return data;
     }
 
     let existing = target;
@@ -122,6 +145,10 @@ export const fenceWrite = async (
 
     if (!isInside(await realpath(root), realTarget)) {
         return outside;
+    }
+
+    if (isInside(dataDir, realTarget)) {
+        return data;
     }
 
     return isEnvFile(realTarget) ? secret : ok(realTarget);

@@ -4,6 +4,7 @@ import {
     mkdir,
     mkdtemp,
     readFile,
+    realpath,
     rm,
     stat,
     symlink,
@@ -22,6 +23,8 @@ let base: string;
 let root: string;
 let outside: string;
 let skill: string;
+// Inside the root, as a data folder may be, by its real path, as loadConfig records it.
+let dataDir: string;
 
 beforeEach(async () => {
     base = await mkdtemp(join(tmpdir(), 'write-'));
@@ -42,6 +45,10 @@ beforeEach(async () => {
     await symlink(join(root, 'notes.txt'), join(root, 'alias.txt'));
     await symlink(join(outside, 'created-by-link.txt'), join(root, 'dangling.txt'));
     await symlink(outside, join(root, 'out'));
+    dataDir = join(await realpath(root), 'data');
+    await mkdir(dataDir);
+    await writeFile(join(dataDir, 'db.sqlite'), 'SQLite format 3');
+    await symlink(dataDir, join(root, 'to-data'));
 });
 
 afterEach(async () => {
@@ -49,7 +56,7 @@ afterEach(async () => {
 });
 
 const write = (path: string, content: string): Promise<ToolOutcome> => {
-    return writeTool(root).invoke(JSON.stringify({ path, content }));
+    return writeTool(root, dataDir).invoke(JSON.stringify({ path, content }));
 };
 
 const contentsOf = (path: string): Promise<string> => {
@@ -128,7 +135,7 @@ describe('Write a UTF-8 text file under the working directory', () => {
     });
 
     test('the model sees a closed schema', () => {
-        const tool = toFunctionTool(writeTool(root).tool);
+        const tool = toFunctionTool(writeTool(root, dataDir).tool);
 
         expect(tool).toMatchObject({ type: 'function', name: 'write', strict: true });
         expect(tool.parameters).toEqual({
@@ -140,13 +147,13 @@ describe('Write a UTF-8 text file under the working directory', () => {
     });
 
     test('the model is told what the tool writes, and what it leaves to edit', () => {
-        expect(writeTool(root).tool.description).toBe(
+        expect(writeTool(root, dataDir).tool.description).toBe(
             "Create or replace a UTF-8 text file with the given content, creating missing directories. The path is relative to the working directory. To change part of a file, use the edit tool; files over 32 KiB can't be replaced whole.",
         );
     });
 
     test('extra arguments are rejected, and nothing is written', async () => {
-        const outcome = await writeTool(root).invoke(
+        const outcome = await writeTool(root, dataDir).invoke(
             '{"path":"notes.txt","content":"x","append":true}',
         );
 
@@ -259,6 +266,23 @@ describe('Refuse secrets, directories and large files', () => {
             value: 'Replaced exact.txt (1 line, 5 bytes).',
         });
         expect(await contentsOf('exact.txt')).toBe('short');
+    });
+
+    test.each(['data/db.sqlite', 'data/new.txt'])('the data folder: %s', async (path) => {
+        expect(await write(path, 'x')).toEqual({
+            ok: false,
+            error: `${JSON.stringify(path)} is inside the data folder. The write tool doesn't write there: it holds the agent's database.`,
+        });
+        expect(await readFile(join(dataDir, 'db.sqlite'), 'utf8')).toBe('SQLite format 3');
+        expect(await exists(join(dataDir, 'new.txt'))).toBe(false);
+    });
+
+    test('a link into the data folder', async () => {
+        expect(await write('to-data/x.txt', 'x')).toEqual({
+            ok: false,
+            error: '"to-data/x.txt" is inside the data folder. The write tool doesn\'t write there: it holds the agent\'s database.',
+        });
+        expect(await exists(join(dataDir, 'x.txt'))).toBe(false);
     });
 
     test.skipIf(process.getuid?.() === 0)('a parent directory that is not writable', async () => {

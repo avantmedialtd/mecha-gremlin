@@ -1,0 +1,14 @@
+{
+    "name": "@mecha-gremlin/store",
+    "version": "0.0.0",
+    "description": "Keeps the agent's state in SQLite in the data folder, through TypeORM and better-sqlite3",
+    "type": "module",
+    "exports": {
+        "./*": "./src/*.ts"
+    },
+    "dependencies": {
+        "@mecha-gremlin/core": "workspace:*",
+        "better-sqlite3": "^13.0.3",
+        "typeorm": "^1.1.2"
+    }
+}

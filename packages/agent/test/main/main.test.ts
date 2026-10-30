@@ -1,6 +1,8 @@
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { closeStore, openStore } from '@mecha-gremlin/store/store';
 import type { ResponseOutputItem, ResponseUsage } from 'openai/resources/responses/responses';
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from 'vitest';
 import {
@@ -31,6 +33,7 @@ const SETTINGS = [
     'MODEL_MAX_OUTPUT_TOKENS',
     'ANTHROPIC_WORKSPACE_ID',
     'WORK_DIR',
+    'DATA_DIR',
     'SKILLS_PATH',
     'MAX_STEPS',
     'MAX_TURNS',
@@ -54,6 +57,20 @@ let cwd: string;
 // On macOS the temporary directory is reached through a link, and the agent uses real paths.
 let realCwd: string;
 let skillsRoot: string;
+// Migrated before the tests, so that only the tests that give a data folder of their own see the
+// migrated record.
+let dataDir: string;
+
+// Opens a store there, as a later run would, and closes it again.
+const reopen = async (folder: string) => {
+    const opened = await openStore(folder);
+
+    if (opened.ok) {
+        await closeStore(opened.value.store);
+    }
+
+    return opened;
+};
 
 const writeIn = async (path: string, text: string): Promise<void> => {
     await mkdir(dirname(path), { recursive: true });
@@ -74,11 +91,14 @@ beforeAll(async () => {
         join(skillsRoot, 'browser', 'SKILL.md'),
         '---\nname: browser\ndescription: Drive a browser.\n---\n# Browser\n',
     );
+    dataDir = await mkdtemp(join(tmpdir(), 'agent-data-'));
+    await reopen(dataDir);
 });
 
 afterAll(async () => {
     await rm(cwd, { recursive: true, force: true });
     await rm(skillsRoot, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true });
 });
 
 // The agents this file starts, and the model calls it holds open. A test that fails midway
@@ -140,6 +160,7 @@ const startAgent = (
         MAX_STEPS: '30',
         FILE_TOOLS: 'write-edit',
         WORK_DIR: cwd,
+        DATA_DIR: dataDir,
         ...env,
     };
 
@@ -470,6 +491,89 @@ describe('Carry out a task through the agent loop, and log the answer', { timeou
         expect(errors(records)).toEqual([expect.stringContaining('MAX_STEPS')]);
         expect(modelCalls).toHaveLength(0);
     });
+
+    test('the store opens, and migrates, before any network request', async () => {
+        const data = await mkdtemp(join(tmpdir(), 'agent-data-'));
+        // Whether db.sqlite existed, and how many records had been logged, at the first request.
+        const atFirstRequest: unknown[] = [];
+
+        try {
+            const { code, records } = await runAgent(
+                { DATA_DIR: data },
+                {
+                    models: () => {
+                        atFirstRequest.push(
+                            existsSync(join(data, 'db.sqlite')),
+                            vi.mocked(console.log).mock.calls.length,
+                        );
+                        throw new TypeError('Unable to connect');
+                    },
+                },
+            );
+
+            expect(code).toBe(1);
+            expect(atFirstRequest).toEqual([true, 1]);
+            expect(records.map((record) => record.message)).toEqual([
+                'migrated',
+                expect.stringMatching(/^Can't reach LM Studio at /),
+            ]);
+            expect(await reopen(data)).toMatchObject({ ok: true, value: { migrated: [] } });
+        } finally {
+            await rm(data, { recursive: true, force: true });
+        }
+    });
+
+    test("a data folder the store can't open fails before any network request", async () => {
+        const data = await mkdtemp(join(tmpdir(), 'agent-data-'));
+        await mkdir(join(data, 'db.sqlite'));
+
+        try {
+            const { code, records, requests } = await runAgent({ DATA_DIR: data });
+
+            expect(code).toBe(1);
+            expect(errors(records)).toEqual([
+                `Can't open the database at ${join(await realpath(data), 'db.sqlite')}: unable to open database file`,
+            ]);
+            expect(requests).toHaveLength(0);
+        } finally {
+            await rm(data, { recursive: true, force: true });
+        }
+    });
+
+    test('the file tools refuse the data folder inside the working directory', async () => {
+        const work = await mkdtemp(join(tmpdir(), 'agent-work-'));
+        await mkdir(join(work, 'data'));
+
+        try {
+            const { records } = await runAgent(
+                { WORK_DIR: work, DATA_DIR: join(work, 'data') },
+                {
+                    responses: script(
+                        () =>
+                            completed([
+                                call('read', { path: 'data/db.sqlite' }, 'call_1'),
+                                call('write', { path: 'data/x.txt', content: 'x' }, 'call_2'),
+                            ]),
+                        () => completed([message('I may not.')]),
+                    ),
+                },
+            );
+
+            expect(all(records, 'tool failed')).toMatchObject([
+                {
+                    tool: 'read',
+                    error: '"data/db.sqlite" is inside the data folder. The read tool doesn\'t read there: it holds the agent\'s database.',
+                },
+                {
+                    tool: 'write',
+                    error: '"data/x.txt" is inside the data folder. The write tool doesn\'t write there: it holds the agent\'s database.',
+                },
+            ]);
+            expect(existsSync(join(work, 'data', 'x.txt'))).toBe(false);
+        } finally {
+            await rm(work, { recursive: true, force: true });
+        }
+    });
 });
 
 const leaveDaemon = (then: () => Response): FakeServer => {
@@ -631,6 +735,61 @@ describe("Stop the session's processes when the agent ends", { timeout: 15_000 }
         expect(SIGNALS.map((signal) => process.listenerCount(signal))).toEqual(before);
     });
 
+    // A clean close removes the -wal and -shm files.
+    test.each([
+        ['an answer', 0, {}],
+        ['a failure', 1, { responses: () => httpError(500, 'model crashed') }],
+    ] as const)('the store is closed after %s', async (_after, code, server) => {
+        const data = await mkdtemp(join(tmpdir(), 'agent-data-'));
+
+        try {
+            const run = await runAgent({ DATA_DIR: data }, server);
+
+            expect(run.code).toBe(code);
+            expect(existsSync(join(data, 'db.sqlite-wal'))).toBe(false);
+            expect(existsSync(join(data, 'db.sqlite-shm'))).toBe(false);
+            expect(await reopen(data)).toMatchObject({ ok: true, value: { migrated: [] } });
+        } finally {
+            await rm(data, { recursive: true, force: true });
+        }
+    });
+
+    test('the store is closed after SIGINT', async () => {
+        const data = await mkdtemp(join(tmpdir(), 'agent-data-'));
+        const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+        const pending = heldModelCall();
+
+        try {
+            const started = startAgent({ DATA_DIR: data }, { responses: pending.response });
+            await vi.waitFor(
+                () => {
+                    expect(started.modelCalls()).toHaveLength(1);
+                },
+                { timeout: 4000, interval: 20 },
+            );
+
+            process.emit('SIGINT', 'SIGINT');
+            await vi.waitFor(
+                () => {
+                    expect(exit).toHaveBeenCalled();
+                },
+                { timeout: 4000, interval: 20 },
+            );
+            const closed = [
+                existsSync(join(data, 'db.sqlite-wal')),
+                existsSync(join(data, 'db.sqlite-shm')),
+            ];
+            await pending.release([message('Too late.')]);
+            await started.done;
+
+            expect(exit).toHaveBeenCalledExactlyOnceWith(130);
+            expect(closed).toEqual([false, false]);
+            expect(await reopen(data)).toMatchObject({ ok: true, value: { migrated: [] } });
+        } finally {
+            await rm(data, { recursive: true, force: true });
+        }
+    });
+
     test("the sweep can't run", async () => {
         const empty = await mkdtemp(join(tmpdir(), 'agent-path-'));
         vi.stubEnv('PATH', empty);
@@ -735,9 +894,13 @@ describe('Log each model call and tool call', () => {
 
     test('the asking record', async () => {
         const work = await mkdtemp(join(tmpdir(), 'agent-asking-'));
+        const data = await mkdtemp(join(tmpdir(), 'agent-data-'));
 
         try {
-            const { records, runId } = await runAgent({ WORK_DIR: work }, {}, ['Say', 'hi']);
+            const { records, runId } = await runAgent({ WORK_DIR: work, DATA_DIR: data }, {}, [
+                'Say',
+                'hi',
+            ]);
 
             expect(runId).toMatch(/^[0-9a-f]{8}$/);
             expect(find(records, 'asking')).toEqual({
@@ -748,10 +911,35 @@ describe('Log each model call and tool call', () => {
                 baseUrl: 'http://127.0.0.1:1234/v1',
                 run: runId,
                 workDir: await realpath(work),
+                dataDir: await realpath(data),
                 task: 'Say hi',
             });
         } finally {
             await rm(work, { recursive: true, force: true });
+            await rm(data, { recursive: true, force: true });
+        }
+    });
+
+    test('the migrated record, logged before asking, on the first run only', async () => {
+        const data = await mkdtemp(join(tmpdir(), 'agent-data-'));
+
+        try {
+            const first = await runAgent({ DATA_DIR: data });
+            const second = await runAgent({ DATA_DIR: data });
+
+            expect(first.records.slice(0, 2)).toEqual([
+                {
+                    time: expect.any(String),
+                    level: 'info',
+                    message: 'migrated',
+                    names: ['CreateCredential1793232000000'],
+                },
+                expect.objectContaining({ message: 'asking' }),
+            ]);
+            expect(second.records[0]).toMatchObject({ message: 'asking' });
+            expect(find(second.records, 'migrated')).toBeUndefined();
+        } finally {
+            await rm(data, { recursive: true, force: true });
         }
     });
 
@@ -1053,6 +1241,70 @@ describe('Read the configuration from the environment, and validate it at start-
         expect(code).toBe(1);
         expect(errors(records)).toEqual([
             'FILE_TOOLS must be one of write-edit, apply-patch; got "both".',
+        ]);
+        expect(requests).toHaveLength(0);
+    });
+
+    test('the data folder is required', async () => {
+        const { code, records, requests } = await runAgent({ DATA_DIR: undefined });
+
+        expect(code).toBe(1);
+        expect(errors(records)).toEqual(['DATA_DIR is required.']);
+        expect(requests).toHaveLength(0);
+    });
+
+    test.each([
+        ['a path that does not exist', 'missing'],
+        ['a file', 'package.json'],
+    ])('a data folder that is %s', async (_kind, data) => {
+        const { code, records, requests } = await runAgent({ DATA_DIR: data });
+
+        expect(code).toBe(1);
+        expect(errors(records)).toEqual([
+            `DATA_DIR must name an existing directory; ${join(cwd, data)} isn't one.`,
+        ]);
+        expect(requests).toHaveLength(0);
+    });
+
+    test('a relative data folder resolves against the current directory', async () => {
+        await mkdir(join(cwd, 'data'), { recursive: true });
+
+        const { records } = await runAgent({ DATA_DIR: 'data' });
+
+        expect(find(records, 'asking')).toMatchObject({ dataDir: join(realCwd, 'data') });
+        expect(existsSync(join(cwd, 'data', 'db.sqlite'))).toBe(true);
+    });
+
+    test('a data folder given through a link: the store opens in its real path', async () => {
+        const base = await mkdtemp(join(tmpdir(), 'agent-data-'));
+        const real = join(await realpath(base), 'real');
+        await mkdir(real);
+        await symlink(real, join(base, 'link'));
+
+        try {
+            const { records } = await runAgent({ DATA_DIR: join(base, 'link') });
+
+            expect(find(records, 'asking')).toMatchObject({ dataDir: real });
+            expect(existsSync(join(real, 'db.sqlite'))).toBe(true);
+        } finally {
+            await rm(base, { recursive: true, force: true });
+        }
+    });
+
+    test.each([
+        ['the working directory', 'work', '.'],
+        ['a directory that holds it', 'work', '..'],
+    ])('a data folder that is %s', async (_kind, work, data) => {
+        await mkdir(join(cwd, work), { recursive: true });
+
+        const { code, records, requests } = await runAgent({
+            WORK_DIR: work,
+            DATA_DIR: join(work, data),
+        });
+
+        expect(code).toBe(1);
+        expect(errors(records)).toEqual([
+            `DATA_DIR must not be or contain WORK_DIR, since the file tools refuse everything in the data folder: DATA_DIR is ${join(realCwd, work, data)}, and WORK_DIR is ${join(realCwd, work)}.`,
         ]);
         expect(requests).toHaveLength(0);
     });

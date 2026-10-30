@@ -9,7 +9,8 @@ A self-hosted, scheduled agent runner, in early development. The design and its 
 | [`packages/core`](packages/core) | `@mecha-gremlin/core`: stateless, provider-independent types and functions. `model-call`, `history` and `statistics` define Gremlin's call, native replay and typed provider statistics contracts. `tools` defines tools through any [Standard Schema](https://standardschema.dev) library and validates their arguments. `skills` checks a SKILL.md and renders the skills catalog and a skill's activation, `output` caps a command's output as it streams in, and `patch` parses and applies Codex's V4A patches. Core depends on neither model SDK. |
 | [`packages/yaml`](packages/yaml) | `@mecha-gremlin/yaml`: `parseYaml`, which uses Bun's built-in parser, `Bun.YAML`, on Bun, and the [`yaml`](https://www.npmjs.com/package/yaml) package elsewhere. The two give the same values for everything frontmatter uses. |
 | [`packages/process`](packages/process) | `@mecha-gremlin/process`: `spawnProcess`, which uses `Bun.spawn` on Bun and `node:child_process` elsewhere, and gives the process the same shape on both: its pid, its output as web streams, a promise of how it exited, and `unref()`. |
-| [`packages/agent`](packages/agent) | `@mecha-gremlin/agent`: the agent. It carries out a task in an agent loop, with a shell, file tools and skills. It runs on Bun or Node. |
+| [`packages/store`](packages/store) | `@mecha-gremlin/store`: the data folder's SQLite database, through [TypeORM](https://typeorm.io) and [better-sqlite3](https://www.npmjs.com/package/better-sqlite3), the same on Bun and Node. `store` opens `db.sqlite` in a given folder, sets its pragmas and runs its migrations, and runs every query on a store after the one before it. `credential` keeps OAuth credentials, with a lease for their refresh. |
+| [`packages/agent`](packages/agent) | `@mecha-gremlin/agent`: the agent. It carries out a task in an agent loop, with a shell, file tools and skills, and opens the store in its data folder. It runs on Bun or Node. |
 
 Inside `packages/agent/src`, the code is grouped by concern:
 - `main`: the entry point, and its helpers for the arguments, the log fields and the failure messages;
@@ -25,11 +26,11 @@ Inside `packages/agent/src`, the code is grouped by concern:
 
 At the top, [`test`](test) holds the signal guard, a Vitest setup file for every package's tests (see Develop).
 
-No package has index files: every import names the file it uses. The `package.json` of `core`, `yaml` and `process` exports each module by name, so the agent imports `@mecha-gremlin/core/model-call`, `@mecha-gremlin/core/result` and so on. The tests mirror the folders.
+No package has index files: every import names the file it uses. The `package.json` of `core`, `yaml`, `process` and `store` exports each module by name, so the agent imports `@mecha-gremlin/core/model-call`, `@mecha-gremlin/store/store` and so on. The tests mirror the folders.
 
 ## Prerequisites
 
-- [Bun](https://bun.com) 1.4 or later.
+- [Bun](https://bun.com) 1.4.4 or later. Bun 1.4.3's install runs node-gyp for better-sqlite3, which fails without Python, make and a C++ toolchain.
 - [Node.js](https://nodejs.org) 26 or later, for `bun run agent:node` and `bun run test:node`, and so for `bun run check`.
 - A configured model: [LM Studio](https://lmstudio.ai), an OpenAI Responses endpoint, or the direct Claude API. For LM Studio, start the server (`lms server start`) and load the **named** model (`lms load <model>`, or load one in the app). The agent never loads a model on demand. A browsing task needs more context than LM Studio's default: see [Set up for browsing](#set-up-for-browsing).
 - For browsing with the example skill, [playwright-cli](https://www.npmjs.com/package/@playwright/cli) and [Google Chrome](https://www.google.com/chrome/).
@@ -59,7 +60,8 @@ The model carries out the task with its tools, offered in this order: `read`; `w
 
 Everything is logged to stdout as structured records, one per line:
 - the skills loaded, and any that couldn't be;
-- the task, with the run's ID and the working directory;
+- the migrations applied to the database, when there are any;
+- the task, with the run's ID, the working directory and the data folder;
 - each model call's provider-specific statistics, including reported usage, cache counts and rate-limit headers, even when a call fails;
 - each tool call and its result;
 - the answer;
@@ -87,6 +89,7 @@ The four tools share a fence. They refuse:
 
 - paths outside the working directory, including through `..`, absolute paths and symbolic links. `read` may also read inside the skills' directories, which the other three can't write;
 - `.env` files and anything else whose name starts with `.env`, because they hold secrets such as `MODEL_API_KEY`;
+- paths inside the data folder, `DATA_DIR`, as written or through a link, because it holds the agent's database (see [The data folder](#the-data-folder));
 - directories and binary files.
 
 `write`, and `apply_patch` adding a file, won't replace a file larger than 32 KiB, the most one read returns, since the model may not have read all of it. `edit` and `apply_patch` change files of up to 10 MiB that are valid UTF-8. Every refusal goes back to the model as the tool's output, so the model can explain it or try something else. These limits guard the file tools alone: the shell can read and write anything you can.
@@ -103,6 +106,16 @@ The four tools share a fence. They refuse:
 - **The environment is built from scratch:** `PATH`, `HOME`, `USER`, `LOGNAME`, `TMPDIR`, `LANG` and `LC_ALL` from yours, fixed values against prompts, pagers and colour codes, the run's ID, and a playwright-cli session of the run's own.
 
 **What the shell can reach: anything your account can.** A model steered by a web page can read your files, run programs and send data out. Building the environment from scratch keeps your other variables, and `.env`'s, out of what commands inherit and print by accident, such as an environment dump or a log. It doesn't stop a command that goes looking: `ps -E -p $PPID` shows the agent process's own environment on macOS, and `.env` is a readable file. Run it attended, against sites you choose.
+
+### The data folder
+
+The agent keeps a SQLite database, `db.sqlite`, in the data folder that `DATA_DIR` names. Its first table holds OAuth credentials for MCP servers, which a later login command will save: client registrations and tokens, in plain text. Give the agent a data folder of its own, outside the working directory, or at least in a path git ignores.
+
+- **Its files.** Every run opens the database before any network request, creating `db.sqlite` when it's missing, and applies the migrations that haven't run yet, logging their names in a `migrated` record. A new `db.sqlite` gets mode 0600, so only you can read it, and SQLite gives the same mode to the `db.sqlite-wal` and `db.sqlite-shm` files it keeps beside it while the database is open. An existing `db.sqlite` keeps its mode. When the agent ends, unless SIGKILL ends it, it closes the database, which folds `db.sqlite-wal` back into `db.sqlite` and removes both. `.gitignore` keeps `*.sqlite` files and those beside them out of git.
+- **A local file system.** SQLite's locks work only on a local file system, so the data folder must never be on a network share. In Docker, it is a named volume, never a bind mount on Docker Desktop for macOS, where SQLite's locks fail and a commit can be lost.
+- **Copying it.** Copy the database with SQL's `VACUUM INTO`, which writes a consistent copy even while the agent is using it, as in `sqlite3 db.sqlite "VACUUM INTO 'copy.sqlite'"`. Never copy `db.sqlite` alone: while the database is open, its latest commits are in `db.sqlite-wal`.
+- **Where it runs.** better-sqlite3 13 ships prebuilt binaries for x64 and arm64. On Linux, they need glibc 2.34 or later, which Debian 11 and RHEL 8 are too old for, or musl, as on Alpine.
+- **The shell can read it.** `read`, `write`, `edit` and `apply_patch` refuse paths inside the data folder, as they refuse `.env` files, but the shell isn't fenced: a command can read and write the database as it can anything else your account can.
 
 ### Skills
 
@@ -143,6 +156,7 @@ There are no implicit provider, model or operational settings. The Claude cache 
 | `ANTHROPIC_WORKSPACE_ID` | No | Optional Anthropic workspace ID for a key that needs one. |
 | `LOG_FORMAT` | Yes | `pretty` or `json`. |
 | `WORK_DIR` | Yes | Existing directory for the shell and file tools. A relative path resolves against the current directory; the real path is used. |
+| `DATA_DIR` | Yes | Existing directory for the agent's database (see [The data folder](#the-data-folder)). A relative path resolves against the current directory; the real path is used. It must not be `WORK_DIR` or contain it. |
 | `MAX_STEPS` | Yes | Maximum model calls in a session, a positive whole number. The old name `MAX_TURNS` is rejected. |
 | `FILE_TOOLS` | Yes | `write-edit` or `apply-patch` (see [The file tools](#the-file-tools)). |
 | `SKILLS_PATH` | No | Skill roots separated by `:`. If absent, no skills are loaded and no other directory is searched. |
@@ -159,9 +173,10 @@ MAX_STEPS=30
 FILE_TOOLS=write-edit
 LOG_FORMAT=pretty
 WORK_DIR=/absolute/path/to/existing/workdir
+DATA_DIR=/absolute/path/to/existing/data-folder
 ```
 
-For the direct Claude API, replace the provider-specific lines with an Anthropic API key and a model available to your account, and keep the explicit operational settings above:
+For the direct Claude API, replace the provider-specific lines with an Anthropic API key and a model available to your account, and keep the explicit operational settings above, `WORK_DIR` and `DATA_DIR` included:
 
 ```dotenv
 MODEL_PROVIDER=anthropic
@@ -174,7 +189,7 @@ MODEL_MAX_OUTPUT_TOKENS=4096
 
 Claude uses the native Messages API, not a Claude subscription or an OpenAI compatibility endpoint. Every request enables automatic five-minute prompt caching; cache writes can cost more, and a hit depends on prompt length, prefix matching and cache lifetime. The agent reports the actual cache usage instead of promising a hit. Each request also asks for Claude's cache diagnostics against the previous reply, so a model call's `diagnostics` names what changed when the cache couldn't reuse that request's prefix; `null` means nothing did, or it is the first call. Tool schemas retain their constraints and are validated locally; Anthropic strict-tool mode is not enabled. Signed thinking and other native assistant blocks stay in the session's in-memory history, and a session cannot switch providers. History is not persisted to a database.
 
-**Migrating:** Existing `.env` files must now supply every required setting and every invocation must supply a task. LM Studio no longer selects its first loaded model. Consumers of the old OpenAI-shaped core `callModel`, `toInput`, `toOutputItem`, `toFunctionTool` and `classify` exports must use Gremlin's provider-neutral core types and the agent's provider adapters instead. No persisted history migration is needed.
+**Migrating:** Existing `.env` files must now supply every required setting, `DATA_DIR` included, and every invocation must supply a task. LM Studio no longer selects its first loaded model. Consumers of the old OpenAI-shaped core `callModel`, `toInput`, `toOutputItem`, `toFunctionTool` and `classify` exports must use Gremlin's provider-neutral core types and the agent's provider adapters instead. No persisted history migration is needed.
 
 ## Develop
 
@@ -212,7 +227,7 @@ bun run mutation       # Stryker mutation testing on Bun, which fails below 100%
   - `consistent-return` is off: TypeScript's `noImplicitReturns` checks the same thing, and knows when a switch covers every case.
 - **The packages' boundaries are enforced by the linter,** through overrides in `.oxlintrc.json`.
   - `core` may not touch `process`, `Bun` or `console`.
-  - `yaml` and `process` may not touch `process` or `console`: they report only through their results, and a spawned process gets only the environment it's given.
+  - `yaml`, `process` and `store` may not touch `process` or `console`: they report only through their results, and a spawned process gets only the environment it's given.
 - **Every mutant must be caught.**
   - Stryker fails below a 100% mutation score, so a new branch or message needs a test that would notice it changing.
   - A mutant that behaves exactly like the original code, or sits in code that can't run, is usually better removed by simplifying the code.
@@ -227,7 +242,7 @@ GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) builds e
 1. **Check and test:**
    - a frozen install, then the format check, lint, spell check and typecheck;
    - the tests on Bun (failures are annotated on the PR), then the whole suite again on Node;
-   - the agent, started on Node against a port where nothing listens. It must exit with 1, saying it can't reach LM Studio. The tests load the code through Vite, so this is the one check that Node itself loads it;
+   - the agent, started on Node against a port where nothing listens, with a data folder in the runner's temporary directory. It opens the store and runs the migrations first, then must exit with 1, saying it can't reach LM Studio. The tests load the code through Vite, so this is the one check that Node itself loads it;
    - `bun audit`, report only: the step shows as failed when there are advisories, but the job still passes.
 2. **Mutation testing:** once the checks pass, Stryker runs on Bun and uploads its HTML report as the `mutation-report` artifact. The job fails if any mutant survives. It sets up only Bun, not Node.
 

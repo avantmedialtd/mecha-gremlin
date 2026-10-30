@@ -13,6 +13,7 @@ const OPENAI: Config = {
     fileTools: 'write-edit',
     logFormat: 'json',
     workDir: '/',
+    dataDir: '/data',
 };
 
 describe('resolveModel', () => {

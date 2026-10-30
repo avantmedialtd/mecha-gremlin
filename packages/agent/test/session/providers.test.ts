@@ -19,6 +19,7 @@ const base = {
     fileTools: 'write-edit' as const,
     logFormat: 'json' as const,
     workDir: '/',
+    dataDir: '/data',
 };
 const configs: readonly Config[] = [
     { ...base, provider: 'openai' },

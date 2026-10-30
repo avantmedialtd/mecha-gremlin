@@ -35,6 +35,7 @@ describe('session adapter failures', () => {
             fileTools: 'write-edit',
             logFormat: 'json',
             workDir: '/',
+            dataDir: '/data',
         };
         const created = await createSession(config, { tools: [], history: [], maxSteps: 1 });
 
@@ -70,6 +71,7 @@ describe('session adapter failures', () => {
             fileTools: 'write-edit',
             logFormat: 'json',
             workDir: '/',
+            dataDir: '/data',
         };
         const created = await createSession(config, { tools: [], history: [], maxSteps: 1 });
 

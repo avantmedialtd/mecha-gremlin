@@ -187,6 +187,7 @@ const describePage = (page: Page, name: string, first: number): ToolOutcome => {
 const readLines = async (
     root: string,
     skillDirectories: readonly string[],
+    dataDir: string,
     path: string,
     first: number,
     limit: number,
@@ -194,7 +195,7 @@ const readLines = async (
     const name = JSON.stringify(path);
 
     try {
-        const fenced = await fenceRead(root, skillDirectories, path);
+        const fenced = await fenceRead(root, skillDirectories, dataDir, path);
 
         if (!fenced.ok) {
             return fenced;
@@ -220,10 +221,21 @@ const readLines = async (
     }
 };
 
-export const readTool = (root: string, skillDirectories: readonly string[]): ToolHandler => {
+export const readTool = (
+    root: string,
+    skillDirectories: readonly string[],
+    dataDir: string,
+): ToolHandler => {
     return defineTool(
         { name: 'read', description: DESCRIPTION, schema: ReadArgs },
         ({ path, offset, limit }) =>
-            readLines(root, skillDirectories, path, offset ?? 1, limit ?? Number.POSITIVE_INFINITY),
+            readLines(
+                root,
+                skillDirectories,
+                dataDir,
+                path,
+                offset ?? 1,
+                limit ?? Number.POSITIVE_INFINITY,
+            ),
     );
 };

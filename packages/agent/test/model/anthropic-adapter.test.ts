@@ -19,6 +19,7 @@ const config: Extract<Config, { provider: 'anthropic' }> = {
     fileTools: 'write-edit',
     logFormat: 'json',
     workDir: '/',
+    dataDir: '/data',
 };
 const history: HistoryItem[] = [
     { kind: 'instruction', text: 'Be brief.' },

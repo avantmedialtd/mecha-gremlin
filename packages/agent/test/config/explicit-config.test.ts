@@ -1,8 +1,17 @@
-import { realpathSync } from 'node:fs';
-import { describe, expect, test } from 'vitest';
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, describe, expect, test } from 'vitest';
 import { loadConfig, loadLogFormat } from '../../src/config/config.ts';
 import { parseArgs } from '../../src/main/args.ts';
 import { pickModel } from '../../src/model/lmstudio.ts';
+
+// A data folder of its own, outside the working directory, which is the current one.
+const DATA_DIR = mkdtempSync(join(tmpdir(), 'gremlin-data-'));
+
+afterAll(() => {
+    rmSync(DATA_DIR, { recursive: true, force: true });
+});
 
 const common = {
     MODEL_BASE_URL: 'https://models.example.com/v1/',
@@ -13,6 +22,7 @@ const common = {
     FILE_TOOLS: 'write-edit',
     LOG_FORMAT: 'json',
     WORK_DIR: '.',
+    DATA_DIR,
 };
 
 describe('explicit configuration', () => {
@@ -35,6 +45,7 @@ describe('explicit configuration', () => {
             'FILE_TOOLS',
             'LOG_FORMAT',
             'WORK_DIR',
+            'DATA_DIR',
         ]) {
             expect(result.error.some((message) => message.includes(name))).toBe(true);
         }
@@ -48,6 +59,7 @@ describe('explicit configuration', () => {
                 baseUrl: 'https://models.example.com/v1',
                 model: 'test-model',
                 workDir: realpathSync('.'),
+                dataDir: realpathSync(DATA_DIR),
             },
         });
     });

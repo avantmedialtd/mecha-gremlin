@@ -40,6 +40,11 @@
                             "ResponseOutputItem",
                             "ResponseUsage"
                         ]
+                    },
+                    {
+                        "from": "package",
+                        "package": "typeorm",
+                        "name": ["DataSource", "QueryRunner"]
                     }
                 ]
             }
@@ -67,14 +72,14 @@
             }
         },
         {
-            "files": ["packages/yaml/src/**", "packages/process/src/**"],
+            "files": ["packages/yaml/src/**", "packages/process/src/**", "packages/store/src/**"],
             "rules": {
                 "no-console": "error",
                 "no-restricted-globals": [
                     "error",
                     {
                         "name": "process",
-                        "message": "The runtime packages report only through their results, and a spawned process gets only the environment it's given: no env, stdout or stderr."
+                        "message": "The runtime packages and the store report only through their results, and a spawned process gets only the environment it's given: no env, stdout or stderr."
                     }
                 ]
             }

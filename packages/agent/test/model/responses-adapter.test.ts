@@ -17,6 +17,7 @@ const config: Extract<Config, { provider: 'openai' | 'lmstudio' }> = {
     fileTools: 'write-edit',
     logFormat: 'json',
     workDir: '/',
+    dataDir: '/data',
 };
 
 const initial: HistoryItem[] = [

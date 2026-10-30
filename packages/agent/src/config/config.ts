@@ -4,6 +4,7 @@ import { type Result, err, ok } from '@mecha-gremlin/core/result';
 import type { Provider } from '@mecha-gremlin/core/statistics';
 import { z } from 'zod';
 import type { LogFormat } from '../log/log.ts';
+import { isInside } from '../tools/fence.ts';
 
 export type { Provider } from '@mecha-gremlin/core/statistics';
 
@@ -21,6 +22,7 @@ type CommonConfig = {
     readonly fileTools: FileTools;
     readonly logFormat: LogFormat;
     readonly workDir: string;
+    readonly dataDir: string;
 };
 
 export type Config = CommonConfig &
@@ -113,25 +115,27 @@ const positiveInteger = (name: string, safe: boolean) =>
         return z.NEVER;
     });
 
-const workDir = required('WORK_DIR').transform((raw, ctx) => {
-    const path = resolve(process.cwd(), raw);
+const directory = (name: string) => {
+    return required(name).transform((raw, ctx) => {
+        const path = resolve(process.cwd(), raw);
 
-    // Its real path is used everywhere: on macOS /tmp and /var are links, and a path built from pwd
-    // would fail the file tools' lexical checks. On Node, only the native realpath also spells each
-    // name as it is on disk, as pwd does, when the file system ignores case.
-    try {
-        const real = realpathSync.native(path);
+        // Its real path is used everywhere: on macOS /tmp and /var are links, and a path built
+        // from pwd would fail the file tools' lexical checks. On Node, only the native realpath
+        // also spells each name as it is on disk, as pwd does, when the file system ignores case.
+        try {
+            const real = realpathSync.native(path);
 
-        if (statSync(real).isDirectory()) {
-            return real;
+            if (statSync(real).isDirectory()) {
+                return real;
+            }
+        } catch {
+            // A missing, unreadable or otherwise invalid directory gets the same diagnostic.
         }
-    } catch {
-        // A missing, unreadable or otherwise invalid directory gets the same diagnostic.
-    }
 
-    ctx.addIssue(`WORK_DIR must name an existing directory; ${path} isn't one.`);
-    return z.NEVER;
-});
+        ctx.addIssue(`${name} must name an existing directory; ${path} isn't one.`);
+        return z.NEVER;
+    });
+};
 
 const common = {
     MODEL_BASE_URL: baseUrl,
@@ -141,7 +145,8 @@ const common = {
     MAX_STEPS: positiveInteger('MAX_STEPS', false),
     FILE_TOOLS: choice('FILE_TOOLS', ['write-edit', 'apply-patch']),
     LOG_FORMAT: choice('LOG_FORMAT', ['pretty', 'json']),
-    WORK_DIR: workDir,
+    WORK_DIR: directory('WORK_DIR'),
+    DATA_DIR: directory('DATA_DIR'),
     SKILLS_PATH: z.string().optional(),
 };
 
@@ -188,6 +193,19 @@ const messagesOf = (result: {
     return result.error?.issues.map((issue) => issue.message) ?? [];
 };
 
+// The file tools refuse everything in the data folder, so they couldn't touch a working directory
+// inside it.
+const overlap = (raw: { readonly WORK_DIR?: string; readonly DATA_DIR?: string }): string[] => {
+    const work = common.WORK_DIR.safeParse(raw.WORK_DIR);
+    const data = common.DATA_DIR.safeParse(raw.DATA_DIR);
+
+    return work.success && data.success && isInside(data.data, work.data)
+        ? [
+              `DATA_DIR must not be or contain WORK_DIR, since the file tools refuse everything in the data folder: DATA_DIR is ${data.data}, and WORK_DIR is ${work.data}.`,
+          ]
+        : [];
+};
+
 export const loadConfig = (env: Env): Result<Config, string[]> => {
     const raw = {
         MODEL_PROVIDER: read(env, 'MODEL_PROVIDER'),
@@ -201,21 +219,23 @@ export const loadConfig = (env: Env): Result<Config, string[]> => {
         FILE_TOOLS: read(env, 'FILE_TOOLS'),
         LOG_FORMAT: read(env, 'LOG_FORMAT'),
         WORK_DIR: read(env, 'WORK_DIR'),
+        DATA_DIR: read(env, 'DATA_DIR'),
         SKILLS_PATH: read(env, 'SKILLS_PATH'),
     };
+    const overlapping = overlap(raw);
     const formerName =
         env.MAX_TURNS === undefined
             ? []
             : ['MAX_TURNS is now MAX_STEPS; rename it in your settings.'];
 
     if (!PROVIDERS.some((provider) => provider === raw.MODEL_PROVIDER)) {
-        return err([...messagesOf(commonSchema.safeParse(raw)), ...formerName]);
+        return err([...messagesOf(commonSchema.safeParse(raw)), ...overlapping, ...formerName]);
     }
 
     const result = providerSchema.safeParse(raw);
 
-    if (!result.success || formerName.length > 0) {
-        return err([...messagesOf(result), ...formerName]);
+    if (!result.success || overlapping.length > 0 || formerName.length > 0) {
+        return err([...messagesOf(result), ...overlapping, ...formerName]);
     }
 
     const value = result.data;
@@ -228,6 +248,7 @@ export const loadConfig = (env: Env): Result<Config, string[]> => {
         fileTools: value.FILE_TOOLS,
         logFormat: value.LOG_FORMAT,
         workDir: value.WORK_DIR,
+        dataDir: value.DATA_DIR,
     };
 
     return value.MODEL_PROVIDER === 'anthropic'

@@ -154,12 +154,16 @@ const plan = async (root: string, hunk: Hunk, claim: Claim): Promise<Result<Chan
  * it updates or deletes read. A file named twice is refused, since each hunk is worked out from
  * the file as it is now, and a later one would undo an earlier one.
  */
-const planAll = async (root: string, hunks: readonly Hunk[]): Promise<Result<Change[], string>> => {
+const planAll = async (
+    root: string,
+    dataDir: string,
+    hunks: readonly Hunk[],
+): Promise<Result<Change[], string>> => {
     const claimed = new Set<string>();
     const changes: Change[] = [];
 
     const claim: Claim = async (path) => {
-        const fenced = await fenceWrite(root, 'apply_patch', path);
+        const fenced = await fenceWrite(root, dataDir, 'apply_patch', path);
 
         if (!fenced.ok) {
             return fenced;
@@ -191,7 +195,7 @@ const planAll = async (root: string, hunks: readonly Hunk[]): Promise<Result<Cha
     return ok(changes);
 };
 
-const applyPatch = async (root: string, patch: string): Promise<ToolOutcome> => {
+const applyPatch = async (root: string, dataDir: string, patch: string): Promise<ToolOutcome> => {
     const parsed = parsePatch(patch);
 
     if (!parsed.ok) {
@@ -201,7 +205,7 @@ const applyPatch = async (root: string, patch: string): Promise<ToolOutcome> => 
     let changes: Result<Change[], string>;
 
     try {
-        changes = await planAll(root, parsed.value);
+        changes = await planAll(root, dataDir, parsed.value);
     } catch (error) {
         return err(`Can't apply the patch: ${reasonOf(error)}. No file was changed.`);
     }
@@ -230,9 +234,9 @@ const applyPatch = async (root: string, patch: string): Promise<ToolOutcome> => 
     return ok(['Success. Updated the following files:', ...done].join('\n'));
 };
 
-export const applyPatchTool = (root: string): ToolHandler => {
+export const applyPatchTool = (root: string, dataDir: string): ToolHandler => {
     return defineTool(
         { name: 'apply_patch', description: DESCRIPTION, schema: ApplyPatchArgs },
-        ({ patch }) => applyPatch(root, patch),
+        ({ patch }) => applyPatch(root, dataDir, patch),
     );
 };

@@ -9,6 +9,8 @@ let root: string;
 let realRoot: string;
 let outside: string;
 let skill: string;
+// Inside the root, as a data folder may be, by its real path, as loadConfig records it.
+let dataDir: string;
 
 beforeAll(async () => {
     root = await mkdtemp(join(tmpdir(), 'fence-root-'));
@@ -30,6 +32,13 @@ beforeAll(async () => {
     await symlink(outside, join(root, 'out'));
     await symlink(join(root, 'docs'), join(root, 'inner'));
     await symlink(root, join(outside, 'into-root'));
+
+    dataDir = join(realRoot, 'data');
+    await mkdir(dataDir);
+    await writeFile(join(dataDir, 'db.sqlite'), 'SQLite format 3');
+    await symlink(join(dataDir, 'db.sqlite'), join(root, 'ledger.txt'));
+    await symlink(dataDir, join(root, 'vault'));
+    await symlink(join(root, 'docs'), join(dataDir, 'way-out'));
 });
 
 afterAll(async () => {
@@ -39,7 +48,7 @@ afterAll(async () => {
 });
 
 const fence = (path: string, tool = 'write') => {
-    return fenceWrite(root, tool, path);
+    return fenceWrite(root, dataDir, tool, path);
 };
 
 const outsideError = (path: string, tool = 'write') => {
@@ -163,6 +172,52 @@ describe('The write check refuses environment files', () => {
             ok: false,
             error: '".env" is an environment file. The apply_patch tool doesn\'t write those: they hold secrets.',
         });
+    });
+});
+
+// By the root's real path, as the agent gives it, which the paths as written start with.
+const fenceReal = (path: string, tool = 'write') => {
+    return fenceWrite(realRoot, dataDir, tool, path);
+};
+
+const dataError = (path: string, tool = 'write') => {
+    return {
+        ok: false,
+        error: `${JSON.stringify(path)} is inside the data folder. The ${tool} tool doesn't write there: it holds the agent's database.`,
+    };
+};
+
+describe('The write check refuses the data folder', () => {
+    test.each(['data', 'data/db.sqlite', 'data/new.txt', 'data/new/deeper.txt'])(
+        '%s',
+        async (path) => {
+            expect(await fenceReal(path)).toEqual(dataError(path));
+        },
+    );
+
+    test('a link to a file in it', async () => {
+        expect(await fenceReal('ledger.txt')).toEqual(dataError('ledger.txt'));
+    });
+
+    test('a missing path below a link to it', async () => {
+        expect(await fenceReal('vault/new.txt')).toEqual(dataError('vault/new.txt'));
+    });
+
+    test('a path in it as written, even through a link that leads out of it', async () => {
+        expect(await fenceReal('data/way-out/new.txt')).toEqual(dataError('data/way-out/new.txt'));
+    });
+
+    test('a name that only starts with its name is outside it', async () => {
+        expect(await fenceReal('data-old/new.txt')).toEqual({
+            ok: true,
+            value: join(realRoot, 'data-old', 'new.txt'),
+        });
+    });
+
+    test('the message names the tool', async () => {
+        expect(await fenceReal('data/db.sqlite', 'edit')).toEqual(
+            dataError('data/db.sqlite', 'edit'),
+        );
     });
 });
 

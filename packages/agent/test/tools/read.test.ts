@@ -7,9 +7,12 @@ import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { READ_LIMIT, readTool } from '../../src/tools/read.ts';
 
 let root: string;
+let realRoot: string;
 let outside: string;
 // A skill's directory is given by its real path, as loadSkills records it.
 let skill: string;
+// Inside the root, as a data folder may be, by its real path, as loadConfig records it.
+let dataDir: string;
 
 /** Line `n` of `hundred.txt`: 99 ASCII characters, its number first, and a `\n`. */
 const hundredLine = (n: number): string => {
@@ -71,6 +74,13 @@ beforeAll(async () => {
     // Line 30001 starts 5536 bytes before the first chunk ends.
     await writeFile(join(root, 'long-later.txt'), `${'x\n'.repeat(30_000)}${'L'.repeat(40_000)}`);
     await writeFile(join(root, 'exact-line.txt'), `${'e'.repeat(READ_LIMIT - 1)}\nnext\n`);
+
+    realRoot = await realpath(root);
+    dataDir = join(realRoot, 'data');
+    await mkdir(dataDir);
+    await writeFile(join(dataDir, 'db.sqlite'), 'SQLite format 3 refresh_token=rt-secret');
+    await symlink(join(dataDir, 'db.sqlite'), join(root, 'ledger.txt'));
+    await symlink(join(root, 'docs'), join(dataDir, 'way-out'));
 });
 
 afterAll(async () => {
@@ -83,7 +93,7 @@ afterAll(async () => {
 type Paging = { readonly offset?: number | null; readonly limit?: number | null };
 
 const read = (path: string, paging: Paging = {}): Promise<ToolOutcome> => {
-    return readTool(root, [skill]).invoke(JSON.stringify({ path, ...paging }));
+    return readTool(root, [skill], dataDir).invoke(JSON.stringify({ path, ...paging }));
 };
 
 const OUTSIDE = 'is outside the directories the read tool may read.';
@@ -92,6 +102,15 @@ const errorOf = (outcome: ToolOutcome): string => {
     expect(outcome.ok).toBe(false);
 
     return (outcome as Extract<ToolOutcome, { ok: false }>).error;
+};
+
+// By the root's real path, as the agent gives it, which the paths as written start with.
+const readReal = async (path: string): Promise<string> => {
+    return errorOf(await readTool(realRoot, [skill], dataDir).invoke(JSON.stringify({ path })));
+};
+
+const dataError = (path: string): string => {
+    return `${JSON.stringify(path)} is inside the data folder. The read tool doesn't read there: it holds the agent's database.`;
 };
 
 const LINE_NUMBER = {
@@ -124,7 +143,7 @@ describe('Read a UTF-8 text file under a root directory', () => {
     });
 
     test('without skill directories, only the root', async () => {
-        const tool = readTool(root, []);
+        const tool = readTool(root, [], dataDir);
         const inRoot = await tool.invoke(JSON.stringify({ path: 'notes.txt' }));
         const inSkill = await tool.invoke(
             JSON.stringify({ path: join(skill, 'references', 'forms.md') }),
@@ -137,7 +156,7 @@ describe('Read a UTF-8 text file under a root directory', () => {
     });
 
     test('the model sees a closed schema', () => {
-        const tool = toFunctionTool(readTool(root, []).tool);
+        const tool = toFunctionTool(readTool(root, [], dataDir).tool);
 
         expect(tool).toMatchObject({ type: 'function', name: 'read', strict: true });
         expect(tool.parameters).toEqual({
@@ -153,7 +172,7 @@ describe('Read a UTF-8 text file under a root directory', () => {
     });
 
     test('the model is told what the tool reads, and how to page', () => {
-        const tool = toFunctionTool(readTool(root, []).tool);
+        const tool = toFunctionTool(readTool(root, [], dataDir).tool);
 
         expect(tool.description).toBe(
             "Read a UTF-8 text file and return its contents. The path is relative to the working directory, or absolute inside a skill's directory. offset is the first line to read, from 1, and limit the most lines; pass null for both to read from the start. Each call returns at most 32 KiB in whole lines, with a note giving the offset to continue from.",
@@ -171,7 +190,7 @@ describe('Read a UTF-8 text file under a root directory', () => {
     test('extra arguments are rejected before any file is read', async () => {
         // Had the file been looked up, a missing one would say so.
         const error = errorOf(
-            await readTool(root, []).invoke(
+            await readTool(root, [], dataDir).invoke(
                 '{"path":"missing.txt","offset":null,"limit":null,"encoding":"utf8"}',
             ),
         );
@@ -207,7 +226,9 @@ describe('Read a UTF-8 text file under a root directory', () => {
         ['limit', '5'],
     ])('an invalid %s of %j is rejected before any file is read', async (key, value) => {
         const error = errorOf(
-            await readTool(root, []).invoke(JSON.stringify({ path: 'missing.txt', [key]: value })),
+            await readTool(root, [], dataDir).invoke(
+                JSON.stringify({ path: 'missing.txt', [key]: value }),
+            ),
         );
 
         expect(error).toMatch(
@@ -314,6 +335,32 @@ describe('Refuse secrets, directories and binary files', () => {
 
     test.skipIf(process.getuid?.() === 0)('an unreadable file', async () => {
         expect(errorOf(await read('locked.txt'))).toMatch(/^Can't read "locked.txt": EACCES/);
+    });
+
+    describe('the data folder', () => {
+        test('a file in it', async () => {
+            const error = await readReal('data/db.sqlite');
+
+            expect(error).toBe(dataError('data/db.sqlite'));
+            expect(error).not.toContain('rt-secret');
+        });
+
+        test('a link to a file in it', async () => {
+            const error = await readReal('ledger.txt');
+
+            expect(error).toBe(dataError('ledger.txt'));
+            expect(error).not.toContain('rt-secret');
+        });
+
+        test("a missing file in it, which isn't looked up", async () => {
+            expect(await readReal('data/missing.txt')).toBe(dataError('data/missing.txt'));
+        });
+
+        test('a path in it as written, even through a link that leads out of it', async () => {
+            expect(await readReal('data/way-out/guide.md')).toBe(
+                dataError('data/way-out/guide.md'),
+            );
+        });
     });
 });
 

@@ -62,6 +62,7 @@ const config: Extract<Config, { provider: 'anthropic' }> = {
     fileTools: 'write-edit',
     logFormat: 'json',
     workDir: '/',
+    dataDir: '/data',
 };
 const request = { model: 'model', history: [] };
 

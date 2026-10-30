@@ -59,11 +59,16 @@ export const counted = (count: number, unit: string): string => {
 
 // In place, not through a temporary file and a rename, which would replace a link and reset the
 // file's mode.
-const write = async (root: string, path: string, content: string): Promise<ToolOutcome> => {
+const write = async (
+    root: string,
+    dataDir: string,
+    path: string,
+    content: string,
+): Promise<ToolOutcome> => {
     const name = JSON.stringify(path);
 
     try {
-        const fenced = await fenceWrite(root, 'write', path);
+        const fenced = await fenceWrite(root, dataDir, 'write', path);
 
         if (!fenced.ok) {
             return fenced;
@@ -93,9 +98,9 @@ const write = async (root: string, path: string, content: string): Promise<ToolO
     }
 };
 
-export const writeTool = (root: string): ToolHandler => {
+export const writeTool = (root: string, dataDir: string): ToolHandler => {
     return defineTool(
         { name: 'write', description: DESCRIPTION, schema: WriteArgs },
-        ({ path, content }) => write(root, path, content),
+        ({ path, content }) => write(root, dataDir, path, content),
     );
 };

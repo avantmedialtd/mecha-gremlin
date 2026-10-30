@@ -15,4 +15,10 @@ reports/
 *.env
 !*.env.example
 
+# The agent's database holds OAuth tokens, and a data folder may sit inside a checkout.
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+
 .claude/worktrees

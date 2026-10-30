@@ -1,4 +1,5 @@
 import { renderCatalog } from '@mecha-gremlin/core/skills';
+import { closeStore, openStore } from '@mecha-gremlin/store/store';
 import { type FileTools, loadConfig, loadLogFormat } from '../config/config.ts';
 import { createLogger } from '../log/log.ts';
 import { createSession } from '../session/session.ts';
@@ -32,10 +33,10 @@ const instructions = (workDir: string, fileTools: FileTools): string => {
 };
 
 // The two sets are never offered together, and the order stays fixed for the prompt cache.
-const fileToolsFor = (fileTools: FileTools, workDir: string): ToolHandler[] => {
+const fileToolsFor = (fileTools: FileTools, workDir: string, dataDir: string): ToolHandler[] => {
     return fileTools === 'apply-patch'
-        ? [applyPatchTool(workDir)]
-        : [writeTool(workDir), editTool(workDir)];
+        ? [applyPatchTool(workDir, dataDir)]
+        : [writeTool(workDir, dataDir), editTool(workDir, dataDir)];
 };
 
 const run = async (args: readonly string[]): Promise<number> => {
@@ -63,7 +64,7 @@ const run = async (args: readonly string[]): Promise<number> => {
     }
 
     const config = loaded.value;
-    const workDir = config.workDir;
+    const { workDir, dataDir } = config;
     const task = parsedTask.value;
     const { skills, notLoaded, warnings } = await loadSkills(config.skillsPath, process.cwd());
 
@@ -77,6 +78,20 @@ const run = async (args: readonly string[]): Promise<number> => {
 
     if (skills.length > 0) {
         log.info('skills', { names: skills.map((skill) => skill.name).toSorted() });
+    }
+
+    // Before any network request: a store that won't open fails the run first, and better-sqlite3's
+    // first open on Linux can stall for seconds while sockets are open (its #1527, Brief R17.6).
+    const opened = await openStore(dataDir);
+
+    if (!opened.ok) {
+        return fail(opened.error);
+    }
+
+    const { store, migrated } = opened.value;
+
+    if (migrated.length > 0) {
+        log.info('migrated', { names: migrated });
     }
 
     const runId = crypto.randomUUID().slice(0, 8);
@@ -94,6 +109,8 @@ const run = async (args: readonly string[]): Promise<number> => {
             } else if (stopped.value > 0) {
                 log.info('stopped', { count: stopped.value });
             }
+
+            await closeStore(store);
         })();
 
         return finishing;
@@ -130,8 +147,9 @@ const run = async (args: readonly string[]): Promise<number> => {
                 readTool(
                     workDir,
                     skills.map((skill) => skill.directory),
+                    dataDir,
                 ),
-                ...fileToolsFor(config.fileTools, workDir),
+                ...fileToolsFor(config.fileTools, workDir, dataDir),
                 shell.handler,
                 ...(skills.length > 0 ? [activateSkillTool(skills)] : []),
             ],
@@ -153,6 +171,7 @@ const run = async (args: readonly string[]): Promise<number> => {
             baseUrl: config.baseUrl,
             run: runId,
             workDir,
+            dataDir,
             task,
         });
 

@@ -27,6 +27,7 @@ const makeClient = (handler: Handler) => {
             fileTools: 'write-edit',
             logFormat: 'json',
             workDir: '/',
+            dataDir: '/data',
             skillsPath: undefined,
         },
         [],
