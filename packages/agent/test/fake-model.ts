@@ -9,6 +9,9 @@ import type {
 /** Not `typeof fetch`: Bun's adds `fetch.preconnect`, which a fake has no use for. */
 type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
+// Captured before any test stubs it: the MCP SDK's transport looks fetch up at request time.
+const realFetch = globalThis.fetch;
+
 export const message = (text: string): ResponseOutputMessage => {
     return {
         type: 'message',
@@ -92,6 +95,8 @@ export type FakeServer = {
     readonly models?: () => Response;
     readonly responses?: (n: number) => Response;
     readonly messages?: (n: number) => Response;
+    /** Origins of MCP servers, each with the base of the real server that answers for it. */
+    readonly mcp?: Readonly<Record<string, string>>;
 };
 
 export type RecordedRequest = {
@@ -105,6 +110,14 @@ export const fakeFetch = (server: FakeServer = {}) => {
     let modelCalls = 0;
     const fetch: Fetch = async (input, init) => {
         const url = input instanceof Request ? input.url : String(input);
+        const route = Object.entries(server.mcp ?? {}).find(([origin]) => url.startsWith(origin));
+
+        if (route !== undefined) {
+            const [origin, target] = route;
+
+            return realFetch(`${target}${url.slice(origin.length)}`, init);
+        }
+
         requests.push({
             url,
             body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,

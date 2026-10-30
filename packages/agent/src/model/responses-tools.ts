@@ -1,14 +1,17 @@
 import { type Reply, type Tool, toolJsonSchema } from '@mecha-gremlin/core/tools';
 import type { FunctionTool, ResponseOutputItem } from 'openai/resources/responses/responses';
 
-/** Responses uses strict function tools; LM Studio ignores the strict flag. */
+/**
+ * Responses uses strict function tools, unless a tool says it isn't strict: left unset, Responses
+ * would try to make its schema strict (Brief R18.2). LM Studio ignores the strict flag.
+ */
 export const toFunctionTool = (tool: Tool): FunctionTool => {
     return {
         type: 'function',
         name: tool.name,
         description: tool.description,
         parameters: toolJsonSchema(tool),
-        strict: true,
+        strict: tool.strict !== false,
     };
 };
 

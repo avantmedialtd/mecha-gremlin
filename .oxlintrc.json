@@ -45,6 +45,11 @@
                         "from": "package",
                         "package": "typeorm",
                         "name": ["DataSource", "QueryRunner"]
+                    },
+                    {
+                        "from": "package",
+                        "package": "@modelcontextprotocol/client",
+                        "name": ["AjvJsonSchemaValidator", "Client"]
                     }
                 ]
             }

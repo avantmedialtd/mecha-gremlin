@@ -140,7 +140,7 @@ const readPage = async (file: string, first: number, limit: number): Promise<Pag
  * UTF-8 continuation bytes are 10xxxxxx; cutting just before one would split a character. A
  * character has at most 3 of them, so in invalid UTF-8 the cut stops 3 bytes back.
  */
-const characterBoundary = (bytes: Uint8Array, cut: number): number => {
+export const characterBoundary = (bytes: Uint8Array, cut: number): number => {
     let boundary = cut;
 
     while (boundary > cut - 3 && ((bytes[boundary] ?? 0) & 0xc0) === 0x80) {

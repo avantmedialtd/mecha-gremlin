@@ -4,7 +4,9 @@ import { join } from 'node:path';
 import { DataSource } from 'typeorm';
 import { describe, expect, test, vi } from 'vitest';
 import { withDataSource } from '../src/connection.ts';
-import { findCredentials, saveCredential } from '../src/credential.ts';
+import { credentialSchema, findCredentials, saveCredential } from '../src/credential.ts';
+import { addMcpServer, listMcpServers } from '../src/mcp-server.ts';
+import { CreateCredential1793232000000 } from '../src/migrations/1793232000000-create-credential.ts';
 import { type Store, closeStore, openStore } from '../src/store.ts';
 import { dataFolder, open } from './stores.ts';
 
@@ -16,6 +18,13 @@ const CREDENTIAL = {
     tokens: { access_token: 'at-1', refresh_token: 'rt-1' },
     discovery: null,
     expiresAt: null,
+};
+
+const SERVER = {
+    name: 'docs',
+    prefix: 'docs',
+    entry: { url: 'https://docs.example.com/mcp', startupTimeoutMs: 30000, toolTimeoutMs: 120000 },
+    disabled: false,
 };
 
 const modeOf = async (path: string): Promise<number> => {
@@ -71,7 +80,7 @@ describe('Open the database in a data folder', () => {
 
         const { migrated } = await open(folder);
 
-        expect(migrated).toEqual(['CreateCredential1793232000000']);
+        expect(migrated).toEqual(['CreateCredential1793232000000', 'CreateMcpServer1793318400000']);
         expect(await modeOf(join(folder, 'db.sqlite'))).toBe(0o640);
     });
 
@@ -201,17 +210,17 @@ describe('Set every pragma itself', () => {
 });
 
 describe('Migrate when it opens', () => {
-    test('the first open creates the credential table', async () => {
+    test('the first open creates the credential and mcp_server tables, in that order', async () => {
         const { store, migrated } = await open();
 
-        expect(migrated).toEqual(['CreateCredential1793232000000']);
+        expect(migrated).toEqual(['CreateCredential1793232000000', 'CreateMcpServer1793318400000']);
         expect(
             await withDataSource(store, 'list the tables', (dataSource) => {
                 return dataSource.query(
-                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'credential'",
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('credential', 'mcp_server') ORDER BY name",
                 );
             }),
-        ).toEqual({ ok: true, value: [{ name: 'credential' }] });
+        ).toEqual({ ok: true, value: [{ name: 'credential' }, { name: 'mcp_server' }] });
     });
 
     // One migration of one statement can't show the difference, so the option is pinned.
@@ -227,6 +236,7 @@ describe('Migrate when it opens', () => {
         const folder = await dataFolder();
         const first = await open(folder);
         await saveCredential(first.store, CREDENTIAL);
+        await addMcpServer(first.store, SERVER);
         await closeStore(first.store);
 
         const { store, migrated } = await open(folder);
@@ -236,6 +246,38 @@ describe('Migrate when it opens', () => {
             ok: true,
             value: [{ issuer: 'https://linear.app' }],
         });
+        expect(await listMcpServers(store)).toMatchObject({ ok: true, value: [SERVER] });
+    });
+
+    test('an upgraded database: only the mcp_server migration runs, and its credentials stay', async () => {
+        const folder = await dataFolder();
+        // The database as the release before left it, with only the credential migration applied.
+        const earlier = new DataSource({
+            type: 'better-sqlite3',
+            database: join(folder, 'db.sqlite'),
+            entities: [credentialSchema],
+            migrations: [CreateCredential1793232000000],
+        });
+        await earlier.initialize();
+        await earlier.runMigrations();
+        await earlier.getRepository(credentialSchema).insert({
+            ...CREDENTIAL,
+            needsLogin: false,
+            leaseOwner: null,
+            leaseUntil: null,
+            createdAt: 1000,
+            updatedAt: 1000,
+        });
+        await earlier.destroy();
+
+        const { store, migrated } = await open(folder);
+
+        expect(migrated).toEqual(['CreateMcpServer1793318400000']);
+        expect(await findCredentials(store, CREDENTIAL)).toMatchObject({
+            ok: true,
+            value: [{ issuer: 'https://linear.app' }],
+        });
+        expect(await listMcpServers(store)).toEqual({ ok: true, value: [] });
     });
 
     test('the schema matches the entity definitions', async () => {

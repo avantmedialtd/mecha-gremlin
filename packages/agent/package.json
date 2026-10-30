@@ -13,8 +13,12 @@
         "@mecha-gremlin/process": "workspace:*",
         "@mecha-gremlin/store": "workspace:*",
         "@mecha-gremlin/yaml": "workspace:*",
+        "@modelcontextprotocol/client": "^2.4.0",
         "openai": "^7.45.1",
         "zod": "^4.6.7"
+    },
+    "devDependencies": {
+        "@modelcontextprotocol/server": "^2.4.0"
     },
     "engines": {
         "bun": ">=1.4.4",

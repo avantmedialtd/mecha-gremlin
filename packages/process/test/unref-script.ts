@@ -1,5 +1,6 @@
 // Only a process of its own can show that unref() lets its caller exit: spawn.test.ts runs this
-// script and checks that it exits while the `sleep` runs on.
+// script and checks that it exits while the `sleep` runs on. With `pipe`, the `sleep` also has a
+// stdin pipe, which the script leaves idle.
 import { tmpdir } from 'node:os';
 import { spawnWithBun, spawnWithNode } from '../src/spawn.ts';
 
@@ -8,6 +9,7 @@ const spawned = await spawn(['sleep', '5'], {
     cwd: tmpdir(),
     env: { PATH: '/usr/bin:/bin' },
     detached: true,
+    stdin: process.argv[3] === 'pipe' ? 'pipe' : 'ignore',
 });
 
 if (spawned.ok) {

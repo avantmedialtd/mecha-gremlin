@@ -1,7 +1,9 @@
 import { renderCatalog } from '@mecha-gremlin/core/skills';
+import { listMcpServers } from '@mecha-gremlin/store/mcp-server';
 import { closeStore, openStore } from '@mecha-gremlin/store/store';
 import { type FileTools, loadConfig, loadLogFormat } from '../config/config.ts';
 import { createLogger } from '../log/log.ts';
+import { createMcpServers } from '../mcp/servers.ts';
 import { createSession } from '../session/session.ts';
 import { loadSkills } from '../skills/skills.ts';
 import { activateSkillTool } from '../tools/activate-skill.ts';
@@ -94,14 +96,19 @@ const run = async (args: readonly string[]): Promise<number> => {
         log.info('migrated', { names: migrated });
     }
 
+    // Before the MCP servers, which carry the run's ID: the shell's sweep and the tests' signal
+    // guard find their processes by it. Creating the shell only builds an environment.
     const runId = crypto.randomUUID().slice(0, 8);
     const shell = createShell({ workDir, runId, parentEnv: process.env });
+    const mcp = createMcpServers({ parentEnv: process.env, runId, workDir, dataDir, log });
     let interrupted: HandledSignal | undefined;
     let finishing: Promise<void> | undefined;
 
-    // Logged once, whichever path awaits it first.
+    // Logged once, whichever path awaits it first. The MCP servers close first, those still
+    // connecting included, so that the sweep, the backstop, finds none of their processes.
     const finish = (): Promise<void> => {
         finishing ??= (async () => {
+            await mcp.close();
             const stopped = await shell.dispose();
 
             if (!stopped.ok) {
@@ -111,6 +118,7 @@ const run = async (args: readonly string[]): Promise<number> => {
             }
 
             await closeStore(store);
+            await mcp.removeDirectory();
         })();
 
         return finishing;
@@ -140,6 +148,28 @@ const run = async (args: readonly string[]): Promise<number> => {
     }
 
     try {
+        const listed = await listMcpServers(store);
+
+        if (!listed.ok) {
+            return fail(listed.error);
+        }
+
+        // A server's own flag alone decides whether it starts.
+        const connected = await mcp.connect(listed.value.filter((server) => !server.disabled));
+
+        // Cut short by a signal: the handler exits once everything is stopped.
+        if (interrupted !== undefined) {
+            return EXIT_CODES[interrupted];
+        }
+
+        if (!connected.ok) {
+            for (const problem of connected.error) {
+                log.error(problem);
+            }
+
+            return 1;
+        }
+
         const preamble = instructions(workDir, config.fileTools);
         const developer = skills.length > 0 ? `${preamble}\n\n${renderCatalog(skills)}` : preamble;
         const created = await createSession(config, {
@@ -152,6 +182,7 @@ const run = async (args: readonly string[]): Promise<number> => {
                 ...fileToolsFor(config.fileTools, workDir, dataDir),
                 shell.handler,
                 ...(skills.length > 0 ? [activateSkillTool(skills)] : []),
+                ...connected.value,
             ],
             history: [
                 { kind: 'instruction', text: developer },

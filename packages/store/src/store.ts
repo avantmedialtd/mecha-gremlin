@@ -4,7 +4,9 @@ import { type Result, err, ok } from '@mecha-gremlin/core/result';
 import { DataSource, type Logger } from 'typeorm';
 import { type Store, connect, reasonOf } from './connection.ts';
 import { credentialSchema } from './credential.ts';
+import { mcpServerSchema } from './mcp-server.ts';
 import { CreateCredential1793232000000 } from './migrations/1793232000000-create-credential.ts';
+import { CreateMcpServer1793318400000 } from './migrations/1793318400000-create-mcp-server.ts';
 
 export { type Store, closeStore } from './connection.ts';
 
@@ -49,8 +51,8 @@ const createDataSource = (path: string): DataSource => {
     return new DataSource({
         type: 'better-sqlite3',
         database: path,
-        entities: [credentialSchema],
-        migrations: [CreateCredential1793232000000],
+        entities: [credentialSchema, mcpServerSchema],
+        migrations: [CreateCredential1793232000000, CreateMcpServer1793318400000],
         synchronize: false,
         // TypeORM sets journal_mode = WAL for this, and foreign_keys = ON whatever the options.
         enableWAL: true,

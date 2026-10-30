@@ -169,8 +169,8 @@ Stdio servers carry `GREMLIN_RUN_ID`, which the shell's sweep and the tests' sig
   1. it lists the process groups the server's descendants lead, once, before the first signal, within 10 seconds, as the sweep does;
   2. it ends stdin without awaiting the close, since a write held by a full pipe holds the close too (R18.3), and waits up to 2 seconds for the server to exit;
   3. if the server's group isn't empty, it sends SIGTERM to the group, and waits up to 2 seconds for the group to be empty. That also covers a wrapper leader such as `sh -c`. On macOS, a zombie-only group's EPERM counts as empty;
-  4. it sends SIGKILL to each of the group and the listed groups that is still alive, so a server that left on end-of-file gets no signal, and waits up to 2 seconds;
-  5. it cancels the stdout and stderr readers, and awaits them.
+  4. it sends SIGKILL to each of the group and the listed groups that is still alive, so a server that left on end-of-file gets no signal, and waits up to 2 seconds for them to be empty and for the server's exit to be seen;
+  5. it cancels the stdout and stderr readers, and awaits them. It never waits for the exit beyond step 4: a server that outlives SIGKILL, in uninterruptible sleep, leaves the close without an exit, and a start failure then gives its error as the reason.
 
   This is what stops Playwright's Chrome, which a group kill alone misses (R18.3). The limits are constants, as the shell's `Limits` are, so tests can shorten them. Bounded, a close takes at most about 16 seconds. `main.ts` ignores signals while it finishes, which is safe only because every step of finishing has a limit.
 - **The run's directory.** A stdio server runs in its `cwd`, or else in a directory made once for the run (D36).

@@ -121,6 +121,48 @@ describe('Formatted output', () => {
 
         expect(lines).toEqual([`${CLOCK} INFO  one\n    two\n  text:\n    three\n    four`]);
     });
+
+    test('control characters are escaped, and a value holding one is JSON', () => {
+        const lines = written('pretty', (log) => log.error('bad\u001b[2J', { name: 'x\u001b' }));
+
+        expect(lines).toEqual([`${CLOCK} ERROR bad\\u001b[2J name="x\\u001b"`]);
+        expect(lines.join()).not.toContain('\u001b');
+    });
+
+    test('a carriage return inside a block, and a control character in a message line', () => {
+        const lines = written('pretty', (log) =>
+            log.info('a\u0007\nb\u0000c', { text: 'one\ntwo\rthree', other: 'x\ty' }),
+        );
+
+        expect(lines).toEqual([
+            `${CLOCK} INFO  a\\u0007 other="x\\ty"\n    b\\u0000c\n  text:\n    one\n    two\\u000dthree`,
+        ]);
+    });
+
+    test('C1 controls and DEL, in values and in messages', () => {
+        const lines = written('pretty', (log) =>
+            log.warn('m\u009b\u007f', {
+                name: 'a\u009bb',
+                list: ['\u0085'],
+                tab: 'a\tb\u009f',
+            }),
+        );
+
+        expect(lines).toEqual([
+            `${CLOCK} WARN  m\\u009b\\u007f name="a\\u009bb" list=["\\u0085"] tab="a\\tb\\u009f"`,
+        ]);
+        expect(lines.join()).not.toMatch(/[\u007f-\u009f]/);
+    });
+
+    test('a tab in a message stays a tab', () => {
+        expect(written('pretty', (log) => log.info('a\tb'))).toEqual([`${CLOCK} INFO  a\tb`]);
+    });
+
+    test('text beyond the control characters is written as it is', () => {
+        expect(written('pretty', (log) => log.info('é ¡', { name: 'é' }))).toEqual([
+            `${CLOCK} INFO  é ¡ name=é`,
+        ]);
+    });
 });
 
 describe('JSON output', () => {
@@ -136,6 +178,22 @@ describe('JSON output', () => {
             '{"time":"2026-10-12T07:15:51.250Z","level":"warn","message":"tool failed","error":"one\\ntwo"}',
             '{"time":"2026-10-12T07:15:51.250Z","level":"error","message":"stopped"}',
         ]);
+    });
+
+    test('control characters, C1 ones included, as escapes that parse back', () => {
+        const lines = written('json', (log) =>
+            log.error('bad\u001b[2J\u009b', { name: 'x\u007f', list: ['\u0085'] }),
+        );
+
+        expect(lines).toEqual([
+            '{"time":"2026-10-12T07:15:51.250Z","level":"error","message":"bad\\u001b[2J\\u009b","name":"x\\u007f","list":["\\u0085"]}',
+        ]);
+        expect(lines.join()).not.toMatch(/\p{Cc}/u);
+        expect(JSON.parse(lines[0] ?? '')).toMatchObject({
+            message: 'bad\u001b[2J\u009b',
+            name: 'x\u007f',
+            list: ['\u0085'],
+        });
     });
 
     test("an undefined field can't overwrite the record's own time, level or message", () => {

@@ -99,7 +99,12 @@ export const runCommand = async (
     // A process group of its own: one signal reaches everything the command started that stayed
     // in it. Neither runtime's own timeout or maxBuffer is used: a timeout kills only bash, and
     // maxBuffer kills the command rather than cutting its output (Brief R8).
-    const spawned = await spawnProcess(['bash', '-c', command], { cwd, env, detached: true });
+    const spawned = await spawnProcess(['bash', '-c', command], {
+        cwd,
+        env,
+        detached: true,
+        stdin: 'ignore',
+    });
 
     if (!spawned.ok) {
         return err(`bash couldn't be started: ${spawned.error}`);

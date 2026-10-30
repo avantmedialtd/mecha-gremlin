@@ -25,6 +25,18 @@ describe('Responses tools and reply classification', () => {
         });
     });
 
+    test("a tool that isn't strict, beside one that is and one that doesn't say", () => {
+        const schema = z.object({ query: z.string() });
+
+        expect(
+            [
+                toFunctionTool({ name: 'search', description: 'Search', schema, strict: false }),
+                toFunctionTool({ name: 'search', description: 'Search', schema, strict: true }),
+                toFunctionTool({ name: 'search', description: 'Search', schema }),
+            ].map((tool) => tool.strict),
+        ).toEqual([false, true, true]);
+    });
+
     test('calls win over text and keep their order', () => {
         expect(
             classify([

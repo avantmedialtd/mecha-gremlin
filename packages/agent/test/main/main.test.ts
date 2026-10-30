@@ -1,7 +1,20 @@
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import {
+    mkdir,
+    mkdtemp,
+    readFile,
+    readdir,
+    realpath,
+    rm,
+    stat,
+    symlink,
+    writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { withDataSource } from '@mecha-gremlin/store/connection';
+import { type NewMcpServer, addMcpServer } from '@mecha-gremlin/store/mcp-server';
 import { closeStore, openStore } from '@mecha-gremlin/store/store';
 import type { ResponseOutputItem, ResponseUsage } from 'openai/resources/responses/responses';
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from 'vitest';
@@ -16,8 +29,10 @@ import {
     reasoning,
     script,
 } from '../fake-model.ts';
+import { listProcesses } from '../../../../test/signal-guard.ts';
 import { freshRunId, helperCommand, isGone, stopLeftovers, track } from '../exec/processes.ts';
 import { claudeReply } from '../fake-anthropic.ts';
+import { startHttpServer } from '../mcp/http-server.ts';
 
 // The test helper supplies a task explicitly; the application no longer supplies one.
 const TEST_TASK = 'Carry out the test task.';
@@ -932,7 +947,7 @@ describe('Log each model call and tool call', () => {
                     time: expect.any(String),
                     level: 'info',
                     message: 'migrated',
-                    names: ['CreateCredential1793232000000'],
+                    names: ['CreateCredential1793232000000', 'CreateMcpServer1793318400000'],
                 },
                 expect.objectContaining({ message: 'asking' }),
             ]);
@@ -1590,5 +1605,371 @@ describe('run with another OpenAI-compatible provider', () => {
         expect(errors(records)).toEqual([
             expect.stringContaining('rejected the API key (HTTP 403)'),
         ]);
+    });
+});
+
+const FAKE_MCP = fileURLToPath(new URL('../mcp/stdio-server.ts', import.meta.url));
+
+const MCP_TIMEOUTS = { startupTimeoutMs: 10_000, toolTimeoutMs: 10_000 };
+
+const PROXIES = [
+    'HTTP_PROXY',
+    'http_proxy',
+    'HTTPS_PROXY',
+    'https_proxy',
+    'ALL_PROXY',
+    'all_proxy',
+];
+
+type FakeMcp = {
+    readonly mode?: string;
+    readonly tools?: readonly string[];
+    readonly env?: Readonly<Record<string, string>>;
+    readonly entry?: Readonly<Record<string, unknown>>;
+    readonly disabled?: boolean;
+};
+
+// A server of the fake stdio kind, as the store keeps it. A $ in an entry's value is written $$.
+const fakeMcp = (
+    name: string,
+    { mode = 'serve', tools = [], env = {}, entry = {}, disabled = false }: FakeMcp = {},
+): NewMcpServer => {
+    const pages = [
+        { tools: tools.map((tool) => ({ name: tool, inputSchema: { type: 'object' } })) },
+    ];
+
+    return {
+        name,
+        prefix: name.toLowerCase(),
+        entry: {
+            command: process.execPath,
+            args: [FAKE_MCP, mode],
+            env: { FAKE_PAGES: JSON.stringify(pages).replaceAll('$', '$$$$'), ...env },
+            ...MCP_TIMEOUTS,
+            ...entry,
+        },
+        disabled,
+    };
+};
+
+// A data folder, migrated, that holds the servers.
+const dataWithServers = async (servers: readonly NewMcpServer[]): Promise<string> => {
+    const folder = await mkdtemp(join(tmpdir(), 'agent-data-'));
+    const opened = await openStore(folder);
+
+    if (!opened.ok) {
+        throw new Error(opened.error);
+    }
+
+    for (const server of servers) {
+        await addMcpServer(opened.value.store, server);
+    }
+
+    await closeStore(opened.value.store);
+
+    return folder;
+};
+
+// The processes that carry the run's ID, as ps shows them.
+const processesOf = (runId: string): number[] => {
+    return listProcesses()
+        .filter(({ text }) => text.includes(` GREMLIN_RUN_ID=${runId}`))
+        .map(({ pid }) => pid);
+};
+
+// The run's directories for stdio servers in the temporary directory the test chose.
+const runDirectories = async (temporary: string): Promise<string[]> => {
+    return (await readdir(temporary)).filter((name) => name.startsWith('gremlin-mcp-'));
+};
+
+describe('MCP servers in a run', { timeout: 20_000 }, () => {
+    let folders: string[] = [];
+    let temporary: string;
+
+    const tracked = async (folder: Promise<string>): Promise<string> => {
+        const path = await folder;
+        folders.push(path);
+
+        return path;
+    };
+
+    beforeAll(async () => {
+        temporary = await realpath(await mkdtemp(join(tmpdir(), 'agent-tmp-')));
+    });
+
+    afterAll(async () => {
+        await rm(temporary, { recursive: true, force: true });
+    });
+
+    afterEach(async () => {
+        await Promise.all(folders.map((folder) => rm(folder, { recursive: true, force: true })));
+        folders = [];
+    });
+
+    const prepare = (): void => {
+        vi.stubEnv('TMPDIR', temporary);
+
+        for (const name of PROXIES) {
+            vi.stubEnv(name, undefined);
+        }
+
+        vi.stubEnv('NO_PROXY', '127.0.0.1,localhost');
+    };
+
+    test('MCP tools after the built-in ones, not strict', async () => {
+        prepare();
+        const data = await tracked(dataWithServers([fakeMcp('docs', { tools: ['search'] })]));
+
+        const { code, modelCall } = await runAgent({ DATA_DIR: data });
+
+        expect(code).toBe(0);
+        expect(toolNames(modelCall)).toEqual([
+            'read',
+            'write',
+            'edit',
+            'shell',
+            'mcp__docs__search',
+        ]);
+        expect(modelCall?.body?.tools).toContainEqual(
+            expect.objectContaining({ name: 'mcp__docs__search', strict: false }),
+        );
+    });
+
+    test("the servers' records, in name order, before asking", async () => {
+        prepare();
+        const data = await tracked(
+            dataWithServers([fakeMcp('b', { tools: ['x'] }), fakeMcp('a', { tools: ['y'] })]),
+        );
+
+        const { records } = await runAgent({ DATA_DIR: data });
+
+        expect(records.slice(0, 3)).toMatchObject([
+            { level: 'info', message: 'mcp server', name: 'a', tools: ['mcp__a__y'] },
+            { level: 'info', message: 'mcp server', name: 'b', tools: ['mcp__b__x'] },
+            { message: 'asking' },
+        ]);
+    });
+
+    test('a disabled server is not started, and none of its tools is offered', async () => {
+        prepare();
+        const data = await tracked(
+            dataWithServers([fakeMcp('docs', { tools: ['search'], disabled: true })]),
+        );
+
+        const { code, records, modelCall, runId } = await runAgent({ DATA_DIR: data });
+
+        expect(code).toBe(0);
+        expect(toolNames(modelCall)).toEqual(['read', 'write', 'edit', 'shell']);
+        expect(find(records, 'mcp server')).toBeUndefined();
+        expect(processesOf(runId)).toEqual([]);
+    });
+
+    test("MCP servers that can't be listed fail the run before any request", async () => {
+        prepare();
+        const data = await tracked(dataWithServers([]));
+        const opened = await openStore(data);
+
+        if (opened.ok) {
+            await withDataSource(opened.value.store, 'drop the table', (dataSource) => {
+                return dataSource.query('DROP TABLE mcp_server');
+            });
+            await closeStore(opened.value.store);
+        }
+
+        const { code, records, requests } = await runAgent({ DATA_DIR: data });
+
+        expect(code).toBe(1);
+        expect(errors(records)).toEqual([
+            `Can't list the MCP servers in the database at ${join(await realpath(data), 'db.sqlite')}: SqliteError: no such table: mcp_server`,
+        ]);
+        expect(requests).toEqual([]);
+    });
+
+    test('an unset reference fails the run before any request, and the store is closed', async () => {
+        prepare();
+        const data = await tracked(
+            dataWithServers([fakeMcp('docs', { env: { DOCS_TOKEN: '${DOCS_TOKEN_NOT_SET}' } })]),
+        );
+
+        const { code, records, requests } = await runAgent({ DATA_DIR: data });
+
+        expect(code).toBe(1);
+        expect(errors(records)).toEqual([
+            "The MCP server docs can't start. It refers to DOCS_TOKEN_NOT_SET, which is unset or blank: set it in .env. To run without it: bun run mcp disable docs.",
+        ]);
+        expect(requests).toEqual([]);
+        expect(existsSync(join(data, 'db.sqlite-wal'))).toBe(false);
+    });
+
+    test('a server that fails to start fails the run, and the store is closed', async () => {
+        prepare();
+        const data = await tracked(
+            dataWithServers([fakeMcp('docs', { mode: 'exit', env: { FAKE_EXIT: '3' } })]),
+        );
+
+        const { code, records, modelCalls } = await runAgent({ DATA_DIR: data });
+
+        expect(code).toBe(1);
+        expect(errors(records)).toEqual([
+            "The MCP server docs couldn't start: it exited with code 3 before it was ready.\nTo run without it: bun run mcp disable docs.",
+        ]);
+        expect(modelCalls).toEqual([]);
+        expect(existsSync(join(data, 'db.sqlite-wal'))).toBe(false);
+        expect(existsSync(join(data, 'db.sqlite-shm'))).toBe(false);
+        expect(await reopen(data)).toMatchObject({ ok: true, value: { migrated: [] } });
+        expect(await runDirectories(temporary)).toEqual([]);
+    });
+
+    test("the servers are closed first: none of a server's processes left, and its directory gone", async () => {
+        prepare();
+        const data = await tracked(dataWithServers([fakeMcp('docs', { tools: ['cwd'] })]));
+
+        const { code, records, runId } = await runAgent(
+            { DATA_DIR: data },
+            {
+                responses: script(
+                    () => completed([call('mcp__docs__cwd', {})]),
+                    () => completed([message('Done.')]),
+                ),
+            },
+        );
+
+        expect(code).toBe(0);
+        expect(find(records, 'tool result')).toMatchObject({ tool: 'mcp__docs__cwd' });
+        expect(find(records, 'stopped')).toBeUndefined();
+        expect(processesOf(runId)).toEqual([]);
+        expect(await runDirectories(temporary)).toEqual([]);
+    });
+
+    test('SIGINT during the session closes the servers first too', async () => {
+        prepare();
+        const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+        const pending = heldModelCall();
+        const data = await tracked(dataWithServers([fakeMcp('docs', { tools: ['search'] })]));
+        const started = startAgent({ DATA_DIR: data }, { responses: pending.response });
+        await vi.waitFor(
+            () => {
+                expect(started.modelCalls()).toHaveLength(1);
+            },
+            { timeout: 8000, interval: 20 },
+        );
+        const running = processesOf(started.runId);
+
+        process.emit('SIGINT', 'SIGINT');
+        await vi.waitFor(
+            () => {
+                expect(exit).toHaveBeenCalled();
+            },
+            { timeout: 8000, interval: 20 },
+        );
+        await pending.release([message('Too late.')]);
+        await started.done;
+
+        expect(running).not.toEqual([]);
+        expect(exit).toHaveBeenCalledExactlyOnceWith(130);
+        expect(find(started.records(), 'stopped')).toBeUndefined();
+        expect(processesOf(started.runId)).toEqual([]);
+        expect(await runDirectories(temporary)).toEqual([]);
+    });
+
+    test('a signal while the servers connect: no error about them, nothing left, exit 143', async () => {
+        prepare();
+        const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+        const data = await tracked(dataWithServers([fakeMcp('slow', { mode: 'silent' })]));
+        const started = startAgent({ DATA_DIR: data });
+        await vi.waitFor(
+            async () => {
+                expect(processesOf(started.runId)).not.toEqual([]);
+                expect(await runDirectories(temporary)).not.toEqual([]);
+            },
+            { timeout: 8000, interval: 20 },
+        );
+
+        process.emit('SIGTERM', 'SIGTERM');
+        await vi.waitFor(
+            () => {
+                expect(exit).toHaveBeenCalled();
+            },
+            { timeout: 8000, interval: 20 },
+        );
+        await started.done;
+        const records = started.records();
+
+        expect(exit).toHaveBeenCalledExactlyOnceWith(143);
+        expect(process.exitCode).toBe(143);
+        expect(records.map((record) => record.message)).toEqual(['interrupted']);
+        expect(started.modelCalls()).toEqual([]);
+        expect(processesOf(started.runId)).toEqual([]);
+        expect(await runDirectories(temporary)).toEqual([]);
+    });
+
+    test('no secret in the logs, in JSON or pretty output, whether the server answers or not', async () => {
+        prepare();
+        const server = await startHttpServer({
+            tools: [
+                { name: 'lookup', call: () => ({ content: [{ type: 'text', text: 'found' }] }) },
+            ],
+        });
+        const origin = 'https://docs.example.test';
+        const base = server.url.replace('/mcp', '');
+        vi.stubEnv('DOCS_TOKEN', 't0k');
+        vi.stubEnv('DOCS_KEY', 't0k');
+        const entry = {
+            url: `${origin}/mcp?key=\${DOCS_KEY}`,
+            headers: { Authorization: 'Bearer ${DOCS_TOKEN}' },
+            ...MCP_TIMEOUTS,
+        };
+        const data = await tracked(
+            dataWithServers([{ name: 'docs', prefix: 'docs', entry, disabled: false }]),
+        );
+
+        try {
+            const answered = [
+                await runAgent({ DATA_DIR: data }, { mcp: { [origin]: base } }),
+                await runAgent(
+                    { DATA_DIR: data, LOG_FORMAT: 'pretty' },
+                    { mcp: { [origin]: base } },
+                ),
+            ];
+            await server.close();
+            const unanswered = [
+                await runAgent({ DATA_DIR: data }, { mcp: { [origin]: base } }),
+                await runAgent(
+                    { DATA_DIR: data, LOG_FORMAT: 'pretty' },
+                    { mcp: { [origin]: base } },
+                ),
+            ];
+
+            expect(answered.map((run) => run.code)).toEqual([0, 0]);
+            expect(server.requests[0]?.headers.authorization).toBe('Bearer t0k');
+            expect(server.requests[0]?.url).toBe('/mcp?key=t0k');
+            expect(unanswered.map((run) => run.code)).toEqual([1, 1]);
+            expect(errors(unanswered[0]?.records ?? [])).toEqual([
+                expect.stringMatching(/^The MCP server docs couldn't start: /),
+            ]);
+
+            for (const run of [...answered, ...unanswered]) {
+                expect(run.output).not.toContain('t0k');
+            }
+        } finally {
+            await server.close();
+        }
+    });
+
+    test('nothing but records is written, by a server that announces no tools', async () => {
+        prepare();
+        const others = (['debug', 'info', 'warn', 'error'] as const).map((method) =>
+            vi.spyOn(console, method),
+        );
+        const data = await tracked(
+            dataWithServers([fakeMcp('quiet', { env: { FAKE_CAPABILITIES: '{}' } })]),
+        );
+
+        const { code, output, records } = await runAgent({ DATA_DIR: data });
+
+        expect(code).toBe(0);
+        expect(others.flatMap((spy) => spy.mock.calls)).toEqual([]);
+        expect(output.trim().split('\n')).toHaveLength(records.length);
+        expect(find(records, 'mcp server')).toMatchObject({ name: 'quiet', tools: [] });
     });
 });

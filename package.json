@@ -8,6 +8,8 @@
     "scripts": {
         "agent": "bun packages/agent/src/main/main.ts",
         "agent:node": "node --env-file-if-exists=.env packages/agent/src/main/main.ts",
+        "mcp": "bun packages/agent/src/main/mcp.ts",
+        "mcp:node": "node --env-file-if-exists=.env packages/agent/src/main/mcp.ts",
         "test": "TEST_RUNTIME=bun bunx --bun vitest run",
         "test:watch": "TEST_RUNTIME=bun bunx --bun vitest",
         "test:node": "TEST_RUNTIME=node vitest run",

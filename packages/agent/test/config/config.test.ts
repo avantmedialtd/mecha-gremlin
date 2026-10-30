@@ -10,7 +10,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, test, vi } from 'vitest';
-import { loadConfig, loadLogFormat } from '../../src/config/config.ts';
+import { loadConfig, loadLogFormat, loadMcpConfig } from '../../src/config/config.ts';
 
 // A data folder of its own, outside the working directory, which is the current one.
 const DATA_DIR = mkdtempSync(join(tmpdir(), 'gremlin-data-'));
@@ -436,5 +436,28 @@ describe('loadLogFormat', () => {
 
     test.each([undefined, '', '  ', 'JSON', 'xml'])('has no format for %j', (raw) => {
         expect(loadLogFormat({ LOG_FORMAT: raw })).toBeUndefined();
+    });
+});
+
+describe('loadMcpConfig', () => {
+    test('DATA_DIR and LOG_FORMAT, trimmed, without any model setting', () => {
+        expect(loadMcpConfig({ LOG_FORMAT: ' json ', DATA_DIR: ` ${DATA_DIR} ` })).toEqual({
+            ok: true,
+            value: { logFormat: 'json', dataDir: realpathSync.native(DATA_DIR) },
+        });
+    });
+
+    test("checks both as the agent's settings are checked", () => {
+        expect(loadMcpConfig({ LOG_FORMAT: 'xml', DATA_DIR: join(DATA_DIR, 'missing') })).toEqual({
+            ok: false,
+            error: [
+                'LOG_FORMAT must be one of pretty, json; got "xml".',
+                `DATA_DIR must name an existing directory; ${join(DATA_DIR, 'missing')} isn't one.`,
+            ],
+        });
+        expect(loadMcpConfig({})).toEqual({
+            ok: false,
+            error: ['LOG_FORMAT is required; choose pretty, json.', 'DATA_DIR is required.'],
+        });
     });
 });

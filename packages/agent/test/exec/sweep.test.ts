@@ -8,6 +8,7 @@ import {
     MAX_MATCHES,
     checkListing,
     checkMatches,
+    descendantGroups,
     descendants,
     escalation,
     findRunProcesses,
@@ -426,6 +427,20 @@ describe('sweep', { timeout: 15_000 }, () => {
         );
 
         expect(await sweep(runId, { graceMs: 300, parentEnv })).toEqual({ ok: true, value: 0 });
+    });
+
+    test("the groups a process's descendants lead, or none when ps can't run", async () => {
+        const parentEnv = await listing(
+            `4321 ${process.pid} 4321 node server.js`,
+            '4322 4321 4321 sh -c x',
+            '4323 4322 4400 chrome',
+            '4324 4323 4400 chrome-helper',
+            '4500 1 4500 node other.js',
+        );
+        const empty = await mkdtemp(join(dir, 'empty-'));
+
+        expect(await descendantGroups(4321, parentEnv, 1000)).toEqual([4321, 4400]);
+        expect(await descendantGroups(4321, { PATH: empty }, 1000)).toEqual([]);
     });
 
     test("ps that can't be started", async () => {

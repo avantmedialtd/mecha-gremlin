@@ -8,18 +8,19 @@ A self-hosted, scheduled agent runner, in early development. The design and its 
 |---|---|
 | [`packages/core`](packages/core) | `@mecha-gremlin/core`: stateless, provider-independent types and functions. `model-call`, `history` and `statistics` define Gremlin's call, native replay and typed provider statistics contracts. `tools` defines tools through any [Standard Schema](https://standardschema.dev) library and validates their arguments. `skills` checks a SKILL.md and renders the skills catalog and a skill's activation, `output` caps a command's output as it streams in, and `patch` parses and applies Codex's V4A patches. Core depends on neither model SDK. |
 | [`packages/yaml`](packages/yaml) | `@mecha-gremlin/yaml`: `parseYaml`, which uses Bun's built-in parser, `Bun.YAML`, on Bun, and the [`yaml`](https://www.npmjs.com/package/yaml) package elsewhere. The two give the same values for everything frontmatter uses. |
-| [`packages/process`](packages/process) | `@mecha-gremlin/process`: `spawnProcess`, which uses `Bun.spawn` on Bun and `node:child_process` elsewhere, and gives the process the same shape on both: its pid, its output as web streams, a promise of how it exited, and `unref()`. |
-| [`packages/store`](packages/store) | `@mecha-gremlin/store`: the data folder's SQLite database, through [TypeORM](https://typeorm.io) and [better-sqlite3](https://www.npmjs.com/package/better-sqlite3), the same on Bun and Node. `store` opens `db.sqlite` in a given folder, sets its pragmas and runs its migrations, and runs every query on a store after the one before it. `credential` keeps OAuth credentials, with a lease for their refresh. |
-| [`packages/agent`](packages/agent) | `@mecha-gremlin/agent`: the agent. It carries out a task in an agent loop, with a shell, file tools and skills, and opens the store in its data folder. It runs on Bun or Node. |
+| [`packages/process`](packages/process) | `@mecha-gremlin/process`: `spawnProcess`, which uses `Bun.spawn` on Bun and `node:child_process` elsewhere, and gives the process the same shape on both: its pid, a stream to write to its stdin when asked for one, its output as web streams, a promise of how it exited, and `unref()`. |
+| [`packages/store`](packages/store) | `@mecha-gremlin/store`: the data folder's SQLite database, through [TypeORM](https://typeorm.io) and [better-sqlite3](https://www.npmjs.com/package/better-sqlite3), the same on Bun and Node. `store` opens `db.sqlite` in a given folder, sets its pragmas and runs its migrations, and runs every query on a store after the one before it. `credential` keeps OAuth credentials, with a lease for their refresh, and `mcp-server` keeps the MCP servers' definitions. |
+| [`packages/agent`](packages/agent) | `@mecha-gremlin/agent`: the agent. It carries out a task in an agent loop, with a shell, file tools, skills and MCP servers' tools, and opens the store in its data folder. It runs on Bun or Node. |
 
 Inside `packages/agent/src`, the code is grouped by concern:
-- `main`: the entry point, and its helpers for the arguments, the log fields and the failure messages;
+- `main`: the entry points, `main.ts` for a run and `mcp.ts` for the `mcp` command, and the helpers for the arguments, the log fields and the failure messages;
 - `config`;
 - `model`: model choice, LM Studio's model list, and the Responses and Anthropic Messages adapters;
 - `session`: the agent loop, as a session that yields each step's result;
 - `skills`: finding and reading the skills `SKILLS_PATH` lists;
 - `exec`: running a command, its environment, and stopping a session's processes at the end;
 - `tools`: `read`, `write`, `edit`, `apply_patch`, `shell` and `activate_skill`, and the fence the file tools share;
+- `mcp`: MCP servers: the checks of an entry, the stdio transport, connecting to the servers, and their tools and results;
 - `log`: the structured logger.
 
 `yaml` and `process` choose their implementation once, when each module loads, from the global object: Bun's when `globalThis.Bun` is defined, the other one otherwise. The agent reads skills' frontmatter with `yaml`, and runs commands and `ps` with `process`.
@@ -56,15 +57,17 @@ The command is `bun run agent <task…>` on Bun, or `bun run agent:node <task…
 
 **Quote the task,** in single quotes unless it holds one. The shell reads `?`, `*`, `&`, `;`, `!` and `$` itself: in zsh, macOS's default shell, an unquoted `?` stops the command with "no matches found" before Bun runs.
 
-The model carries out the task with its tools, offered in this order: `read`; `write` and `edit`, or `apply_patch` in their place when `FILE_TOOLS` is `apply-patch`; `shell`; and `activate_skill` when skills are loaded. The loop runs until it answers, for at most the configured `MAX_STEPS`. A question about a file usually takes two steps: one to read it and one to answer. A browsing task takes many more, about two for each page action. On a local 27B model, a model call took from 15 seconds to about 2 minutes in testing, growing with the size of what the model reads.
+The model carries out the task with its tools, offered in this order: `read`; `write` and `edit`, or `apply_patch` in their place when `FILE_TOOLS` is `apply-patch`; `shell`; `activate_skill` when skills are loaded; and then the tools of the MCP servers you have added, sorted by name (see [MCP servers](#mcp-servers)). The loop runs until it answers, for at most the configured `MAX_STEPS`. A question about a file usually takes two steps: one to read it and one to answer. A browsing task takes many more, about two for each page action. On a local 27B model, a model call took from 15 seconds to about 2 minutes in testing, growing with the size of what the model reads.
 
 Everything is logged to stdout as structured records, one per line:
 - the skills loaded, and any that couldn't be;
 - the migrations applied to the database, when there are any;
+- each MCP server the run connected to, in name order: the tools it offers, their definitions' size and a hash of its tool list, after any tools it dropped;
 - the task, with the run's ID, the working directory and the data folder;
 - each model call's provider-specific statistics, including reported usage, cache counts and rate-limit headers, even when a call fails;
 - each tool call and its result;
 - the answer;
+- a change to an MCP server's tools during the session, which the next run takes up;
 - the processes stopped when the session ends, if there were any;
 - errors.
 
@@ -116,6 +119,90 @@ The agent keeps a SQLite database, `db.sqlite`, in the data folder that `DATA_DI
 - **Copying it.** Copy the database with SQL's `VACUUM INTO`, which writes a consistent copy even while the agent is using it, as in `sqlite3 db.sqlite "VACUUM INTO 'copy.sqlite'"`. Never copy `db.sqlite` alone: while the database is open, its latest commits are in `db.sqlite-wal`.
 - **Where it runs.** better-sqlite3 13 ships prebuilt binaries for x64 and arm64. On Linux, they need glibc 2.34 or later, which Debian 11 and RHEL 8 are too old for, or musl, as on Alpine.
 - **The shell can read it.** `read`, `write`, `edit` and `apply_patch` refuse paths inside the data folder, as they refuse `.env` files, but the shell isn't fenced: a command can read and write the database as it can anything else your account can.
+- **MCP servers.** It also holds the definitions of the MCP servers that `bun run mcp` adds, with references to secrets but no secrets. Since the shell can change them, one run can choose the servers a later run starts, as it could already change a crontab or a shell profile.
+
+### MCP servers
+
+The agent can use the tools of [MCP](https://modelcontextprotocol.io) servers: local servers, which a run starts and talks to over stdio, and remote ones, which it reaches over Streamable HTTP. The `mcp` command keeps their definitions in the data folder, and each run connects to every server that isn't disabled before its first model call. OAuth isn't supported yet, so neither is a server that needs a login; nor are MCP resources and prompts, and an image a tool returns is described to the model but not shown.
+
+**Adding a server.** `bun run mcp add <name> <entry>` takes a name and an entry: one server's object from inside a `mcpServers` map, the format most vendors publish. An entry of `-` is read from stdin, which keeps it out of your shell's history, out of the process list, and out of the command line that `bun run` echoes. A remote server, whose header holds a reference to a variable:
+
+```sh
+bun run mcp add docs - <<'EOF'
+{
+    "url": "https://docs.example.com/mcp",
+    "headers": { "Authorization": "Bearer ${DOCS_TOKEN}" },
+    "startupTimeoutMs": 30000,
+    "toolTimeoutMs": 120000
+}
+EOF
+```
+
+A local server, pinned to an exact version, so that a later run doesn't start whatever was published since:
+
+```sh
+bun run mcp add playwright - <<'EOF'
+{
+    "command": "npx",
+    "args": ["-y", "@playwright/mcp@0.0.83"],
+    "startupTimeoutMs": 60000,
+    "toolTimeoutMs": 120000
+}
+EOF
+```
+
+**From a vendor's snippet.** GitHub's guide to its remote server gives an entry wrapped in `mcpServers`, with a placeholder for a personal access token:
+
+```json
+{
+    "mcpServers": {
+        "github": {
+            "type": "http",
+            "url": "https://api.githubcopilot.com/mcp/",
+            "headers": { "Authorization": "Bearer YOUR_GITHUB_PAT" }
+        }
+    }
+}
+```
+
+Give the object inside `mcpServers`, and its name as the first argument; add the two timeouts; turn the placeholder into the reference `${GITHUB_PAT}`; then set `GITHUB_PAT` to your token in `.env`:
+
+```sh
+bun run mcp add github - <<'EOF'
+{
+    "type": "http",
+    "url": "https://api.githubcopilot.com/mcp/",
+    "headers": { "Authorization": "Bearer ${GITHUB_PAT}" },
+    "startupTimeoutMs": 30000,
+    "toolTimeoutMs": 120000
+}
+EOF
+```
+
+- **Quoting.** The quoted `'EOF'` keeps the shell from reading the entry's `$` and `${…}`, as single quotes do around an entry given as an argument. Never type a real token into the command: `add` refuses a literal secret anyway, and a token typed on a command line is in your shell's history, so change it.
+- **Secrets in `env`, not `args`.** A run puts a server's arguments in the process list, which every local user can read, while its environment is readable only by you. `add` warns of a reference in an argument whose option names a credential, such as `--api-key`, in a `mcp server secret in arguments` record.
+- **`$` in `.env`.** Bun's `.env` loader expands `$NAME` and `${NAME}` in a value, even in single quotes, and Node's `--env-file` doesn't: a secret that holds `$` reads differently on each runtime.
+- **Listing and changing.** `bun run mcp list` logs each server, in name order, with its transport, whether it's disabled, and its entry as it was given; `bun run mcp remove <name>` deletes one; `bun run mcp disable <name>` and `bun run mcp enable <name>` turn one off and on. To change an entry, remove the server and add it again. `bun run mcp:node` does the same on Node. The command never contacts a server, and never resolves a reference.
+
+**The entry's fields.**
+
+- **stdio:** `command`, a name without a slash or an absolute path; `args`; `env`; and `cwd`, an absolute path.
+- **Streamable HTTP:** `url`, which is `https`, or `http` only when nothing in the entry holds a reference, since Bun's `fetch` sends even a request to `127.0.0.1` through `HTTP_PROXY`, headers included; and `headers`.
+- **Both:** `type`, which may be left out, since `command` means stdio and `url` Streamable HTTP; `startupTimeoutMs` and `toolTimeoutMs`, both required, in milliseconds from 1,000 to 2,147,483,647; `includeTools` and `excludeTools`; `disabled`, the server's starting flag; and `title` and `description`, which are kept but unused. Another field is refused, with a hint when another client spells it differently, such as `timeout` or `enabled`.
+- **The timeouts.** `startupTimeoutMs` covers starting the server, the handshake and its whole tool list; `toolTimeoutMs` limits each call, however much progress the server reports.
+- **References.** `${NAME}` and `${env:NAME}` refer to the agent's environment, and `$$` stands for `$`. They may appear in `command`, `args`, `env` values, `cwd`, header values, and the path and query of a `url`; there are no defaults, and no bare `$NAME`. A run resolves them, and an unset or blank variable fails it. `MODEL_API_KEY` can't be referenced.
+- **No literal secrets.** An `env` variable, a header, a query parameter or an option whose name says it holds a credential, such as `API_KEY`, `Authorization` or `--token`, must hold a reference, unless its value is a number, `true`, `false` or `none`, or its name's last word is `PATH`, `FILE` or `DIR`, as in `PRIVATE_KEY_PATH`, which may hold a plain path. Text shaped like a token, a written-out `Bearer` credential, a JSON Web Token, a private key and a password in a URL are refused anywhere.
+- **Filters.** `includeTools` names the only tools offered, and a run fails when the server doesn't list one of them; `excludeTools` leaves tools out. Both name tools as the server lists them.
+- **Tool names.** The model sees a tool as `mcp__<server>__<tool>`: the server's name lowercased, with `-` as `_`, and the tool's name in snake_case, with any other character as `_`. A name over 64 characters, or one that two tools would share, ends in a hash of the server's and the tool's names instead.
+- **`PATH`.** A run finds a stdio `command` in the absolute directories of the server's `PATH`. Under a scheduler, `PATH` is short, so give the command's absolute path, or set `PATH` in its `env`.
+
+**Running with servers.**
+
+- **Check a new server** with a short run, such as `bun run agent 'Say hi'`, and look at its `mcp server` record: the tools it offers, their definitions' size in bytes, and a hash of its tool list, which changes when the list does.
+- **A server that fails, fails every run**, before the first model call, with its error and the last lines of its stderr, until it's fixed or disabled with `bun run mcp disable <name>`.
+- **Where stdio servers run.** A server runs in its `cwd`, or else in a directory made for the run in the OS's temporary directory, holding only an empty `node_modules`, so that npm reads no `.npmrc` above it: not one the file tools wrote into the working directory. It can't keep out one a shell command writes to `~/.npmrc`. When the run ends, each server gets end-of-file, then SIGTERM, then SIGKILL, with the process groups its children lead, such as a browser's.
+- **Untrusted text.** Tool descriptions and results reach the model as text the server wrote, which may try to steer it. Add servers you trust, and offer only the tools you need with `includeTools`.
+- **Context.** Every tool's definition is sent with every model call: the tools of the fifteen servers measured in the Brief's R18.2 came to about 21,900 tokens, against about 700 for the built-in tools. A server's own flags, and `includeTools`, keep the list short.
 
 ### Skills
 
@@ -142,6 +229,8 @@ WORK_DIR=~/gremlin-work SKILLS_PATH=$(npm root -g)/@playwright/cli/skills \
 Settings come from the environment, and from a local `.env` file, which is gitignored. Each value is trimmed, and a blank one counts as unset.
 - **On Bun,** `.env` is read along with `.env.local`, and a file for `NODE_ENV` (`.env.development` when it's unset).
 - **On Node,** only `.env` is read, through the `--env-file-if-exists` flag in `agent:node`. Without a `.env`, Node prints ".env not found. Continuing without it." to stderr, and carries on.
+
+The `mcp` command needs only `DATA_DIR` and `LOG_FORMAT` (see [MCP servers](#mcp-servers)).
 
 There are no implicit provider, model or operational settings. The Claude cache policy below is the only new provider default. Missing or invalid settings are reported together before networking.
 
@@ -231,7 +320,7 @@ bun run mutation       # Stryker mutation testing on Bun, which fails below 100%
 - **Every mutant must be caught.**
   - Stryker fails below a 100% mutation score, so a new branch or message needs a test that would notice it changing.
   - A mutant that behaves exactly like the original code, or sits in code that can't run, is usually better removed by simplifying the code.
-  - Where the code can't reasonably change, a `// Stryker disable next-line` comment turns the mutant off, with the reason on the line above. There are four: `main.ts`' final `throw`, the `yaml` package's log level, where `''` behaves exactly like `'error'`, and two for the sweep's `ps`: its process group, since it lists the same processes from any group, and its working directory, since `''` means the current one, which works the same while it exists.
+  - Where the code can't reasonably change, a `// Stryker disable next-line` comment turns the mutant off, with the reason on the line above. There are eight: `main.ts`' final `throw`; the `yaml` package's log level, where `''` behaves exactly like `'error'`; two for the sweep's `ps`: its process group, since it lists the same processes from any group, and its working directory, since `''` means the current one, which works the same while it exists; the check that narrows an MCP tool's input schema to an object, which `isSpecType.Tool` has already made; the sort of MCP servers and tools by name, where `<=` sorts as `<` does, since no two names are equal; the empty fallback for a stdio MCP server's working directory, never used, since the run's directory is made before such a server starts; and the readers a stdio server's close waits for, which have ended by then, since cancelling a reader settles its read at once.
 - **Tests fake the app's globals.** The app reads the environment, `fetch`, the clock and `console` directly, with nothing injected. Tests fake them with `vi.stubEnv`, `vi.stubGlobal` and `vi.spyOn`, and Vitest undoes every fake after each test. Importing `main.ts` runs it, so its tests import it only after faking, and never statically.
 - **Tests start real processes, and a guard checks every signal they send.** The shell's and the sweep's tests run real commands, on Bun and on Node, and assert outcomes and signals, never elapsed time. [`test/signal-guard.ts`](test/signal-guard.ts), a Vitest setup file that Stryker never mutates, wraps `process.kill`. It refuses, and fails the test for, a signal that could reach pid 0, -1 or 1, the test process or its parent, or a process the test file can't vouch for: one it started, one carrying a run ID it registered, or a descendant of either. So even a mutant that widens the sweep's match can't reach your own processes. Processes a test leaves carry a fresh random run ID, and end on their own after 30 seconds at most.
 

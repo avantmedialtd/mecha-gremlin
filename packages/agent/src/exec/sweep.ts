@@ -21,7 +21,7 @@ export const MAX_MATCHES = 32;
 
 // Signals are ignored while the session's processes are stopped, so a ps that hangs mustn't hold
 // the agent for long. Reading every process's environment takes far less, even on a busy machine.
-const LIST_TIMEOUT_MS = 10_000;
+export const LIST_TIMEOUT_MS = 10_000;
 
 const POLL_MS = 50;
 
@@ -184,6 +184,7 @@ const listProcesses = async (
         // ps lists the same processes from any group, so this can't be told apart from `true`.
         // Stryker disable next-line BooleanLiteral
         detached: false,
+        stdin: 'ignore',
     });
 
     if (!spawned.ok) {
@@ -215,6 +216,29 @@ const listProcesses = async (
     }
 
     return ok(stdout);
+};
+
+/**
+ * The process groups that a process's descendants lead, from one listing, so that they can be
+ * stopped once the process has gone: Chrome leads a group of its own (Brief R18.3). None when ps
+ * can't list the processes.
+ */
+export const descendantGroups = async (
+    pid: number,
+    parentEnv: Env,
+    timeoutMs: number,
+): Promise<number[]> => {
+    const listed = await listProcesses(parentEnv, timeoutMs);
+
+    return listed.ok
+        ? [
+              ...new Set(
+                  escalation(parseListing(listed.value), pid, process.pid).map(
+                      (entry) => entry.pgid,
+                  ),
+              ),
+          ]
+        : [];
 };
 
 // The deadline's timer doesn't keep the agent's process running once the processes have ended.

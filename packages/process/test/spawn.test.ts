@@ -1,4 +1,5 @@
 import { ChildProcess, spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -32,6 +33,8 @@ const WRITER = [
     'setTimeout(write, 50);',
 ].join('\n');
 
+const MIB = 1024 * 1024;
+
 let dir: string;
 
 beforeAll(async () => {
@@ -61,8 +64,9 @@ afterEach(() => {
         try {
             signalGroup(group, 'SIGKILL');
         } catch (error) {
-            // A group whose processes have all ended can't be signalled.
-            if (Object(error).code !== 'ESRCH') {
+            // A group whose processes have all ended can't be signalled. On macOS, one whose last
+            // member is a zombie waiting to be reaped answers EPERM instead of ESRCH.
+            if (!['ESRCH', 'EPERM'].includes(Object(error).code)) {
                 throw error;
             }
         }
@@ -72,7 +76,13 @@ afterEach(() => {
 });
 
 const options = (overrides: Partial<SpawnOptions> = {}): SpawnOptions => {
-    return { cwd: dir, env: { PATH: '/usr/bin:/bin' }, detached: false, ...overrides };
+    return {
+        cwd: dir,
+        env: { PATH: '/usr/bin:/bin' },
+        detached: false,
+        stdin: 'ignore',
+        ...overrides,
+    };
 };
 
 const started = async (
@@ -103,8 +113,25 @@ const startGroup = async (
     return proc;
 };
 
+// The stdin of a process started with `stdin: 'pipe'`, in a group of its own.
+const piped = async (
+    spawn: Spawner,
+    argv: Argv,
+    overrides?: Partial<SpawnOptions>,
+): Promise<{ readonly proc: Subprocess; readonly stdin: WritableStream<Uint8Array> }> => {
+    const proc = await startGroup(spawn, argv, { ...overrides, stdin: 'pipe' });
+
+    expect(proc.stdin).toBeInstanceOf(WritableStream);
+
+    return { proc, stdin: proc.stdin as WritableStream<Uint8Array> };
+};
+
 const text = (stream: ReadableStream<Uint8Array>): Promise<string> => {
     return new Response(stream).text();
+};
+
+const bytes = (value: string): Uint8Array => {
+    return new TextEncoder().encode(value);
 };
 
 const run = async (spawn: Spawner, argv: Argv, overrides?: Partial<SpawnOptions>) => {
@@ -131,6 +158,32 @@ const watchOutput = (): (() => unknown[]) => {
     return () => [...warnings.mock.calls, ...stdout.mock.calls, ...stderr.mock.calls];
 };
 
+// A write that fails, as the error it fails with.
+const failure = async (
+    stdin: WritableStream<Uint8Array>,
+    chunk: Uint8Array = bytes('late\n'),
+): Promise<unknown> => {
+    const writer = stdin.getWriter();
+
+    try {
+        return await writer.write(chunk).then(
+            () => 'written',
+            (error: unknown) => error,
+        );
+    } finally {
+        writer.releaseLock();
+    }
+};
+
+// The unref script, run to its end, and the pid of the `sleep` it started.
+const runUnrefScript = (implementation: 'bun' | 'node', stdin: 'ignore' | 'pipe') => {
+    const script = spawnSync(process.execPath, [UNREF_SCRIPT, implementation, stdin], {
+        encoding: 'utf8',
+    });
+
+    return { script, sleep: Number(script.stdout) };
+};
+
 const behaves = (spawn: Spawner, implementation: 'bun' | 'node'): void => {
     test('output and exit code', async () => {
         expect(await run(spawn, ['bash', '-c', 'echo out; echo err >&2; exit 3'])).toEqual({
@@ -152,6 +205,14 @@ const behaves = (spawn: Spawner, implementation: 'bun' | 'node'): void => {
     test("a working directory that can't be used", async () => {
         const missing = await spawn(['pwd'], options({ cwd: join(dir, 'missing') }));
         const file = await spawn(['pwd'], options({ cwd: join(dir, 'file.txt') }));
+
+        expect(missing).toEqual({ ok: false, error: expect.any(String) });
+        expect(file).toEqual({ ok: false, error: expect.any(String) });
+    });
+
+    test("a working directory that can't be used, with a stdin pipe", async () => {
+        const missing = await spawn(['pwd'], options({ cwd: join(dir, 'missing'), stdin: 'pipe' }));
+        const file = await spawn(['pwd'], options({ cwd: join(dir, 'file.txt'), stdin: 'pipe' }));
 
         expect(missing).toEqual({ ok: false, error: expect.any(String) });
         expect(file).toEqual({ ok: false, error: expect.any(String) });
@@ -182,8 +243,16 @@ const behaves = (spawn: Spawner, implementation: 'bun' | 'node'): void => {
         expect(absolute.stdout).toBe('found\n');
     });
 
-    test('stdin is empty', async () => {
-        expect(await run(spawn, ['bash', '-c', 'cat; echo done'])).toEqual({
+    test('stdin is empty, and there is no stream to write to', async () => {
+        const proc = await started(spawn, ['bash', '-c', 'cat; echo done']);
+        const [stdout, stderr, exit] = await Promise.all([
+            text(proc.stdout),
+            text(proc.stderr),
+            proc.exited,
+        ]);
+
+        expect(proc.stdin).toBeUndefined();
+        expect({ stdout, stderr, exit }).toEqual({
             stdout: 'done\n',
             stderr: '',
             exit: { exitCode: 0, signal: null },
@@ -263,21 +332,172 @@ const behaves = (spawn: Spawner, implementation: 'bun' | 'node'): void => {
     });
 
     test('unref lets the caller exit', () => {
-        const script = spawnSync(process.execPath, [UNREF_SCRIPT, implementation], {
-            encoding: 'utf8',
-        });
-        const pid = Number(script.stdout);
+        const { script, sleep } = runUnrefScript(implementation, 'ignore');
 
         expect(script).toMatchObject({ status: 0, stderr: '' });
-        expect(pid).toBeGreaterThan(1);
+        expect(sleep).toBeGreaterThan(1);
         // Signal 0 only asks whether the sleep is still running. It isn't this file's process,
         // so it's left to end on its own.
-        expect(process.kill(pid, 0)).toBe(true);
+        expect(process.kill(sleep, 0)).toBe(true);
     });
 };
 
-describe('spawnWithNode', () => {
+// Every scenario of writing to a process's stdin. `closedStdin` is false only where the runtime
+// can't detect a process that closed its stdin.
+const writes = (spawn: Spawner, implementation: 'bun' | 'node', closedStdin: boolean): void => {
+    test('written and read', async () => {
+        const { proc, stdin } = await piped(spawn, ['cat']);
+        const writer = stdin.getWriter();
+
+        await writer.write(bytes('hi\n'));
+        await writer.close();
+        const [stdout, exit] = await Promise.all([text(proc.stdout), proc.exited]);
+
+        expect(stdout).toBe('hi\n');
+        expect(exit).toEqual({ exitCode: 0, signal: null });
+    });
+
+    test('a write reaches the process before stdin is closed', async () => {
+        const { proc, stdin } = await piped(spawn, ['cat']);
+        const writer = stdin.getWriter();
+        const reader = proc.stdout.getReader();
+
+        await writer.write(bytes('hi\n'));
+        const echoed = await reader.read();
+        await writer.close();
+
+        expect(new TextDecoder().decode(echoed.value)).toBe('hi\n');
+        expect(await reader.read()).toEqual({ done: true, value: undefined });
+        expect(await proc.exited).toEqual({ exitCode: 0, signal: null });
+    });
+
+    test('a write waits while the pipe is full', async () => {
+        // The process creates it just before it starts reading.
+        const mark = join(dir, `reading-${implementation}`);
+        await rm(mark, { force: true });
+        const { proc, stdin } = await piped(
+            spawn,
+            ['bash', '-c', 'sleep 1; : > "$MARK"; exec wc -c'],
+            { env: { PATH: '/usr/bin:/bin', MARK: mark } },
+        );
+        const writer = stdin.getWriter();
+        const counted = text(proc.stdout);
+
+        await writer.write(new Uint8Array(4 * MIB));
+        const readingWhenWritten = existsSync(mark);
+        await writer.close();
+
+        expect(readingWhenWritten).toBe(true);
+        expect((await counted).trim()).toBe(String(4 * MIB));
+        expect(await proc.exited).toEqual({ exitCode: 0, signal: null });
+    });
+
+    test('closing after the exit', async () => {
+        const { proc, stdin } = await piped(spawn, ['bash', '-c', 'exit 0']);
+
+        await proc.exited;
+
+        await expect(stdin.close()).resolves.toBeUndefined();
+    });
+
+    test('aborting gives the process end-of-file at once', async () => {
+        const { proc, stdin } = await piped(spawn, ['bash', '-c', 'echo ready; cat; echo eof']);
+        const reader = proc.stdout.getReader();
+        const ready = await reader.read();
+        let rest = '';
+
+        await stdin.abort();
+
+        for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+            rest += new TextDecoder().decode(chunk.value);
+        }
+
+        expect(new TextDecoder().decode(ready.value)).toBe('ready\n');
+        expect(rest).toBe('eof\n');
+        expect(await proc.exited).toEqual({ exitCode: 0, signal: null });
+    });
+
+    test('writes after the exit fail with EPIPE', async () => {
+        const { proc, stdin } = await piped(spawn, ['bash', '-c', 'exit 0']);
+        await proc.exited;
+
+        const first = await failure(stdin);
+        const second = await failure(stdin);
+
+        expect(first).toMatchObject({ code: 'EPIPE', message: 'write EPIPE' });
+        expect(second).toMatchObject({ code: 'EPIPE' });
+    });
+
+    test('a write after a signal fails with EPIPE', async () => {
+        const { proc, stdin } = await piped(spawn, ['bash', '-c', 'kill -TERM $$']);
+
+        expect(await proc.exited).toEqual({ exitCode: null, signal: 'SIGTERM' });
+        expect(await failure(stdin)).toMatchObject({ code: 'EPIPE' });
+    });
+
+    test.runIf(closedStdin)(
+        'a write after the process closed its stdin fails with EPIPE',
+        async () => {
+            const { proc, stdin } = await piped(spawn, [
+                'bash',
+                '-c',
+                'exec 0<&-; echo closed; sleep 30',
+            ]);
+            const reader = proc.stdout.getReader();
+
+            const closed = await reader.read();
+            const written = await failure(stdin);
+
+            expect(new TextDecoder().decode(closed.value)).toBe('closed\n');
+            expect(written).toMatchObject({ code: 'EPIPE' });
+        },
+    );
+
+    // A write held by a full pipe when the process exits fails too, and on both runtimes Node's
+    // stream then also emits an `error` event.
+    test('a failed write escapes nowhere', async () => {
+        const escaped: unknown[] = [];
+        const record = (error: unknown): void => {
+            escaped.push(error);
+        };
+        const failures: unknown[] = [];
+        process.on('uncaughtException', record);
+        process.on('unhandledRejection', record);
+
+        try {
+            const { proc, stdin } = await piped(spawn, ['bash', '-c', 'echo started; sleep 0.2']);
+            const reader = proc.stdout.getReader();
+            await reader.read();
+
+            failures.push(await failure(stdin, new Uint8Array(4 * MIB)));
+            await proc.exited;
+            failures.push(await failure(stdin), await failure(stdin));
+            await new Promise((resolve) => {
+                setTimeout(resolve, 50);
+            });
+        } finally {
+            process.off('uncaughtException', record);
+            process.off('unhandledRejection', record);
+        }
+
+        expect(failures).toMatchObject([{ code: 'EPIPE' }, { code: 'EPIPE' }, { code: 'EPIPE' }]);
+        expect(escaped).toEqual([]);
+    });
+
+    test('an idle stdin pipe and unref let the caller exit', () => {
+        const { script, sleep } = runUnrefScript(implementation, 'pipe');
+
+        expect(script).toMatchObject({ status: 0, stderr: '' });
+        expect(sleep).toBeGreaterThan(1);
+        expect(process.kill(sleep, 0)).toBe(true);
+    });
+};
+
+describe('spawnWithNode', { timeout: 15_000 }, () => {
     behaves(spawnWithNode, 'node');
+    // On Bun, node:child_process drops writes to a process that closed its stdin, without an
+    // error.
+    writes(spawnWithNode, 'node', typeof Bun === 'undefined');
 
     test("unref() calls the child process's own", async () => {
         const unref = vi.spyOn(ChildProcess.prototype, 'unref');
@@ -292,8 +512,9 @@ describe('spawnWithNode', () => {
     });
 });
 
-describe.runIf(typeof Bun !== 'undefined')('spawnWithBun', () => {
+describe.runIf(typeof Bun !== 'undefined')('spawnWithBun', { timeout: 15_000 }, () => {
     behaves(spawnWithBun, 'bun');
+    writes(spawnWithBun, 'bun', true);
 
     test("unref() calls the subprocess's own", async () => {
         const spawn = Bun.spawn;

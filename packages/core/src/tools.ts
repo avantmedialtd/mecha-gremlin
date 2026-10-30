@@ -9,6 +9,8 @@ export type Tool<Args = unknown> = {
     readonly name: string;
     readonly description: string;
     readonly schema: ToolSchema<Args>;
+    /** False for a schema that strict mode would change, such as an MCP server's (Brief R18.2). */
+    readonly strict?: boolean;
 };
 
 /** A failure's error is shown to the model, so write it for the model to act on. */

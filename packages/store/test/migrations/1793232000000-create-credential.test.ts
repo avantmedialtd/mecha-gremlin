@@ -14,7 +14,9 @@ test('the migration is named with its 13-digit timestamp', () => {
 test('down undoes up', async () => {
     const { store } = await open();
 
-    const undone = await withDataSource(store, 'undo the migration', async (dataSource) => {
+    const undone = await withDataSource(store, 'undo the migrations', async (dataSource) => {
+        // The mcp_server migration ran after it, so it is undone first.
+        await dataSource.undoLastMigration({ transaction: 'all' });
         await dataSource.undoLastMigration({ transaction: 'all' });
 
         return dataSource.query(TABLES);
@@ -32,6 +34,10 @@ test('down undoes up', async () => {
     expect(undone).toEqual({ ok: true, value: [] });
     expect(redone).toEqual({
         ok: true,
-        value: [['CreateCredential1793232000000'], [{ name: 'credential' }], []],
+        value: [
+            ['CreateCredential1793232000000', 'CreateMcpServer1793318400000'],
+            [{ name: 'credential' }],
+            [],
+        ],
     });
 });
