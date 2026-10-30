@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The agent's entry point, which calls the configured model through its provider (LM Studio, an OpenAI-compatible Responses service or Claude's Messages API), has it carry out a task through the agent loop with a shell, `read`, the file tools `FILE_TOOLS` chooses and skills, and logs the answer, with its configuration, the store it opens in the data folder, its failure behaviour, and how it stops the session's processes and closes the store. It runs on Bun, with `bun run agent`, or on Node, with `bun run agent:node`.
+The agent's entry point, which calls the configured model through its provider (LM Studio, an OpenAI-compatible Responses service or Claude's Messages API), has it carry out a task through the agent loop with a shell, `read`, the file tools `FILE_TOOLS` chooses, skills and its MCP servers' tools, and logs the answer, with its configuration, the store it opens in the data folder, its failure behaviour, and how it closes the MCP servers, stops the session's processes and closes the store. It runs on Bun, with `bun run agent`, or on Node, with `bun run agent:node`.
 ## Requirements
 ### Requirement: Carry out a task through the agent loop, and log the answer
 Running the agent, `bun run agent [task…]` from the repository root, SHALL:
@@ -10,13 +10,14 @@ Running the agent, `bun run agent [task…]` from the repository root, SHALL:
 2. validate the explicitly configured settings;
 3. load the skills `SKILLS_PATH` lists (`skills`);
 4. open the store in `DATA_DIR` (`store`) before any network request. When it can't be opened, the agent SHALL log the error and exit with code 1, having made no network request;
-5. choose the named model;
-6. run the provider-bound agent loop, with a step limit of `MAX_STEPS`, with:
-   - the tools `read`, rooted at the working directory with the loaded skills' directories; then the file tools `FILE_TOOLS` chooses, rooted at the working directory: `write` and `edit` for `write-edit`, or `apply_patch` for `apply-patch`; then `shell`, in the working directory; then `activate_skill` when any skill is loaded;
+5. connect to the enabled MCP servers (`mcp-client`), with the signal handlers installed ("Stop the session's processes when the agent ends"). When that fails, the agent SHALL exit with code 1 before the first model call;
+6. choose the named model;
+7. run the provider-bound agent loop, with a step limit of `MAX_STEPS`, with:
+   - the tools `read`, rooted at the working directory with the loaded skills' directories; then the file tools `FILE_TOOLS` chooses, rooted at the working directory: `write` and `edit` for `write-edit`, or `apply_patch` for `apply-patch`; then `shell`, in the working directory; then `activate_skill` when any skill is loaded; then the MCP servers' tools (`mcp-client`);
    - starting instructions that say the model carries out tasks on this computer with a shell, `read` for reading text files and the offered file tools for writing and changing them; give the working directory's real path and say that paths commands print are relative to it; ask for a brief final answer; and end with the skills catalog when any skill is loaded;
    - a user input holding the task;
-7. log the trimmed answer as an `info` record `answer` with the field `text`;
-8. stop the session's processes, close the store and exit with code 0.
+8. log the trimmed answer as an `info` record `answer` with the field `text`;
+9. close the MCP servers, stop the session's processes, close the store and exit with code 0.
 
 Responses providers SHALL send the instructions as a developer item to the configured Responses endpoint. Anthropic SHALL send the same instructions as system input to its configured Messages endpoint. Every request SHALL name the configured model and effort in the selected provider's format.
 
@@ -64,11 +65,16 @@ Responses providers SHALL send the instructions as a developer item to the confi
 - **WHEN** `DATA_DIR` names a directory in which `db.sqlite` is itself a directory
 - **THEN** an error names the database's path and the reason, no network request is made, and the exit code is 1
 
+#### Scenario: MCP tools after the built-in ones
+- **WHEN** an enabled MCP server named `docs` offers the tool `search`, `SKILLS_PATH` is unset and `FILE_TOOLS` is `write-edit`
+- **THEN** the first request offers `read`, `write`, `edit`, `shell` and `mcp__docs__search`, in that order
+
 ### Requirement: Log each model call and tool call
 The agent SHALL log, through the structured logger:
 - when at least one skill is loaded, an `info` record `skills` with `names`, the loaded skills' names in sorted order;
 - the `skill not loaded` and `skill warning` records that loading skills produces (`skills`);
 - when opening the store applied migrations, an `info` record `migrated` with `names`, the migrations' names in the order they ran, logged before `asking`;
+- for each MCP server the run connected to, in the servers' name order, its `warn` records and its `info` record `mcp server` (`mcp-client`), logged before `asking`;
 - before the first model call, an `info` record `asking` with `model`, `baseUrl`, `run` (the session's run ID), `workDir` (the working directory's real path), `dataDir` (the data folder's real path) and `task`;
 - for every attempted model call, including an incomplete or failed call, an `info` record `model call` with `step`, `seconds` rounded to a tenth, and the selected provider's complete typed reported statistics as `providerStats`, including available usage, diagnostics and documented rate-limit headers. An unavailable statistic SHALL not be invented; partial usage SHALL be identified as partial. Both pretty and JSON output SHALL show the complete `providerStats` fields. Any common token summary SHALL be additional and SHALL use the correct provider-specific accounting;
 - then, for each of the step's tool calls:
@@ -107,7 +113,11 @@ Native replay data, API keys and authorization headers SHALL NOT be logged as st
 
 #### Scenario: The migrated record
 - **WHEN** the agent runs twice with the same `DATA_DIR`, which starts empty
-- **THEN** the first run logs a `migrated` record naming the migration that creates the `credential` table, before `asking`, and the second run logs no `migrated` record
+- **THEN** the first run logs a `migrated` record naming the migrations that create the `credential` table and the `mcp_server` table, in that order, before `asking`, and the second run logs no `migrated` record
+
+#### Scenario: The MCP servers' records
+- **WHEN** the MCP servers `b` and `a` are enabled, no skill is loaded, and `DATA_DIR` holds a database already migrated
+- **THEN** the records begin with an `mcp server` record for `a`, then one for `b`, then `asking`
 
 ### Requirement: Choose the model according to the provider
 The agent SHALL require `MODEL` and choose it according to `MODEL_PROVIDER`.
@@ -295,17 +305,17 @@ The agent SHALL run on Bun with `bun run agent`, and on Node with `bun run agent
 - **THEN** its `engines` require Bun 1.4.4 or later and Node 26 or later
 
 ### Requirement: Stop the session's processes when the agent ends
-The agent SHALL await the shell's `dispose()` before it exits, whether the session answered or failed, and SHALL then close the store, on every path, signals included.
+Before it exits, whether the session answered or failed or an MCP server failed to start, the agent SHALL close every MCP server, in parallel (`mcp-client`), then await the shell's `dispose()`, then close the store and remove the directory it made for stdio servers, on every path, signals included.
 - When `dispose()` stopped any processes, the agent SHALL log an `info` record `stopped` with the field `count`, once.
 - When `dispose()` couldn't run its sweep, the agent SHALL log a `warn` record `cleanup failed` with the field `error`, and keep its exit code.
-- **Signal handlers:** it SHALL install handlers for SIGINT, SIGTERM and SIGHUP before the session starts, and SHALL remove them once `dispose()` has resolved.
+- **Signal handlers:** it SHALL install handlers for SIGINT, SIGTERM and SIGHUP before it connects the MCP servers, and SHALL remove them once it has closed the store.
 - **The first signal** SHALL:
   - log a `warn` record `interrupted` with the field `signal`;
-  - stop handling the session's steps;
-  - await `dispose()`;
+  - stop handling the session's steps, or, while the MCP servers are connecting, abort their connections and log no error for them;
+  - close the MCP servers, those still connecting included, await `dispose()`, close the store and remove the directory made for stdio servers;
   - exit with code 130 for SIGINT, 143 for SIGTERM or 129 for SIGHUP.
 
-  Signals that arrive while `dispose()` runs SHALL be ignored.
+  Signals that arrive while the agent is closing the MCP servers, running `dispose()` or closing the store SHALL be ignored.
 
 #### Scenario: A process left behind
 - **WHEN** a command starts a process in a session of its own, and the model then answers
@@ -336,6 +346,14 @@ The agent SHALL await the shell's `dispose()` before it exits, whether the sessi
 - **THEN** a `warn` record `cleanup failed` gives the reason, and the exit code is 0
 
 #### Scenario: The store is closed
-- **WHEN** the agent ends, after an answer, after a failure, or after SIGINT
+- **WHEN** the agent ends, after an answer, after a failure, after an MCP server failed to start, or after SIGINT
 - **THEN** its store is closed: the data folder holds no `-wal` or `-shm` file, and a new store opens there without error
+
+#### Scenario: A signal while the servers connect
+- **WHEN** SIGTERM arrives while a stdio MCP server is starting
+- **THEN** an `interrupted` record is logged and no error about the server, none of its processes is left, the directory made for stdio servers is gone, and the exit code is 143
+
+#### Scenario: MCP servers are closed first
+- **WHEN** a stdio MCP server is running when the agent answers, and in another run when SIGINT arrives
+- **THEN** in both runs none of the server's processes is left, the directory made for stdio servers is gone, and no `stopped` record counts the server's processes
 

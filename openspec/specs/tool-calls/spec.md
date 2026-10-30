@@ -12,7 +12,7 @@ The `core` package SHALL provide a `Tool<Args>` type made of a `name`, a `descri
 - **THEN** they contain no dependency or type import for a schema library, `openai` or `@anthropic-ai/sdk`
 
 ### Requirement: Convert a tool to a Responses function tool
-The shared tool definition SHALL provide its input JSON Schema requested with target `draft-07`, without the top-level `$schema` key. The Responses adapter SHALL convert it to a function tool with `type` `function`, the tool's name and description, `strict: true`, and that schema as `parameters`. The Anthropic adapter SHALL use the same schema as its client tool's `input_schema` without requesting Anthropic strict mode. Wire-format conversion SHALL not require an SDK type in `core`.
+The shared tool definition SHALL provide its input JSON Schema requested with target `draft-07`, without the top-level `$schema` key. A tool MAY say it isn't strict, with `strict: false`. The Responses adapter SHALL convert a tool to a function tool with `type` `function`, the tool's name and description, `strict: true`, or `strict: false` for a tool that says it isn't strict, and that schema as `parameters`. The Anthropic adapter SHALL use the same schema as its client tool's `input_schema` without requesting Anthropic strict mode. Wire-format conversion SHALL not require an SDK type in `core`.
 
 #### Scenario: Function tool from a schema
 - **WHEN** a tool named `read`, described as "Read a file", has a draft-07 input schema containing a `$schema` key, an object property `path`, a required `path` and `additionalProperties: false`
@@ -25,6 +25,10 @@ The shared tool definition SHALL provide its input JSON Schema requested with ta
 #### Scenario: Anthropic keeps non-strict constraints
 - **WHEN** the input JSON Schema contains a numeric minimum
 - **THEN** the Anthropic tool retains it in `input_schema` and does not enable strict tool use
+
+#### Scenario: A tool that isn't strict
+- **WHEN** a tool is defined with `strict: false`
+- **THEN** its Responses function tool has `strict: false`, and a tool defined without `strict` has `strict: true`
 
 ### Requirement: Classify a model call's output
 The shared `Reply` type SHALL distinguish `calls`, `final` and `empty` using Gremlin-owned types. The provider adapter SHALL derive the reply from the completed native response without replacing or mutating its replay data. When there is at least one client tool call, the reply SHALL be `calls` containing every call in output order, whatever text the output also holds. Otherwise nonempty trimmed text SHALL be `final`; a textual refusal SHALL count as answer text. Otherwise the reply SHALL be `empty`. A call view SHALL identify the call, tool name and raw JSON arguments for local validation.

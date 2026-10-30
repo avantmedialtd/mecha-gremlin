@@ -1,7 +1,7 @@
 # store Specification
 
 ## Purpose
-The store, `@mecha-gremlin/store`: the database in the data folder, `db.sqlite`, opened through TypeORM and better-sqlite3 with its pragmas and migrations; the queue that runs all work on a store one call at a time; and the `credential` table, which keeps OAuth credentials with a lease for their refresh.
+The store, `@mecha-gremlin/store`: the database in the data folder, `db.sqlite`, opened through TypeORM and better-sqlite3 with its pragmas and migrations; the queue that runs all work on a store one call at a time; the `credential` table, which keeps OAuth credentials with a lease for their refresh; and the `mcp_server` table, which keeps the definitions of MCP servers.
 ## Requirements
 ### Requirement: Open the database in a data folder
 `openStore(dataDir)`, exported by `@mecha-gremlin/store/store`, SHALL open `db.sqlite` in the directory it is given, through TypeORM 1.1.2's `better-sqlite3` driver with better-sqlite3 13. It SHALL give the store, with the names of the migrations it applied. When `db.sqlite` doesn't exist, it SHALL create it with mode 0600 before SQLite opens it; an existing file SHALL keep its mode. When the database can't be created or opened, it SHALL give an error naming the database's path and the reason. It SHALL report every failure as a result and SHALL NOT throw. The store SHALL read no environment variable, and SHALL write nothing to stdout or stderr.
@@ -34,11 +34,11 @@ The store SHALL run every pending migration when it opens, in one transaction, w
 
 #### Scenario: The first open
 - **WHEN** a store opens in an empty directory
-- **THEN** it gives the name of the migration that creates the `credential` table, and the table exists
+- **THEN** it gives the names of the migrations that create the `credential` table and the `mcp_server` table, in that order, and both tables exist
 
 #### Scenario: A later open
 - **WHEN** a store opens again in the same directory
-- **THEN** it gives no migration names, and the credentials saved before are still there
+- **THEN** it gives no migration names, and the credentials and servers saved before are still there
 
 #### Scenario: The schema matches the definitions
 - **WHEN** a store has opened
@@ -47,6 +47,10 @@ The store SHALL run every pending migration when it opens, in one transaction, w
 #### Scenario: A migration that fails
 - **WHEN** the database already holds a `credential` table that no migration created
 - **THEN** the open gives an error, that table is unchanged, and no store is given
+
+#### Scenario: An upgraded database
+- **WHEN** a store opens a database whose only applied migration is the one that creates the `credential` table
+- **THEN** it gives the name of the migration that creates the `mcp_server` table alone, and the credentials saved before are still there
 
 ### Requirement: Serialise all work on a store
 A store SHALL run its database work one call at a time, in the order the calls were made, even when the callers don't wait for each other. `closeStore` SHALL wait for the work already started before it closes the connection. Work asked of a closed store SHALL give an error saying the store is closed.
@@ -126,4 +130,43 @@ The store SHALL keep OAuth credentials in a `credential` table, with one row for
 #### Scenario: A credential that needs a new login
 - **WHEN** the lease's holder marks the credential as needing a login
 - **THEN** `needsLogin` is true and the lease is released, and a later `saveCredential` for the same row clears `needsLogin`
+
+### Requirement: Keep MCP server definitions
+`@mecha-gremlin/store/mcp-server` SHALL keep MCP servers (`mcp-servers`) in an `mcp_server` table, one row per server, holding:
+- its name, and the prefix its tools take;
+- its entry as checked, without `disabled`, as JSON;
+- whether it's disabled;
+- when it was created and last updated, in epoch milliseconds.
+
+Names SHALL be unique, and so SHALL prefixes.
+- `addMcpServer` SHALL insert a server with the name, prefix, entry and starting flag it is given, and give an error saying whether its name or its prefix is in use when one is.
+- `listMcpServers` SHALL give every server, in name order.
+- `removeMcpServer` SHALL delete a server by name, and say how many it deleted.
+- `setMcpServerDisabled` SHALL set a server's flag by name, and say whether it found the server.
+
+Each of them SHALL run on the store's queue, report a failure as a result, and SHALL NOT throw.
+
+#### Scenario: A round trip
+- **WHEN** a server is added, not disabled, with an entry holding nested objects and arrays, and another is added disabled
+- **THEN** `listMcpServers` gives the first with the same name and prefix, an entry deeply equal to the one added, and `disabled` false, and the second with `disabled` true
+
+#### Scenario: A name in use
+- **WHEN** a server is added under a name another server has
+- **THEN** `addMcpServer` gives an error saying the name is in use, and the first server is unchanged
+
+#### Scenario: A prefix in use
+- **WHEN** a server is added with a new name, and the prefix another server has
+- **THEN** `addMcpServer` gives an error saying the prefix is in use
+
+#### Scenario: Name order
+- **WHEN** the servers `b` and then `a` are added
+- **THEN** `listMcpServers` gives `a`, then `b`
+
+#### Scenario: Removing
+- **WHEN** a server is removed, and then removed again
+- **THEN** `removeMcpServer` first says it deleted 1, and then 0
+
+#### Scenario: Disabling
+- **WHEN** a server is disabled, and then a name no server has is disabled
+- **THEN** `setMcpServerDisabled` first says it found the server, which is then listed with `disabled` true, and then says it found none
 

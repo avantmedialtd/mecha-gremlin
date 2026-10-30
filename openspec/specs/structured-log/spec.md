@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The agent's logger: records with a level, a message and JSON fields, written to stdout, formatted for `LOG_FORMAT=pretty` and as JSON lines for `json`.
+The agent's logger: records with a level, a message and JSON fields, written to stdout, formatted for `LOG_FORMAT=pretty` and as JSON lines for `json`, with control characters escaped in both.
 ## Requirements
 ### Requirement: Log structured records to stdout
 The agent SHALL log through a structured logger of its own, with no logging library. A record SHALL have:
@@ -32,11 +32,15 @@ Every record SHALL go to stdout.
 - **THEN** the record's own `time` is still written
 
 ### Requirement: JSON output on request
-With `LOG_FORMAT` set to `json`, each record SHALL be written as one line holding a JSON object. The object holds `time` (ISO 8601), `level` and `message`, then the fields.
+With `LOG_FORMAT` set to `json`, each record SHALL be written as one line holding a JSON object. The object holds `time` (ISO 8601), `level` and `message`, then the fields. The characters U+007F to U+009F, which JSON leaves as they are, SHALL be written as `\u` escapes, as JSON writes the other control characters.
 
 #### Scenario: A record as JSON
 - **WHEN** `LOG_FORMAT` is `json` and an `info` record "tool call" is logged with the fields `tool: "read"` and `arguments: { path: "a.txt" }`
 - **THEN** the line is a JSON object with `time`, `level` `info`, `message` "tool call", `tool` and `arguments` as an object
+
+#### Scenario: Control characters as JSON
+- **WHEN** `LOG_FORMAT` is `json`, and a record's message holds ESC and U+009B
+- **THEN** the line holds `\u001b` and `\u009b` and neither character itself, and its `message` parses back to the message logged
 
 ### Requirement: The log format is checked first
 `LOG_FORMAT` SHALL be read like the agent's other settings: its value is trimmed, and a value that is blank once trimmed counts as unset. It SHALL be required, with `pretty` and `json` as its only accepted values. An unset, blank or invalid value SHALL fail startup, make no network call and exit with code 1. The agent SHALL check it first to choose the diagnostic output format, but SHALL still check and report all independently checkable configuration errors before exiting. If `LOG_FORMAT` is invalid or missing, the agent SHALL use formatted output only for those startup diagnostics, including an error naming `LOG_FORMAT`; this diagnostic path SHALL NOT accept `pretty` as a configuration default.
@@ -61,11 +65,13 @@ With `LOG_FORMAT` set to `json`, each record SHALL be written as one line holdin
 When `LOG_FORMAT` is `pretty`, each record SHALL be written formatted for reading:
 - the local time as `HH:MM:SS`, the level in capitals padded to five characters, and the message;
 - then each field as `key=value`, in order;
-- a string value bare when it has no whitespace, `"` or `=`, and as JSON otherwise;
+- a string value bare when it has no whitespace, `"`, `=` or control character, and as JSON otherwise;
 - other values as compact JSON;
 - a string value that spans several lines in a block after the line instead: its key, then each of its lines indented.
 
 A message that spans several lines SHALL keep its first line in place. Each of its other lines SHALL follow the record's line, indented by four spaces, before any block. Lines SHALL be split at `\n` and at `\r\n`, so no line keeps a `\r` at its end.
+
+No control character, U+0000 to U+001F or U+007F to U+009F, SHALL be written as it is, other than tabs and the line breaks that split lines, so that text from a server can't move the cursor or start a terminal's escape sequence. A value written as JSON SHALL keep JSON's own escapes. Every other control character SHALL be written as `\u` and four lowercase hexadecimal digits.
 
 #### Scenario: A record with fields
 - **WHEN** an `info` record "model call" is logged at 07:15:51 local time with `step: 1`, `seconds: 1.5` and `file: "a.txt"`
@@ -90,4 +96,16 @@ A message that spans several lines SHALL keep its first line in place. Each of i
 #### Scenario: Levels line up
 - **WHEN** records are logged at `info`, `warn` and `error`
 - **THEN** their messages start in the same column
+
+#### Scenario: Control characters
+- **WHEN** an `error` record's message is "bad" followed by ESC and `[2J`, with a field `name` holding "x" followed by ESC
+- **THEN** the line is `HH:MM:SS ERROR bad\u001b[2J name="x\u001b"`, and holds no ESC
+
+#### Scenario: A carriage return inside a block
+- **WHEN** a field's value is "one\ntwo\rthree"
+- **THEN** the lines of its block are `    one` and `    two\u000dthree`
+
+#### Scenario: C1 controls
+- **WHEN** a field `name`'s value is "a", U+009B and "b"
+- **THEN** it is written as `name="a\u009bb"`, and the line holds no U+009B
 
