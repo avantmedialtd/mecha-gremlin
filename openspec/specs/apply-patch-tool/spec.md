@@ -99,7 +99,7 @@ When a chunk is applied, its removed lines SHALL be replaced by its added lines.
 - **THEN** the first occurrence changes
 
 ### Requirement: Add, delete, update and move files under the working directory
-`apply_patch` SHALL apply `write`'s fence to every path the patch names, `Move to` destinations included, with the same messages naming `apply_patch`, and the same refusal of `.env` files.
+`apply_patch` SHALL apply `write`'s fence to every path the patch names, `Move to` destinations included, with the same messages naming `apply_patch`, and the same refusals of `.env` files and of the data folder.
 
 - **Add File** SHALL write the `+` lines, joined with `\n` and ending with `\n`, creating parent directories. An existing file SHALL be replaced, unless it is a directory or larger than 32 KiB, which `write` refuses for the same reasons.
 - **Delete File** SHALL remove the file. It SHALL fail when the file doesn't exist or is a directory.
@@ -138,6 +138,10 @@ When a chunk is applied, its removed lines SHALL be replaced by its added lines.
 #### Scenario: A path named twice
 - **WHEN** a patch updates `app.ts` in two separate hunks
 - **THEN** it fails with an error naming `app.ts`, and no file changes
+
+#### Scenario: The data folder
+- **WHEN** `DATA_DIR` is the working directory's `data` folder, and a patch adds `data/x.txt`, or moves `app.ts` to `data/app.ts`
+- **THEN** it fails with an error saying the path is inside the data folder, and no file changes
 
 ### Requirement: Change nothing unless the whole patch applies, and report each file
 `apply_patch` SHALL parse the whole patch, check every path, read every file it updates or deletes, and work out every new content before it writes, removes or creates anything. If any of those steps fails, no file SHALL change. It SHALL then make the changes in the patch's order. If an I/O error stops it partway, the error SHALL list the files already changed.

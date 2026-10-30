@@ -2,19 +2,21 @@
 
 ## Purpose
 
-The agent's entry point, which calls the configured model through its provider (LM Studio, an OpenAI-compatible Responses service or Claude's Messages API), has it carry out a task through the agent loop with a shell, `read`, the file tools `FILE_TOOLS` chooses and skills, and logs the answer, with its configuration, its failure behaviour, and how it stops the session's processes. It runs on Bun, with `bun run agent`, or on Node, with `bun run agent:node`.
+The agent's entry point, which calls the configured model through its provider (LM Studio, an OpenAI-compatible Responses service or Claude's Messages API), has it carry out a task through the agent loop with a shell, `read`, the file tools `FILE_TOOLS` chooses and skills, and logs the answer, with its configuration, the store it opens in the data folder, its failure behaviour, and how it stops the session's processes and closes the store. It runs on Bun, with `bun run agent`, or on Node, with `bun run agent:node`.
 ## Requirements
 ### Requirement: Carry out a task through the agent loop, and log the answer
 Running the agent, `bun run agent [task…]` from the repository root, SHALL:
 1. require a nonempty task from the arguments, joined with spaces; a missing or whitespace-only task SHALL fail with an actionable error and SHALL NOT start the example browsing task or make a network request;
-2. validate the explicitly configured settings and choose the named model;
+2. validate the explicitly configured settings;
 3. load the skills `SKILLS_PATH` lists (`skills`);
-4. run the provider-bound agent loop, with a step limit of `MAX_STEPS`, with:
+4. open the store in `DATA_DIR` (`store`) before any network request. When it can't be opened, the agent SHALL log the error and exit with code 1, having made no network request;
+5. choose the named model;
+6. run the provider-bound agent loop, with a step limit of `MAX_STEPS`, with:
    - the tools `read`, rooted at the working directory with the loaded skills' directories; then the file tools `FILE_TOOLS` chooses, rooted at the working directory: `write` and `edit` for `write-edit`, or `apply_patch` for `apply-patch`; then `shell`, in the working directory; then `activate_skill` when any skill is loaded;
    - starting instructions that say the model carries out tasks on this computer with a shell, `read` for reading text files and the offered file tools for writing and changing them; give the working directory's real path and say that paths commands print are relative to it; ask for a brief final answer; and end with the skills catalog when any skill is loaded;
    - a user input holding the task;
-5. log the trimmed answer as an `info` record `answer` with the field `text`;
-6. stop the session's processes and exit with code 0.
+7. log the trimmed answer as an `info` record `answer` with the field `text`;
+8. stop the session's processes, close the store and exit with code 0.
 
 Responses providers SHALL send the instructions as a developer item to the configured Responses endpoint. Anthropic SHALL send the same instructions as system input to its configured Messages endpoint. Every request SHALL name the configured model and effort in the selected provider's format.
 
@@ -54,11 +56,20 @@ Responses providers SHALL send the instructions as a developer item to the confi
 - **WHEN** `FILE_TOOLS` is `write-edit`
 - **THEN** the instructions name `read`, `write` and `edit`, and don't name `apply_patch`
 
+#### Scenario: The store opens before any network request
+- **WHEN** `DATA_DIR` names an empty directory, and nothing listens at the configured LM Studio URL
+- **THEN** `db.sqlite` exists in that directory with its migrations applied, and the agent exits with code 1, saying LM Studio can't be reached
+
+#### Scenario: A data folder the store can't open
+- **WHEN** `DATA_DIR` names a directory in which `db.sqlite` is itself a directory
+- **THEN** an error names the database's path and the reason, no network request is made, and the exit code is 1
+
 ### Requirement: Log each model call and tool call
 The agent SHALL log, through the structured logger:
 - when at least one skill is loaded, an `info` record `skills` with `names`, the loaded skills' names in sorted order;
 - the `skill not loaded` and `skill warning` records that loading skills produces (`skills`);
-- before the first model call, an `info` record `asking` with `model`, `baseUrl`, `run` (the session's run ID), `workDir` (the working directory's real path) and `task`;
+- when opening the store applied migrations, an `info` record `migrated` with `names`, the migrations' names in the order they ran, logged before `asking`;
+- before the first model call, an `info` record `asking` with `model`, `baseUrl`, `run` (the session's run ID), `workDir` (the working directory's real path), `dataDir` (the data folder's real path) and `task`;
 - for every attempted model call, including an incomplete or failed call, an `info` record `model call` with `step`, `seconds` rounded to a tenth, and the selected provider's complete typed reported statistics as `providerStats`, including available usage, diagnostics and documented rate-limit headers. An unavailable statistic SHALL not be invented; partial usage SHALL be identified as partial. Both pretty and JSON output SHALL show the complete `providerStats` fields. Any common token summary SHALL be additional and SHALL use the correct provider-specific accounting;
 - then, for each of the step's tool calls:
   - an `info` record `tool call` with `tool` and `arguments`. Arguments are logged as JSON when they parse, and as the model sent them otherwise;
@@ -67,7 +78,7 @@ The agent SHALL log, through the structured logger:
 Native replay data, API keys and authorization headers SHALL NOT be logged as statistics.
 
 #### Scenario: Records of a tool round trip
-- **WHEN** no skill is loaded, the model's first reply calls `read` for `package.json`, and its second answers
+- **WHEN** no skill is loaded, `DATA_DIR` holds a database already migrated, the model's first reply calls `read` for `package.json`, and its second answers
 - **THEN** the records are, in order: `asking`, `model call` with `step` 1 and its provider stats, `tool call` with `arguments` `{ "path": "package.json" }`, `tool result` with the output's size in bytes, `model call` with `step` 2 and `answer`
 
 #### Scenario: Complete provider statistics in each format
@@ -79,8 +90,8 @@ Native replay data, API keys and authorization headers SHALL NOT be logged as st
 - **THEN** a `model call` record gives the step, elapsed time and partial reported stats before the final error record
 
 #### Scenario: The asking record
-- **WHEN** the run ID is a fresh random ID, `WORK_DIR` names a directory and the task is "Say hi"
-- **THEN** the `asking` record's `run` is that ID, its `workDir` is that directory's real path and its `task` is "Say hi"
+- **WHEN** the run ID is a fresh random ID, `WORK_DIR` and `DATA_DIR` name directories, and the task is "Say hi"
+- **THEN** the `asking` record's `run` is that ID, its `workDir` and `dataDir` are those directories' real paths, and its `task` is "Say hi"
 
 #### Scenario: The skills record
 - **WHEN** the skills `pdf` and `browser` are loaded
@@ -93,6 +104,10 @@ Native replay data, API keys and authorization headers SHALL NOT be logged as st
 #### Scenario: A failed call
 - **WHEN** `read` refuses `.env`
 - **THEN** a `warn` record `tool failed` carries the tool's error
+
+#### Scenario: The migrated record
+- **WHEN** the agent runs twice with the same `DATA_DIR`, which starts empty
+- **THEN** the first run logs a `migrated` record naming the migration that creates the `credential` table, before `asking`, and the second run logs no `migrated` record
 
 ### Requirement: Choose the model according to the provider
 The agent SHALL require `MODEL` and choose it according to `MODEL_PROVIDER`.
@@ -130,6 +145,7 @@ For `openai` and `lmstudio`, effort SHALL be one of `none`, `minimal`, `low`, `m
 
 The agent SHALL also require and validate, whatever the provider:
 - `WORK_DIR`, the working directory of `read`, the file tools and `shell`; a relative path resolves against the current directory, it SHALL name an existing directory, and its real path SHALL be used;
+- `DATA_DIR`, the data folder that holds the store's database (`store`); a relative path resolves against the current directory, it SHALL name an existing directory, its real path SHALL be used, and it SHALL NOT be the working directory or contain it;
 - `MAX_STEPS`, a positive whole number in decimal digits;
 - `FILE_TOOLS`, `write-edit` for `write` and `edit`, or `apply-patch` for `apply_patch`;
 - `LOG_FORMAT`, `pretty` or `json` (`structured-log`).
@@ -138,7 +154,7 @@ The agent SHALL also require and validate, whatever the provider:
 
 #### Scenario: Nothing configured
 - **WHEN** no settings are supplied
-- **THEN** configuration fails, errors name `MODEL_PROVIDER`, `MAX_STEPS`, `FILE_TOOLS`, `LOG_FORMAT` and `WORK_DIR`, and no network call is made
+- **THEN** configuration fails, errors name `MODEL_PROVIDER`, `MAX_STEPS`, `FILE_TOOLS`, `LOG_FORMAT`, `WORK_DIR` and `DATA_DIR`, and no network call is made
 
 #### Scenario: Provider is required
 - **WHEN** all other common settings are supplied but `MODEL_PROVIDER` is unset
@@ -196,6 +212,18 @@ The agent SHALL also require and validate, whatever the provider:
 - **WHEN** `FILE_TOOLS` is `both`
 - **THEN** an error names `FILE_TOOLS` and its valid values, `write-edit` and `apply-patch`, before any network call
 
+#### Scenario: A data folder that doesn't exist
+- **WHEN** `DATA_DIR` names a path that doesn't exist, or a file
+- **THEN** no network call is made, and an error names `DATA_DIR`
+
+#### Scenario: A data folder given through a link
+- **WHEN** `DATA_DIR` is a symbolic link to a directory
+- **THEN** the store opens in that directory's real path, and the `asking` record's `dataDir` is that path
+
+#### Scenario: A data folder holding the working directory
+- **WHEN** `DATA_DIR` names the working directory, or a directory that contains it
+- **THEN** no network call is made, and an error says `DATA_DIR` must not be or contain `WORK_DIR`
+
 ### Requirement: Actionable failure messages
 The agent SHALL exit with code 1 and log an error naming the cause and a next step if the model server is unreachable, rejects the API key, returns an invalid LM Studio model list, fails a model call, is still calling tools at the step limit, or gives no answer. It SHALL not log an `answer` record in these cases. A model-call failure SHALL include the provider's detail and an appropriate next step:
 
@@ -248,7 +276,7 @@ The agent SHALL exit with code 1 and log an error naming the cause and a next st
 - **THEN** the error says the model gave no answer, no answer is logged and the exit code is 1
 
 ### Requirement: Run the agent on Bun or on Node
-The agent SHALL run on Bun with `bun run agent`, and on Node with `bun run agent:node`, taking the same task and settings. `bun run agent:node` SHALL load `.env` in the current directory when present and SHALL start without it; other `.env` files that Bun reads are not read on Node. `packages/agent/package.json` SHALL declare both runtimes in `engines`. CI SHALL start the agent on Node with an explicit task and all required settings.
+The agent SHALL run on Bun with `bun run agent`, and on Node with `bun run agent:node`, taking the same task and settings. `bun run agent:node` SHALL load `.env` in the current directory when present and SHALL start without it; other `.env` files that Bun reads are not read on Node. `packages/agent/package.json` SHALL declare both runtimes in `engines`: Bun 1.4.4 or later, which better-sqlite3 13 needs, and Node 26 or later. CI SHALL start the agent on Node with an explicit task and all required settings.
 
 #### Scenario: On Node
 - **WHEN** the required LM Studio settings, an explicit task and `MODEL_BASE_URL=http://127.0.0.1:9/v1` are supplied with no `.env`
@@ -260,10 +288,14 @@ The agent SHALL run on Bun with `bun run agent`, and on Node with `bun run agent
 
 #### Scenario: CI starts the agent on Node
 - **WHEN** CI's check job runs
-- **THEN** it supplies the explicit LM Studio settings and task to `bun run agent:node`, uses a port where nothing listens, and fails unless the exit code is 1 and the output says LM Studio can't be reached
+- **THEN** it supplies the explicit LM Studio settings, `DATA_DIR` and the task to `bun run agent:node`, uses a port where nothing listens, and fails unless the exit code is 1 and the output says LM Studio can't be reached
+
+#### Scenario: The runtimes' floors
+- **WHEN** `packages/agent/package.json` is read
+- **THEN** its `engines` require Bun 1.4.4 or later and Node 26 or later
 
 ### Requirement: Stop the session's processes when the agent ends
-The agent SHALL await the shell's `dispose()` before it exits, whether the session answered or failed.
+The agent SHALL await the shell's `dispose()` before it exits, whether the session answered or failed, and SHALL then close the store, on every path, signals included.
 - When `dispose()` stopped any processes, the agent SHALL log an `info` record `stopped` with the field `count`, once.
 - When `dispose()` couldn't run its sweep, the agent SHALL log a `warn` record `cleanup failed` with the field `error`, and keep its exit code.
 - **Signal handlers:** it SHALL install handlers for SIGINT, SIGTERM and SIGHUP before the session starts, and SHALL remove them once `dispose()` has resolved.
@@ -302,4 +334,8 @@ The agent SHALL await the shell's `dispose()` before it exits, whether the sessi
 #### Scenario: The sweep can't run
 - **WHEN** the model answers, and the sweep can't list processes
 - **THEN** a `warn` record `cleanup failed` gives the reason, and the exit code is 0
+
+#### Scenario: The store is closed
+- **WHEN** the agent ends, after an answer, after a failure, or after SIGINT
+- **THEN** its store is closed: the data folder holds no `-wal` or `-shm` file, and a new store opens there without error
 

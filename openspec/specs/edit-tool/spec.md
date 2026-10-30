@@ -74,7 +74,7 @@ The rest of the file SHALL be unchanged, byte for byte, and the file SHALL keep 
 - **THEN** it fails with an error saying there is nothing to change, and the file is unchanged
 
 ### Requirement: Edit only text files under the working directory
-`edit` SHALL apply `write`'s fence: the same refusals of paths outside the working directory, of skill directories, of links leading outside, of broken links, and of `.env` files, with the same messages naming the `edit` tool. It SHALL also fail with an error naming the path and the reason, changing nothing, when:
+`edit` SHALL apply `write`'s fence: the same refusals of paths outside the working directory, of skill directories, of links leading outside, of broken links, of `.env` files, and of the data folder, with the same messages naming the `edit` tool. It SHALL also fail with an error naming the path and the reason, changing nothing, when:
 - the file doesn't exist;
 - the path is a directory;
 - the file is larger than 10 MiB (10,485,760 bytes);
@@ -110,4 +110,8 @@ It SHALL report every failure, unexpected I/O errors included, as a failed outco
 #### Scenario: Invalid UTF-8
 - **WHEN** the file holds the byte 0xFF and no NUL
 - **THEN** it fails with an error saying the file isn't valid UTF-8, and the file is unchanged
+
+#### Scenario: The data folder
+- **WHEN** `DATA_DIR` is the working directory's `data` folder, and `edit` is called for `data/notes.txt`, a text file there
+- **THEN** it fails with an error saying the path is inside the data folder, and the file is unchanged
 

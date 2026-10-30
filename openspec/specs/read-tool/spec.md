@@ -71,6 +71,7 @@ The refusal SHALL say the path is outside the directories the `read` tool may re
 ### Requirement: Refuse secrets, directories and binary files
 `read` SHALL fail with an error naming the path and the reason when:
 - the requested file name, or the real file name, begins with `.env`;
+- the path, as written or with links resolved, is inside the data folder, `DATA_DIR`, which holds the agent's database;
 - the path is a directory;
 - the file holds a NUL byte in its first 8 KiB, whatever `offset` asks for;
 - the file doesn't exist.
@@ -96,6 +97,14 @@ It SHALL report every failure, unexpected I/O errors included, as a failed outco
 #### Scenario: Missing file
 - **WHEN** `read` is called for `missing.txt`, which doesn't exist
 - **THEN** it fails with an error saying there is no such file
+
+#### Scenario: The data folder
+- **WHEN** `DATA_DIR` is the working directory's `data` folder, and `read` is called for `data/db.sqlite`
+- **THEN** it fails with an error saying the path is inside the data folder, and the file's contents appear nowhere in the outcome
+
+#### Scenario: A link into the data folder
+- **WHEN** the root holds `notes.txt`, a symbolic link to a file inside the data folder
+- **THEN** reading `notes.txt` fails as reading inside the data folder does
 
 ### Requirement: Cap what it returns
 `read` SHALL return at most 32 KiB (32,768 bytes) of text per call, in whole lines: each requested line is included, with its line ending, while the output still fits. When the first requested line alone is longer than 32 KiB, `read` SHALL return the start of that line, cut back to the nearest UTF-8 character boundary. No character is longer than 4 bytes, so the cut SHALL move back at most 3 bytes. In invalid UTF-8 it stops there, and each broken byte reads as U+FFFD.
