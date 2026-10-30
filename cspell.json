@@ -143,10 +143,12 @@
         "xhigh",
         "навык"
     ],
-    // Not words: strings in core's output tests, ps and grep flags, and the error codes, identifier
-    // and advisory-ID fragments and URL paths that the Brief cites.
+    // Not words: strings in core's output tests, ps and grep flags, and the error codes, token
+    // prefixes, identifier and advisory-ID fragments and URL paths that the Brief and specs cite.
     "ignoreWords": [
         "AADSTS",
+        "AKIA",
+        "APIKEY",
         "auxww",
         "axeww",
         "azurebackup",
@@ -154,8 +156,10 @@
         "cdef",
         "defghijk",
         "Dscso",
+        "dthree",
         "ERESOLVE",
         "GLIBCXX",
+        "glpat",
         "howtocorrupt",
         "IOERR",
         "jxcr",
@@ -174,6 +178,9 @@
         "VNODE",
         "xinfo",
         "xmqj",
+        "xoxa",
+        "xoxb",
+        "xoxp",
         "zzzzzyyy"
     ]
 }
