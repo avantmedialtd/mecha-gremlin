@@ -13,7 +13,7 @@ A self-hosted, scheduled agent runner, in early development. The design and its 
 | [`packages/agent`](packages/agent) | `@mecha-gremlin/agent`: the agent. It carries out a task in an agent loop, with a shell, file tools, skills and MCP servers' tools, and opens the store in its data folder. It runs on Bun or Node. |
 
 Inside `packages/agent/src`, the code is grouped by concern:
-- `main`: the entry points, `main.ts` for a run and `mcp.ts` for the `mcp` command, with its help text in `mcp-help.ts`, and the helpers for the arguments, the log fields and the failure messages;
+- `main`: the entry points, `main.ts` for a run and `mcp.ts` for the `mcp` command, and their helpers: a run's arguments, log fields and failure messages, and the command's arguments, times, output and help text, in `mcp-args.ts`, `mcp-time.ts`, `mcp-output.ts` and `mcp-help.ts`;
 - `config`;
 - `model`: model choice, LM Studio's model list, and the Responses and Anthropic Messages adapters;
 - `session`: the agent loop, as a session that yields each step's result;
@@ -125,31 +125,32 @@ The agent keeps a SQLite database, `db.sqlite`, in the data folder that `DATA_DI
 
 The agent can use the tools of [MCP](https://modelcontextprotocol.io) servers: local servers, which a run starts and talks to over stdio, and remote ones, which it reaches over Streamable HTTP. The `mcp` command keeps their definitions in the data folder, and each run connects to every server that isn't disabled before its first model call. OAuth isn't supported yet, so neither is a server that needs a login; nor are MCP resources and prompts, and an image a tool returns is described to the model but not shown. `bun run mcp help` summarises this section at the terminal, and needs no setting.
 
-**Adding a server.** `bun run mcp add <name> <entry>` takes a name and an entry: one server's object from inside a `mcpServers` map, the format most vendors publish. An entry of `-` is read from stdin, which keeps it out of your shell's history, out of the process list, and out of the command line that `bun run` echoes. A remote server, whose header holds a reference to a variable:
+**Adding a server.** `bun run mcp add` takes the server's name, and then its URL, for a remote server, or `--` and its command, for a local one, as `claude mcp add` does. A remote server, whose header holds a reference to a variable:
 
 ```sh
-bun run mcp add docs - <<'EOF'
-{
-    "url": "https://docs.example.com/mcp",
-    "headers": { "Authorization": "Bearer ${DOCS_TOKEN}" },
-    "startupTimeoutMs": 30000,
-    "toolTimeoutMs": 120000
-}
-EOF
+bun run mcp add docs https://docs.example.com/mcp --header 'Authorization: Bearer ${DOCS_TOKEN}'
 ```
 
 A local server, pinned to an exact version, so that a later run doesn't start whatever was published since:
 
 ```sh
-bun run mcp add playwright - <<'EOF'
-{
-    "command": "npx",
-    "args": ["-y", "@playwright/mcp@0.0.83"],
-    "startupTimeoutMs": 60000,
-    "toolTimeoutMs": 120000
-}
-EOF
+bun run mcp add playwright -- npx -y @playwright/mcp@0.0.83
 ```
+
+The URL begins with `https://` or `http://`. Everything after `--` is the command and its arguments, as given, their own options included, so `-y` needs no quoting. The options of `add` come before `--`, before or after the name and the URL, as `--option value` or `--option=value`:
+
+| Option | For | Gives |
+|---|---|---|
+| `--header 'Name: value'` | a remote server | A header: its name is the text before the first `:`, and its value the text after it, without the spaces around it. Repeat it for more. |
+| `--env NAME=value` | a local server | A variable, named by the text before the first `=`. `--env NAME` alone passes the agent's own `NAME` through, as `NAME=${NAME}`, as Docker's `-e NAME` does. Repeat it for more. |
+| `--cwd <dir>` | a local server | Its working directory, an absolute path. |
+| `--include-tool <tool>` | either | A tool to offer, and only the tools named are offered; a run fails when the server doesn't list one of them. Repeat it for more. |
+| `--exclude-tool <tool>` | either | A tool to leave out. Repeat it for more. |
+| `--startup-timeout <time>` | either | How long it may take to start, which covers the handshake and its whole tool list: 30s unless given. |
+| `--tool-timeout <time>` | either | How long one call may take, however much progress the server reports: 2m unless given. |
+| `--disabled` | either | Adds it, but runs don't start it until `bun run mcp enable <name>`. |
+
+A `<time>` is a whole number and a unit, `ms`, `s`, `m` or `h`, as in `90s` or `2m`, from 1s to 2,147,483,647 ms, about 24 days. A bare number is refused, since nothing in it says whether it counts seconds or milliseconds. `add` also refuses an option for the other kind of server, such as `--env` for a remote one, and an option it doesn't know: a local server's command, with its own options, comes after `--`. An argument that can't be read, such as an unknown option or an option without its value, is reported on its own; every other problem is reported together, and nothing is stored until there are none.
 
 **From a vendor's snippet.** GitHub's guide to its remote server gives an entry wrapped in `mcpServers`, with a placeholder for a personal access token:
 
@@ -165,44 +166,38 @@ EOF
 }
 ```
 
-Give the object inside `mcpServers`, and its name as the first argument; add the two timeouts; turn the placeholder into the reference `${GITHUB_PAT}`; then set `GITHUB_PAT` to your token in `.env`:
+The server's name comes first, its `url` second, and each of its `headers` becomes a `--header`, with the placeholder turned into the reference `${GITHUB_PAT}`, in single quotes; then set `GITHUB_PAT` to your token in `.env`:
 
 ```sh
-bun run mcp add github - <<'EOF'
-{
-    "type": "http",
-    "url": "https://api.githubcopilot.com/mcp/",
-    "headers": { "Authorization": "Bearer ${GITHUB_PAT}" },
-    "startupTimeoutMs": 30000,
-    "toolTimeoutMs": 120000
-}
-EOF
+bun run mcp add github https://api.githubcopilot.com/mcp/ \
+    --header 'Authorization: Bearer ${GITHUB_PAT}'
 ```
 
-- **Quoting.** The quoted `'EOF'` keeps the shell from reading the entry's `$` and `${…}`, as single quotes do around an entry given as an argument. Never type a real token into the command: `add` refuses a literal secret anyway, and a token typed on a command line is in your shell's history, so change it.
-- **Secrets in `env`, not `args`.** A run puts a server's arguments in the process list, which every local user can read, while its environment is readable only by you. `add` warns of a reference in an argument whose option names a credential, such as `--api-key`, in a `mcp server secret in arguments` record.
-- **`$` in `.env`.** Bun's `.env` loader expands `$NAME` and `${NAME}` in a value, even in single quotes, and Node's `--env-file` doesn't: a secret that holds `$` reads differently on each runtime.
-- **Listing and changing.** `bun run mcp list` logs each server, in name order, with its transport, whether it's disabled, and its entry as it was given; `bun run mcp remove <name>` deletes one; `bun run mcp disable <name>` and `bun run mcp enable <name>` turn one off and on. To change an entry, remove the server and add it again. `bun run mcp:node` does the same on Node. The command never contacts a server, and never resolves a reference.
+A local server's `command` and `args` become the words after `--`, and each of its `env` variables an `--env`. The `type` needs no flag: a URL, or a command after `--`, says which kind of server it is.
 
-**The entry's fields.**
+- **Single quotes.** They keep the shell from reading `${GITHUB_PAT}`. In double quotes, the shell puts the variable's value in its place before `add` sees it, and `add` refuses the header as a literal secret, whether that value is your token or nothing at all. Never type a real token into the command: `add` refuses a literal secret anyway, and a token typed on a command line is in your shell's history, so change it.
+- **Secrets in `--env`, not in the command's arguments.** A run puts a server's arguments in the process list, which every local user can read, while its environment is readable only by you. `add` warns of a reference in an argument whose option names a credential, such as `--api-key`.
+- **`$` in `.env`.** Bun's `.env` loader expands `$NAME` and `${NAME}` in a value, even in single quotes, and Node's `--env-file` doesn't: a secret that holds `$` reads differently on each runtime.
+- **Listing and changing.** `bun run mcp list` prints a table of the servers, in name order: each one's name, its transport, `http` or `stdio`, its URL or its command, and whether it's enabled. `bun run mcp get <name>` shows one server's settings, with references as written, and both timeouts. `bun run mcp remove <name>` deletes a server, and `bun run mcp disable <name>` and `bun run mcp enable <name>` turn one off and on. To change a server, remove it and add it again. `bun run mcp:node` does the same on Node.
+- **What it prints.** Results go to stdout, as plain text. Each problem goes to stderr, on a line beginning `error:`, and each warning on a line beginning `warning:`, before the result. The command exits with 1 when it reports a problem. It never contacts a server, and never resolves a reference.
+
+**What is stored.** `add` keeps each server as one entry in Claude Code's `mcpServers` format, built from the flags, and checks it; each run checks it again. The server's name, and whether it's disabled, are kept beside the entry.
 
 - **stdio:** `command`, a name without a slash or an absolute path; `args`; `env`; and `cwd`, an absolute path.
 - **Streamable HTTP:** `url`, which is `https`, or `http` only when nothing in the entry holds a reference, since Bun's `fetch` sends even a request to `127.0.0.1` through `HTTP_PROXY`, headers included; and `headers`.
-- **Both:** `type`, which may be left out, since `command` means stdio and `url` Streamable HTTP; `startupTimeoutMs` and `toolTimeoutMs`, both required, in milliseconds from 1,000 to 2,147,483,647; `includeTools` and `excludeTools`; `disabled`, the server's starting flag; and `title` and `description`, which are kept but unused. Another field is refused, with a hint when another client spells it differently, such as `timeout` or `enabled`.
-- **The timeouts.** `startupTimeoutMs` covers starting the server, the handshake and its whole tool list; `toolTimeoutMs` limits each call, however much progress the server reports.
-- **References.** `${NAME}` and `${env:NAME}` refer to the agent's environment, and `$$` stands for `$`. They may appear in `command`, `args`, `env` values, `cwd`, header values, and the path and query of a `url`; there are no defaults, and no bare `$NAME`. A run resolves them, and an unset or blank variable fails it. `MODEL_API_KEY` can't be referenced.
-- **No literal secrets.** An `env` variable, a header, a query parameter or an option whose name says it holds a credential, such as `API_KEY`, `Authorization` or `--token`, must hold a reference, unless its value is a number, `true`, `false` or `none`, or its name's last word is `PATH`, `FILE` or `DIR`, as in `PRIVATE_KEY_PATH`, which may hold a plain path. Text shaped like a token, a written-out `Bearer` credential, a JSON Web Token, a private key and a password in a URL are refused anywhere.
-- **Filters.** `includeTools` names the only tools offered, and a run fails when the server doesn't list one of them; `excludeTools` leaves tools out. Both name tools as the server lists them.
+- **Both:** `includeTools` and `excludeTools`, which name tools as the server lists them, never the same tool in both; and `startupTimeoutMs` and `toolTimeoutMs`, in milliseconds, which every entry holds, since `add` writes the defaults in. A field without a value is left out. A server added before the flags may also hold `type`, `title` and `description`, which are kept. A run refuses an entry with any other field, as a row written into the database by hand might hold.
+- **References.** `${NAME}` and `${env:NAME}` refer to the agent's environment, and `$$` stands for `$`. They may appear in the command, its arguments, `--env` values, `--cwd`, header values, and the path and query of a URL; there are no defaults, and no bare `$NAME`. A run resolves them, and an unset or blank variable fails it. `MODEL_API_KEY` can't be referenced.
+- **No literal secrets.** A variable, a header, a query parameter or an option whose name says it holds a credential, such as `API_KEY`, `Authorization` or `--token`, must hold a reference, unless its value is a number, `true`, `false` or `none`, or its name's last word is `PATH`, `FILE` or `DIR`, as in `PRIVATE_KEY_PATH`, which may hold a plain path. Text shaped like a token, a written-out `Bearer` credential, a JSON Web Token, a private key and a password in a URL are refused anywhere.
 - **Tool names.** The model sees a tool as `mcp__<server>__<tool>`: the server's name lowercased, with `-` as `_`, and the tool's name in snake_case, with any other character as `_`. A name over 64 characters, or one that two tools would share, ends in a hash of the server's and the tool's names instead.
-- **`PATH`.** A run finds a stdio `command` in the absolute directories of the server's `PATH`. Under a scheduler, `PATH` is short, so give the command's absolute path, or set `PATH` in its `env`.
+- **`PATH`.** A run finds a stdio command in the absolute directories of the server's `PATH`. Under a scheduler, `PATH` is short, so give the command's absolute path, or give the server a `PATH` with `--env`.
 
 **Running with servers.**
 
 - **Check a new server** with a short run, such as `bun run agent 'Say hi'`, and look at its `mcp server` record: the tools it offers, their definitions' size in bytes, and a hash of its tool list, which changes when the list does.
 - **A server that fails, fails every run**, before the first model call, with its error and the last lines of its stderr, until it's fixed or disabled with `bun run mcp disable <name>`.
 - **Where stdio servers run.** A server runs in its `cwd`, or else in a directory made for the run in the OS's temporary directory, holding only an empty `node_modules`, so that npm reads no `.npmrc` above it: not one the file tools wrote into the working directory. It can't keep out one a shell command writes to `~/.npmrc`. When the run ends, each server gets end-of-file, then SIGTERM, then SIGKILL, with the process groups its children lead, such as a browser's.
-- **Untrusted text.** Tool descriptions and results reach the model as text the server wrote, which may try to steer it. Add servers you trust, and offer only the tools you need with `includeTools`.
-- **Context.** Every tool's definition is sent with every model call: the tools of the fifteen servers measured in the Brief's R18.2 came to about 21,900 tokens, against about 700 for the built-in tools. A server's own flags, and `includeTools`, keep the list short.
+- **Untrusted text.** Tool descriptions and results reach the model as text the server wrote, which may try to steer it. Add servers you trust, and offer only the tools you need with `--include-tool`.
+- **Context.** Every tool's definition is sent with every model call: the tools of the fifteen servers measured in the Brief's R18.2 came to about 21,900 tokens, against about 700 for the built-in tools. A server's own flags, and `--include-tool`, keep the list short.
 
 ### Skills
 
@@ -230,7 +225,7 @@ Settings come from the environment, and from a local `.env` file, which is gitig
 - **On Bun,** `.env` is read along with `.env.local`, and a file for `NODE_ENV` (`.env.development` when it's unset).
 - **On Node,** only `.env` is read, through the `--env-file-if-exists` flag in `agent:node`. Without a `.env`, Node prints ".env not found. Continuing without it." to stderr, and carries on.
 
-The `mcp` command needs only `DATA_DIR` and `LOG_FORMAT`, and `bun run mcp help` needs neither (see [MCP servers](#mcp-servers)).
+The `mcp` command needs only `DATA_DIR`, and `bun run mcp help` needs no setting at all (see [MCP servers](#mcp-servers)).
 
 There are no implicit provider, model or operational settings. The Claude cache policy below is the only new provider default. Missing or invalid settings are reported together before networking.
 

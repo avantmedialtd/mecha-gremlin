@@ -51,8 +51,9 @@ const WRITTEN_OUT = /(?:^|[^A-Za-z0-9])(?:Bearer|Basic)[ \t]+([A-Za-z0-9._~+/-]+
 // name, a colon and the password.
 const USERINFO = /:\/\/[^/?#@\s:]*:([^/?#@\s]+)@/g;
 
+// In double quotes, the shell replaces a reference with the variable's value before `add` sees it.
 export const ADVICE =
-    "Give it as a reference, such as ${NAME}, to a variable set in .env. A secret typed on a command line is in the shell's history: change it.";
+    "Give it as a reference, such as ${NAME}, to a variable set in .env, in single quotes, so that your shell leaves it alone. A secret typed on a command line is in the shell's history: change it.";
 
 export const wordsOf = (name: string): string[] => {
     return name

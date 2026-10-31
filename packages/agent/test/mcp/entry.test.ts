@@ -7,10 +7,9 @@ import {
     queryOf,
     transportOfEntry,
 } from '../../src/mcp/entry.ts';
-import { parseJson } from '../../src/mcp/json.ts';
 
 const ADVICE =
-    "Give it as a reference, such as ${NAME}, to a variable set in .env. A secret typed on a command line is in the shell's history: change it.";
+    "Give it as a reference, such as ${NAME}, to a variable set in .env, in single quotes, so that your shell leaves it alone. A secret typed on a command line is in the shell's history: change it.";
 
 const TIMEOUTS = { startupTimeoutMs: 30000, toolTimeoutMs: 120000 };
 
@@ -239,12 +238,11 @@ describe('Unknown fields', () => {
     });
 
     test('keys that name Object members: constructor is unknown, and __proto__ is an env name', () => {
-        const constructor = parseJson(
-            '{"url": "https://docs.example.com/mcp", "startupTimeoutMs": 30000, "toolTimeoutMs": 120000, "constructor": 1}',
-        ).value;
-        const proto = parseJson(
+        const constructor = http({ constructor: 1 });
+        // In an object literal, __proto__ sets the prototype; JSON.parse makes it a key.
+        const proto = JSON.parse(
             '{"command": "server", "env": {"__proto__": "x"}, "startupTimeoutMs": 30000, "toolTimeoutMs": 120000}',
-        ).value;
+        );
 
         expect(problems(constructor)).toEqual(["The field constructor isn't known."]);
         expect(checked(proto).entry).toMatchObject({ env: [['__proto__', ['x']]] });

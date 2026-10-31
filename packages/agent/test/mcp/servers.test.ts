@@ -165,6 +165,11 @@ const handlersOf = async (
     return connected.value;
 };
 
+// A row as the store reads one back: TypeORM's simple-json column is JSON.parse's.
+const handWritten = (name: string, json: string) => {
+    return { name, prefix: prefixOf(name), entry: JSON.parse(json) };
+};
+
 const problemsOf = async (
     mcp: McpServers,
     rows: Parameters<McpServers['connect']>[0],
@@ -248,6 +253,27 @@ describe('Connect every enabled server before the session', { timeout: 20_000 },
             "The MCP server a can't start. The field colour isn't known. To run without it: bun run mcp disable a.",
             "The MCP server b can't start. It refers to CWD, which is unset or blank: set it in .env. To run without it: bun run mcp disable b.",
             "The MCP server c can't start. Its cwd, with its references resolved, must be an absolute path to a directory that exists. To run without it: bun run mcp disable c.",
+        ]);
+        expect(runProcesses()).toEqual([]);
+    });
+
+    test('rows written into the database by hand, as the store reads them back', async () => {
+        const problems = await problemsOf(servers(), [
+            handWritten(
+                'a',
+                '{"command":"server","timeout":30,"startupTimeoutMs":30000,"toolTimeoutMs":120000}',
+            ),
+            handWritten('b', '{"url":"https://docs.example.com/mcp","startupTimeoutMs":30000}'),
+            handWritten(
+                'c',
+                '{"url":"https://docs.example.com/mcp","constructor":1,"startupTimeoutMs":30000,"toolTimeoutMs":120000}',
+            ),
+        ]);
+
+        expect(problems).toEqual([
+            "The MCP server a can't start. The field timeout isn't known: give startupTimeoutMs and toolTimeoutMs, in milliseconds. To run without it: bun run mcp disable a.",
+            `The MCP server b can't start. toolTimeoutMs is missing. Give both timeouts, in milliseconds, as in "startupTimeoutMs": 30000 and "toolTimeoutMs": 120000. To run without it: bun run mcp disable b.`,
+            "The MCP server c can't start. The field constructor isn't known. To run without it: bun run mcp disable c.",
         ]);
         expect(runProcesses()).toEqual([]);
     });

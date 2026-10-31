@@ -2,17 +2,17 @@ import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { withDataSource } from '@mecha-gremlin/store/connection';
-import { closeStore, openStore } from '@mecha-gremlin/store/store';
+import { type NewMcpServer, addMcpServer, listMcpServers } from '@mecha-gremlin/store/mcp-server';
+import { type Store, closeStore, openStore } from '@mecha-gremlin/store/store';
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from 'vitest';
 import { HELP } from '../../src/main/mcp-help.ts';
 
 const COMMAND = fileURLToPath(new URL('../../src/main/mcp.ts', import.meta.url));
 
-// Each test sets or clears all of these, so settings in your shell can't leak in. The command
-// needs only the first two.
+// Each test sets or clears all of these, so settings in your shell or the repository's .env can't
+// leak in. The command needs only DATA_DIR.
 const SETTINGS = [
     'LOG_FORMAT',
     'DATA_DIR',
@@ -28,19 +28,12 @@ const SETTINGS = [
 
 type Settings = Readonly<Partial<Record<(typeof SETTINGS)[number], string>>>;
 
-type LogRecord = {
-    readonly time: string;
-    readonly level: string;
-    readonly message: string;
-    readonly [field: string]: unknown;
-};
-
-const DOCS =
-    '{"url":"https://docs.example.com/mcp","startupTimeoutMs":30000,"toolTimeoutMs":120000}';
+const DOCS = 'https://docs.example.com/mcp';
 
 const SEE_HELP = 'bun run mcp help explains the command.';
 
-const MIGRATIONS = ['CreateCredential1793232000000', 'CreateMcpServer1793318400000'];
+const NO_SERVERS =
+    'There are no MCP servers. Add one with bun run mcp add <name> <url>, or bun run mcp add <name> -- <command> [args…].\n';
 
 let dataDir: string;
 
@@ -66,39 +59,29 @@ const freshFolder = async (): Promise<string> => {
     return folder;
 };
 
-const parseRecords = (output: string): LogRecord[] => {
-    return output
-        .trim()
-        .split('\n')
-        .filter((line) => line !== '')
-        .map((line) => JSON.parse(line) as LogRecord);
-};
-
-const withoutTime = (records: readonly LogRecord[]) => {
-    return records.map(({ time: _time, ...rest }) => rest);
-};
-
-/** Runs the command in this process, as main.test.ts runs the agent, and reads its log as JSON. */
-const mcp = async (args: readonly string[], env: Settings = {}, stdin?: string) => {
-    const settings: Settings = { LOG_FORMAT: 'json', DATA_DIR: folder, ...env };
+/** Runs the command in this process, as main.test.ts runs the agent, and reads what it prints. */
+const mcp = async (args: readonly string[], env: Settings = {}) => {
+    const settings: Settings = { DATA_DIR: folder, ...env };
 
     for (const name of SETTINGS) {
         vi.stubEnv(name, settings[name]);
-    }
-
-    if (stdin !== undefined) {
-        vi.spyOn(process, 'stdin', 'get').mockReturnValue(
-            Readable.from([stdin]) as typeof process.stdin,
-        );
     }
 
     const fetch = vi.fn<typeof globalThis.fetch>();
     vi.stubGlobal('fetch', fetch);
     const argv = process.argv;
     process.argv = [...argv.slice(0, 1), 'mcp.ts', ...args];
-    let output = '';
-    const log = vi.spyOn(console, 'log').mockImplementation((line: unknown) => {
-        output += `${String(line)}\n`;
+    let stdout = '';
+    let stderr = '';
+    // Both streams, in the order they were written to.
+    const written: string[] = [];
+    const out = vi.spyOn(console, 'log').mockImplementation((text: unknown) => {
+        stdout += `${String(text)}\n`;
+        written.push(`stdout: ${String(text)}`);
+    });
+    const error = vi.spyOn(console, 'error').mockImplementation((text: unknown) => {
+        stderr += `${String(text)}\n`;
+        written.push(`stderr: ${String(text)}`);
     });
 
     try {
@@ -107,39 +90,18 @@ const mcp = async (args: readonly string[], env: Settings = {}, stdin?: string) 
         await import('../../src/main/mcp.ts');
     } finally {
         process.argv = argv;
-        log.mockRestore();
+        out.mockRestore();
+        error.mockRestore();
     }
 
     const code = process.exitCode;
     process.exitCode = undefined;
 
-    return {
-        code,
-        output,
-        // Parsed when a test reads them: help prints plain text, whatever the format.
-        get records() {
-            return settings.LOG_FORMAT === 'json' ? parseRecords(output) : [];
-        },
-        fetch,
-    };
+    return { code, stdout, stderr, written, fetch };
 };
 
-const messages = (records: readonly LogRecord[]): string[] => {
-    return records.map((record) => record.message);
-};
-
-const errors = (records: readonly LogRecord[]): string[] => {
-    return records.filter((record) => record.level === 'error').map((record) => record.message);
-};
-
-const listed = async () => {
-    const { records } = await mcp(['list']);
-
-    return withoutTime(records.filter((record) => record.message !== 'migrated'));
-};
-
-// A store of its own, opened and closed around the statements, as another process would.
-const outside = async (...statements: readonly string[]): Promise<void> => {
+// A store of its own, opened and closed around the work, as another process would.
+const withStore = async <T>(work: (store: Store) => Promise<T>): Promise<T> => {
     const opened = await openStore(folder);
 
     if (!opened.ok) {
@@ -147,62 +109,137 @@ const outside = async (...statements: readonly string[]): Promise<void> => {
     }
 
     try {
-        for (const statement of statements) {
-            await withDataSource(opened.value.store, 'change the database', (dataSource) => {
-                return dataSource.query(statement);
-            });
-        }
+        return await work(opened.value.store);
     } finally {
         await closeStore(opened.value.store);
     }
 };
 
-describe('Manage MCP servers with the mcp command', () => {
+const outside = (...statements: readonly string[]): Promise<void> => {
+    return withStore(async (store) => {
+        for (const statement of statements) {
+            await withDataSource(store, 'change the database', (dataSource) => {
+                return dataSource.query(statement);
+            });
+        }
+    });
+};
+
+const stored = (): Promise<{ name: string; entry: object; disabled: boolean }[]> => {
+    return withStore(async (store) => {
+        const listed = await listMcpServers(store);
+
+        if (!listed.ok) {
+            throw new Error(listed.error);
+        }
+
+        return listed.value.map(({ name, entry, disabled }) => ({ name, entry, disabled }));
+    });
+};
+
+const storedBefore = (servers: readonly NewMcpServer[]): Promise<void> => {
+    return withStore(async (store) => {
+        for (const server of servers) {
+            const added = await addMcpServer(store, server);
+
+            if (!added.ok) {
+                throw new Error(added.error);
+            }
+        }
+    });
+};
+
+describe('Manage MCP servers from the command line', () => {
     test('adding and listing', async () => {
         await freshFolder();
 
         const added = await mcp(['add', 'docs', DOCS]);
+        const listed = await mcp(['list']);
 
-        expect(added.code).toBe(0);
-        expect(withoutTime(added.records)).toEqual([
-            { level: 'info', message: 'migrated', names: MIGRATIONS },
-            { level: 'info', message: 'mcp server added', name: 'docs', transport: 'http' },
-        ]);
-        expect(await listed()).toEqual([
-            {
-                level: 'info',
-                message: 'mcp server',
-                name: 'docs',
-                transport: 'http',
-                disabled: false,
-                entry: JSON.parse(DOCS),
-            },
-        ]);
+        expect(added).toMatchObject({ code: 0, stdout: 'Added docs (http).\n', stderr: '' });
+        expect(listed).toMatchObject({ code: 0, stderr: '' });
+        expect(listed.stdout).toBe(
+            [
+                'NAME  TRANSPORT  TARGET                        ENABLED',
+                'docs  http       https://docs.example.com/mcp  yes',
+                '',
+            ].join('\n'),
+        );
     });
 
-    test('a second server, and the store closed after each command', async () => {
+    test('two servers, in name order, and the store closed after each command', async () => {
         await freshFolder();
-        await mcp(['add', 'docs', DOCS]);
-
-        const second = await mcp([
+        await mcp([
             'add',
             'files',
-            '{"url":"https://files.example.com/mcp","startupTimeoutMs":30000,"toolTimeoutMs":120000}',
+            '--',
+            'npx',
+            '-y',
+            '@modelcontextprotocol/server-filesystem@2.1.0',
         ]);
+        await mcp(['add', 'docs', DOCS]);
 
-        expect(second.code).toBe(0);
-        expect((await listed()).map((record) => record.name)).toEqual(['docs', 'files']);
+        const listed = await mcp(['list']);
+
+        expect(listed.stdout).toBe(
+            [
+                'NAME   TRANSPORT  TARGET                                                ENABLED',
+                'docs   http       https://docs.example.com/mcp                          yes',
+                'files  stdio      npx -y @modelcontextprotocol/server-filesystem@2.1.0  yes',
+                '',
+            ].join('\n'),
+        );
         // An open store keeps its -wal and -shm files.
         expect(await readdir(folder)).toEqual(['db.sqlite']);
     });
 
-    test('an entry on stdin', async () => {
+    test('showing one server', async () => {
         await freshFolder();
+        await mcp([
+            'add',
+            'docs',
+            DOCS,
+            '--header',
+            'Authorization: Bearer ${DOCS_TOKEN}',
+            '--tool-timeout',
+            '5m',
+        ]);
 
-        const added = await mcp(['add', 'docs', '-'], {}, `${DOCS}\n`);
+        const shown = await mcp(['get', 'docs']);
 
-        expect(added.code).toBe(0);
-        expect(await listed()).toMatchObject([{ name: 'docs', entry: JSON.parse(DOCS) }]);
+        expect(shown).toMatchObject({ code: 0, stderr: '' });
+        expect(shown.stdout).toBe(
+            [
+                'docs',
+                '  Transport        http',
+                '  URL              https://docs.example.com/mcp',
+                '  Header           Authorization: Bearer ${DOCS_TOKEN}',
+                '  Startup timeout  30s',
+                '  Tool timeout     5m',
+                '  Enabled          yes',
+                'To change it, remove it with bun run mcp remove docs, then add it again.',
+                '',
+            ].join('\n'),
+        );
+    });
+
+    test('a local server in the table', async () => {
+        await freshFolder();
+        await mcp([
+            'add',
+            'files',
+            '--',
+            'npx',
+            '-y',
+            '@modelcontextprotocol/server-filesystem@2.1.0',
+            '/srv/my data',
+        ]);
+
+        const { stdout } = await mcp(['list']);
+
+        expect(stdout.split('\n')[1]).toBe(
+            "files  stdio      npx -y @modelcontextprotocol/server-filesystem@2.1.0 '/srv/my data'  yes",
+        );
     });
 
     test('removing', async () => {
@@ -210,12 +247,10 @@ describe('Manage MCP servers with the mcp command', () => {
         await mcp(['add', 'docs', DOCS]);
 
         const removed = await mcp(['remove', 'docs']);
+        const listed = await mcp(['list']);
 
-        expect(removed.code).toBe(0);
-        expect(withoutTime(removed.records)).toEqual([
-            { level: 'info', message: 'mcp server removed', name: 'docs' },
-        ]);
-        expect(await listed()).toEqual([{ level: 'info', message: 'no mcp servers' }]);
+        expect(removed).toMatchObject({ code: 0, stdout: 'Removed docs.\n', stderr: '' });
+        expect(listed.stdout).toBe(NO_SERVERS);
     });
 
     test('disabling and enabling', async () => {
@@ -223,47 +258,52 @@ describe('Manage MCP servers with the mcp command', () => {
         await mcp(['add', 'docs', DOCS]);
 
         const disabled = await mcp(['disable', 'docs']);
-        const whileDisabled = await listed();
+        const whileDisabled = await mcp(['list']);
         const enabled = await mcp(['enable', 'docs']);
-        const afterwards = await listed();
+        const afterwards = await mcp(['list']);
 
-        expect([disabled.code, enabled.code]).toEqual([0, 0]);
-        expect(withoutTime([...disabled.records, ...enabled.records])).toEqual([
-            { level: 'info', message: 'mcp server disabled', name: 'docs' },
-            { level: 'info', message: 'mcp server enabled', name: 'docs' },
-        ]);
-        expect(whileDisabled).toMatchObject([{ name: 'docs', disabled: true }]);
-        expect(afterwards).toMatchObject([{ name: 'docs', disabled: false }]);
+        expect(disabled).toMatchObject({
+            code: 0,
+            stdout: "Disabled docs. Runs won't start it until bun run mcp enable docs.\n",
+            stderr: '',
+        });
+        expect(enabled).toMatchObject({ code: 0, stdout: 'Enabled docs.\n', stderr: '' });
+        expect(whileDisabled.stdout.split('\n')[1]).toMatch(/^docs .* no$/);
+        expect(afterwards.stdout.split('\n')[1]).toMatch(/^docs .* yes$/);
     });
 
-    test.each(['remove', 'disable', 'enable'])('%s an unknown name', async (subcommand) => {
+    test.each(['get', 'remove', 'disable', 'enable'])('%s an unknown name', async (subcommand) => {
         await freshFolder();
         await mcp(['add', 'docs', DOCS]);
 
-        const { code, records } = await mcp([subcommand, 'nope']);
+        const result = await mcp([subcommand, 'nope']);
 
-        expect(code).toBe(1);
-        expect(errors(records)).toEqual([
-            'There is no MCP server named nope: bun run mcp list shows them.',
-        ]);
-        expect(await listed()).toMatchObject([{ name: 'docs', disabled: false }]);
+        expect(result).toMatchObject({
+            code: 1,
+            stdout: '',
+            stderr: 'error: There is no MCP server named nope: bun run mcp list shows them.\n',
+        });
+        expect(await stored()).toMatchObject([{ name: 'docs', disabled: false }]);
     });
 
     test('a name in use', async () => {
         await freshFolder();
         await mcp(['add', 'docs', DOCS]);
 
-        const again = await mcp([
-            'add',
-            'docs',
-            '{"command":"server","startupTimeoutMs":30000,"toolTimeoutMs":120000}',
-        ]);
+        const again = await mcp(['add', 'docs', '--', 'server']);
 
-        expect(again.code).toBe(1);
-        expect(errors(again.records)).toEqual([
-            'The MCP server docs exists. To change it, remove it with bun run mcp remove docs, then add it again.',
+        expect(again).toMatchObject({
+            code: 1,
+            stdout: '',
+            stderr: 'error: The MCP server docs exists. To change it, remove it with bun run mcp remove docs, then add it again.\n',
+        });
+        expect(await stored()).toEqual([
+            {
+                name: 'docs',
+                entry: { url: DOCS, startupTimeoutMs: 30000, toolTimeoutMs: 120000 },
+                disabled: false,
+            },
         ]);
-        expect(await listed()).toMatchObject([{ name: 'docs', entry: JSON.parse(DOCS) }]);
     });
 
     test('a prefix in use', async () => {
@@ -272,230 +312,199 @@ describe('Manage MCP servers with the mcp command', () => {
 
         const again = await mcp(['add', 'github_api', DOCS]);
 
-        expect(again.code).toBe(1);
-        expect(errors(again.records)).toEqual([
-            'The tools of github_api would share the prefix github_api with those of the MCP server github-api: give it another name.',
-        ]);
-        expect((await listed()).map((record) => record.name)).toEqual(['github-api']);
+        expect(again).toMatchObject({
+            code: 1,
+            stderr: 'error: The tools of github_api would share the prefix github_api with those of the MCP server github-api: give it another name.\n',
+        });
+        expect((await stored()).map((server) => server.name)).toEqual(['github-api']);
     });
 
     test.each([
         [
             ['start'],
-            `Give one of the subcommands: add <name> <entry>, list, remove <name>, disable <name> or enable <name>. ${SEE_HELP}`,
-        ],
-        [
-            ['add', 'docs'],
-            `add takes a name and an entry: bun run mcp add <name> <entry>, with - as the entry to read it from stdin. ${SEE_HELP}`,
-        ],
-        [
-            ['add'],
-            `add takes a name and an entry: bun run mcp add <name> <entry>, with - as the entry to read it from stdin. ${SEE_HELP}`,
-        ],
-        [
-            ['add', 'docs', DOCS, 'more'],
-            `add takes a name and an entry: bun run mcp add <name> <entry>, with - as the entry to read it from stdin. ${SEE_HELP}`,
+            `Give one of the subcommands: add <name> <url>, add <name> -- <command>, list, get <name>, remove <name>, disable <name> or enable <name>. ${SEE_HELP}`,
         ],
         [['list', 'extra'], `list takes no arguments. ${SEE_HELP}`],
-        [['remove'], `remove takes a server's name: bun run mcp remove <name>. ${SEE_HELP}`],
+        [['get'], `get takes a server's name: bun run mcp get <name>. ${SEE_HELP}`],
         [
-            ['disable', 'a', 'b'],
-            `disable takes a server's name: bun run mcp disable <name>. ${SEE_HELP}`,
+            ['add', 'docs'],
+            `add takes a server's name, and then a URL or, after --, a command: bun run mcp add <name> <url> [options], or bun run mcp add <name> [options] -- <command> [args…]. ${SEE_HELP}`,
         ],
-        [['enable'], `enable takes a server's name: bun run mcp enable <name>. ${SEE_HELP}`],
+        [
+            ['add', 'playwright', 'npx', '-y', '@playwright/mcp@0.0.83'],
+            `The option -y isn't known. A local server's command, with its own options, comes after --: bun run mcp add <name> [options] -- <command> [args…]. ${SEE_HELP}`,
+        ],
     ])('the usage error for %j', async (args, problem) => {
         await freshFolder();
 
-        const { code, records } = await mcp(args);
+        const result = await mcp(args);
 
-        expect(code).toBe(1);
-        expect(withoutTime(records)).toEqual([{ level: 'error', message: problem }]);
-    });
-
-    test('help, with no setting at all', async () => {
-        await freshFolder();
-
-        const { code, output } = await mcp(['help'], {
-            LOG_FORMAT: undefined,
-            DATA_DIR: undefined,
-        });
-
-        expect(code).toBe(0);
-        expect(output).toBe(`${HELP}\n`);
-
-        for (const term of [
-            'add <name> <entry>',
-            'list',
-            'remove <name>',
-            'disable <name>',
-            'enable <name>',
-            'read from stdin',
-            'mcp:node',
-            '1 to 24',
-            '"mcpServers"',
-            'startupTimeoutMs',
-            'toolTimeoutMs',
-            '${GITHUB_PAT}',
-            'DATA_DIR',
-            'LOG_FORMAT',
-            'README',
-        ]) {
-            expect(output).toContain(term);
-        }
-    });
-
-    test("help, however it's asked for, as plain text, and no store opened", async () => {
-        await freshFolder();
-
-        const byFlag = await mcp(['--help']);
-        const byLetter = await mcp(['-h']);
-        const withMore = await mcp(['help', 'add']);
-
-        expect([byFlag.code, byLetter.code, withMore.code]).toEqual([0, 0, 0]);
-        expect([byFlag.output, byLetter.output, withMore.output]).toEqual([
-            `${HELP}\n`,
-            `${HELP}\n`,
-            `${HELP}\n`,
-        ]);
+        expect(result).toMatchObject({ code: 1, stdout: '', stderr: `error: ${problem}\n` });
         expect(await readdir(folder)).toEqual([]);
     });
 
-    test('no arguments: the same text, and exit code 1', async () => {
+    test('the setting it needs', async () => {
         await freshFolder();
 
-        const { code, output } = await mcp([]);
-
-        expect(code).toBe(1);
-        expect(output).toBe(`${HELP}\n`);
-        expect(await readdir(folder)).toEqual([]);
-    });
-
-    test('the settings it needs', async () => {
-        await freshFolder();
-
-        const first = await mcp(['list']);
+        const first = await mcp(['list'], { LOG_FORMAT: undefined });
+        const withAnyFormat = await mcp(['list'], { LOG_FORMAT: 'xml' });
         const second = await mcp(['list'], { DATA_DIR: undefined });
 
-        expect(first.code).toBe(0);
-        expect(second.code).toBe(1);
-        expect(errors(second.records)).toEqual(['DATA_DIR is required.']);
+        expect(first).toMatchObject({ code: 0, stdout: NO_SERVERS, stderr: '' });
+        expect(withAnyFormat).toMatchObject({ code: 0, stdout: NO_SERVERS, stderr: '' });
+        expect(second).toMatchObject({
+            code: 1,
+            stdout: '',
+            stderr: 'error: DATA_DIR is required.\n',
+        });
     });
 
-    test('settings and usage, reported together, in pretty output', async () => {
+    test('the setting and the arguments, reported together', async () => {
         await freshFolder();
 
-        const { code, output } = await mcp(['start'], {
-            LOG_FORMAT: 'xml',
-            DATA_DIR: join(folder, 'no'),
-        });
-        const lines = output.trim().split('\n');
+        const { code, stderr } = await mcp(['start'], { DATA_DIR: join(folder, 'no') });
 
         expect(code).toBe(1);
-        expect(lines).toEqual([
-            expect.stringMatching(
-                /^\d\d:\d\d:\d\d ERROR LOG_FORMAT must be one of pretty, json; got "xml"\.$/,
-            ),
-            expect.stringMatching(
-                /ERROR DATA_DIR must name an existing directory; .* isn't one\.$/,
-            ),
-            expect.stringMatching(/ERROR Give one of the subcommands: /),
+        expect(stderr.split('\n')).toEqual([
+            `error: DATA_DIR must name an existing directory; ${join(folder, 'no')} isn't one.`,
+            expect.stringMatching(/^error: Give one of the subcommands: /),
+            '',
         ]);
     });
 
     test('a new data folder', async () => {
         await freshFolder();
 
-        const { code, records } = await mcp(['list']);
+        const result = await mcp(['list']);
 
-        expect(code).toBe(0);
-        expect(withoutTime(records)).toEqual([
-            { level: 'info', message: 'migrated', names: MIGRATIONS },
-            { level: 'info', message: 'no mcp servers' },
-        ]);
+        expect(result).toMatchObject({ code: 0, stdout: NO_SERVERS, stderr: '' });
+        expect(await readdir(folder)).toEqual(['db.sqlite']);
     });
 
     test("a data folder whose store can't open", async () => {
         await freshFolder();
         await mkdir(join(folder, 'db.sqlite'));
 
-        const { code, records } = await mcp(['list']);
+        const { code, stdout, stderr } = await mcp(['list']);
 
         expect(code).toBe(1);
-        expect(errors(records)).toEqual([
-            expect.stringMatching(
-                /^Can't open the database at .*db\.sqlite: unable to open database file$/,
-            ),
-        ]);
+        expect(stdout).toBe('');
+        expect(stderr).toMatch(
+            /^error: Can't open the database at .*db\.sqlite: unable to open database file\n$/,
+        );
     });
 
     test('offline: a reference to a variable that is not set is stored as written', async () => {
         await freshFolder();
-        const entry =
-            '{"url":"https://docs.example.com/mcp","headers":{"Authorization":"Bearer ${DOCS_TOKEN_UNSET}"},"startupTimeoutMs":30000,"toolTimeoutMs":120000}';
 
-        const added = await mcp(['add', 'docs', entry]);
-        const list = await mcp(['list']);
+        const added = await mcp([
+            'add',
+            'docs',
+            DOCS,
+            '--header',
+            'Authorization: Bearer ${DOCS_TOKEN_UNSET}',
+        ]);
+        const shown = await mcp(['get', 'docs']);
 
         expect(added.code).toBe(0);
         expect(added.fetch).not.toHaveBeenCalled();
-        expect(list.fetch).not.toHaveBeenCalled();
-        expect(list.records).toMatchObject([
+        expect(shown.fetch).not.toHaveBeenCalled();
+        expect(shown.stdout).toContain(
+            '  Header           Authorization: Bearer ${DOCS_TOKEN_UNSET}\n',
+        );
+        expect(await stored()).toMatchObject([
             { entry: { headers: { Authorization: 'Bearer ${DOCS_TOKEN_UNSET}' } } },
         ]);
     });
 
     test('disabled at the start, then enabled', async () => {
         await freshFolder();
-        await mcp(['add', 'docs', DOCS.replace('{', '{"disabled":true,')]);
-        const whileDisabled = await listed();
 
+        const added = await mcp(['add', 'docs', DOCS, '--disabled']);
+        const listed = await mcp(['list']);
+        const whileDisabled = await stored();
         await mcp(['enable', 'docs']);
 
-        expect(whileDisabled).toMatchObject([{ disabled: true, entry: JSON.parse(DOCS) }]);
-        expect(await listed()).toEqual([
+        expect(added).toMatchObject({
+            code: 0,
+            stdout: "Added docs (http). Runs won't start it until bun run mcp enable docs.\n",
+        });
+        expect(listed.stdout.split('\n')[1]).toBe(
+            'docs  http       https://docs.example.com/mcp  no',
+        );
+        expect(whileDisabled).toEqual([
             {
-                level: 'info',
-                message: 'mcp server',
                 name: 'docs',
-                transport: 'http',
-                disabled: false,
-                entry: JSON.parse(DOCS),
+                entry: { url: DOCS, startupTimeoutMs: 30000, toolTimeoutMs: 120000 },
+                disabled: true,
             },
+        ]);
+        expect(await stored()).toMatchObject([{ disabled: false }]);
+    });
+
+    test('warnings on stderr, before the result', async () => {
+        await freshFolder();
+
+        const { code, written } = await mcp([
+            'add',
+            'Playwright',
+            '--',
+            'npx',
+            '-y',
+            '@playwright/mcp@latest',
+            '--api-key',
+            '${KEY}',
+        ]);
+
+        expect(code).toBe(0);
+        expect(written).toEqual([
+            "stderr: warning: @playwright/mcp@latest isn't pinned to an exact version, so a run may start a version published later. Pin it, as in package@1.2.3.",
+            'stderr: warning: Argument 4, after --api-key, holds a reference: a run puts its value in the process list, which every local user can read. Give it in env instead, if the server reads one.',
+            'stdout: Added Playwright (stdio).',
         ]);
     });
 
-    test('a stdio entry, with its warnings, which a list shows as stored', async () => {
+    test('a variable named __proto__ is stored like any other', async () => {
         await freshFolder();
-        const entry =
-            '{"command":"npx","args":["-y","@playwright/mcp@latest","--api-key","${KEY}"],"env":{"__proto__":"x"},"startupTimeoutMs":30000,"toolTimeoutMs":120000}';
+        await mcp(['add', 'files', '--env', '__proto__=x', '--', 'server']);
 
-        const added = await mcp(['add', 'Playwright', entry]);
+        const shown = await mcp(['get', 'files']);
+        const [server] = await stored();
 
-        expect(added.code).toBe(0);
-        expect(withoutTime(added.records).slice(1)).toEqual([
+        expect(shown.stdout).toContain('  Variable         __proto__=x\n');
+        expect(JSON.stringify(server?.entry)).toBe(
+            '{"command":"server","env":{"__proto__":"x"},"startupTimeoutMs":30000,"toolTimeoutMs":120000}',
+        );
+    });
+
+    test('rows stored before the flags keep working', async () => {
+        await freshFolder();
+        await storedBefore([
             {
-                level: 'warn',
-                message: 'mcp server unpinned',
-                name: 'Playwright',
-                reason: "@playwright/mcp@latest isn't pinned to an exact version, so a run may start a version published later. Pin it, as in package@1.2.3.",
-            },
-            {
-                level: 'warn',
-                message: 'mcp server secret in arguments',
-                name: 'Playwright',
-                reason: 'Argument 4, after --api-key, holds a reference: a run puts its value in the process list, which every local user can read. Give it in env instead, if the server reads one.',
-            },
-            { level: 'info', message: 'mcp server added', name: 'Playwright', transport: 'stdio' },
-        ]);
-        expect(await listed()).toEqual([
-            {
-                level: 'info',
-                message: 'mcp server',
-                name: 'Playwright',
-                transport: 'stdio',
+                name: 'docs',
+                prefix: 'docs',
+                entry: {
+                    type: 'http',
+                    url: DOCS,
+                    title: 'Docs',
+                    startupTimeoutMs: 60000,
+                    toolTimeoutMs: 120000,
+                },
                 disabled: false,
-                entry: JSON.parse(entry),
             },
+        ]);
+
+        const listed = await mcp(['list']);
+        const shown = await mcp(['get', 'docs']);
+
+        expect(listed.stdout.split('\n')[1]).toBe(
+            'docs  http       https://docs.example.com/mcp  yes',
+        );
+        expect(shown.stdout.split('\n').slice(1, 5)).toEqual([
+            '  Transport        http',
+            '  URL              https://docs.example.com/mcp',
+            '  Startup timeout  1m',
+            '  Tool timeout     2m',
         ]);
     });
 
@@ -504,110 +513,55 @@ describe('Manage MCP servers with the mcp command', () => {
         await mcp(['add', 'docs', DOCS]);
         await outside(`UPDATE mcp_server SET entry = '{"note":[1,true,null]}'`);
 
-        expect(await listed()).toEqual([
-            {
-                level: 'info',
-                message: 'mcp server',
-                name: 'docs',
-                disabled: false,
-                entry: { note: [1, true, null] },
-            },
-        ]);
+        const { code, stdout } = await mcp(['list']);
+
+        expect(code).toBe(0);
+        expect(stdout).toBe('NAME  TRANSPORT  TARGET  ENABLED\ndocs  -          -       yes\n');
     });
 });
 
-describe('Report every problem with an entry, and store nothing', () => {
-    test("a name that isn't allowed, with an entry that is", async () => {
-        await freshFolder();
-
-        const { code, records } = await mcp(['add', 'docs site', DOCS]);
-
-        expect(code).toBe(1);
-        expect(errors(records)).toEqual([
-            `The name "docs site" isn't allowed: a server's name is 1 to 24 letters and digits, in words joined by single - or _ characters.`,
-        ]);
-        expect(await listed()).toEqual([{ level: 'info', message: 'no mcp servers' }]);
-    });
-
+describe('Describe a server with flags, and store nothing for one with a problem', () => {
     test('every problem at once', async () => {
         await freshFolder();
 
-        const { code, records } = await mcp([
+        const { code, stdout, stderr } = await mcp([
             'add',
-            'aws.docs',
-            '{"colour":"blue","url":"https://docs.example.com/mcp#x","startupTimeoutMs":30000,"toolTimeoutMs":-5}',
+            'my docs',
+            DOCS,
+            '--tool-timeout',
+            '30',
+            '--header',
+            'Authorization',
         ]);
 
         expect(code).toBe(1);
-        expect(errors(records)).toEqual([
-            `The name "aws.docs" isn't allowed: a server's name is 1 to 24 letters and digits, in words joined by single - or _ characters.`,
-            "The field colour isn't known.",
-            'toolTimeoutMs must be a whole number of milliseconds from 1000 to 2147483647.',
-            'The url has a fragment.',
-        ]);
-        expect(messages(records)).not.toContain('migrated');
-        expect(await listed()).toEqual([{ level: 'info', message: 'no mcp servers' }]);
-    });
-
-    test('a repeated key, beside the problems of the entry it was read as', async () => {
-        await freshFolder();
-
-        const { code, records } = await mcp([
-            'add',
-            'docs',
-            '{\n  "url": "https://a.example/mcp",\n  "url": "https://b.example/mcp",\n  "toolTimeoutMs": 120000\n}',
-        ]);
-
-        expect(code).toBe(1);
-        expect(errors(records)).toEqual([
-            'The key "url" is repeated, at line 3, column 3: give each key once.',
-            'startupTimeoutMs is missing. Give both timeouts, in milliseconds, as in "startupTimeoutMs": 30000 and "toolTimeoutMs": 120000.',
-        ]);
-    });
-
-    test('text that is not quoted', async () => {
-        await freshFolder();
-
-        const { code, output } = await mcp(
-            ['add', 'docs', '-'],
-            {},
-            '{"command": "server", "env": {"API_KEY": sk-secret123}}',
+        expect(stdout).toBe('');
+        expect(stderr).toBe(
+            [
+                `error: The name "my docs" isn't allowed: a server's name is 1 to 24 letters and digits, in words joined by single - or _ characters.`,
+                "error: A --header has no colon: give each as --header 'Name: value'.",
+                'error: --tool-timeout needs a unit, as in 30s: ms, s, m or h.',
+                '',
+            ].join('\n'),
         );
-
-        expect(code).toBe(1);
-        expect(parseRecords(output).map((record) => record.message)).toEqual([
-            "The entry isn't valid JSON: expected a value at line 1, column 42.",
-        ]);
-        expect(output).not.toContain('sk-secret123');
+        expect(await readdir(folder)).toEqual([]);
     });
 
-    test('a pasted wrapper', async () => {
+    test('a literal token appears in no output', async () => {
         await freshFolder();
 
-        const { code, records } = await mcp([
+        const { code, stdout, stderr } = await mcp([
             'add',
             'docs',
-            '{"mcpServers":{"docs":{"url":"https://docs.example.com/mcp"}}}',
+            DOCS,
+            '--header',
+            'Authorization: Bearer abc123def',
         ]);
 
         expect(code).toBe(1);
-        expect(errors(records)).toEqual([
-            `The entry holds a server inside its field "mcpServers": give the object inside it as the entry, and the server's name as the first argument.`,
-        ]);
-    });
-
-    test('a literal token appears in no record', async () => {
-        await freshFolder();
-
-        const { code, output } = await mcp([
-            'add',
-            'docs',
-            '{"url":"https://docs.example.com/mcp","headers":{"Authorization":"Bearer abc123def"},"startupTimeoutMs":30000,"toolTimeoutMs":120000}',
-        ]);
-
-        expect(code).toBe(1);
-        expect(output).toContain('Authorization');
-        expect(output).not.toContain('abc123def');
+        expect(stderr).toContain('error: The header Authorization holds a literal secret.');
+        expect(stderr).toContain('in single quotes, so that your shell leaves it alone.');
+        expect(`${stdout}${stderr}`).not.toContain('abc123def');
     });
 });
 
@@ -619,21 +573,22 @@ describe("Report the store's failures", () => {
 
         const results = [
             await mcp(['list']),
+            await mcp(['get', 'docs']),
             await mcp(['add', 'docs', DOCS]),
             await mcp(['remove', 'docs']),
             await mcp(['disable', 'docs']),
         ];
 
-        expect(results.map((result) => result.code)).toEqual([1, 1, 1, 1]);
-        expect(results.map((result) => errors(result.records))).toEqual([
-            [
-                expect.stringMatching(
-                    /^Can't list the MCP servers in the database at .*: SqliteError: no such table: mcp_server$/,
-                ),
-            ],
-            [expect.stringMatching(/^Can't list the MCP servers in the database at /)],
-            [expect.stringMatching(/^Can't remove the MCP server in the database at /)],
-            [expect.stringMatching(/^Can't set the MCP server flag in the database at /)],
+        expect(results.map((result) => result.code)).toEqual([1, 1, 1, 1, 1]);
+        expect(results.map((result) => result.stdout)).toEqual(['', '', '', '', '']);
+        expect(results.map((result) => result.stderr)).toEqual([
+            expect.stringMatching(
+                /^error: Can't list the MCP servers in the database at .*: SqliteError: no such table: mcp_server\n$/,
+            ),
+            expect.stringMatching(/^error: Can't list the MCP servers in the database at /),
+            expect.stringMatching(/^error: Can't list the MCP servers in the database at /),
+            expect.stringMatching(/^error: Can't remove the MCP server in the database at /),
+            expect.stringMatching(/^error: Can't set the MCP server flag in the database at /),
         ]);
     });
 
@@ -644,21 +599,84 @@ describe("Report the store's failures", () => {
             "CREATE TRIGGER refuse BEFORE INSERT ON mcp_server BEGIN SELECT RAISE(ABORT, 'refused'); END",
         );
 
-        const { code, records } = await mcp([
-            'add',
-            'docs',
-            '{"command":"npx","args":["pkg"],"startupTimeoutMs":30000,"toolTimeoutMs":120000}',
-        ]);
+        const { code, stdout, stderr } = await mcp(['add', 'docs', '--', 'npx', 'pkg@1.0.0']);
 
         expect(code).toBe(1);
-        expect(withoutTime(records)).toEqual([
-            {
-                level: 'error',
-                message: expect.stringMatching(
-                    /^Can't add the MCP server in the database at .*: SqliteError: refused$/,
-                ),
-            },
+        expect(stdout).toBe('');
+        expect(stderr).toMatch(
+            /^error: Can't add the MCP server in the database at .*: SqliteError: refused\n$/,
+        );
+    });
+});
+
+describe('Help', () => {
+    test('help, with no setting at all', async () => {
+        await freshFolder();
+
+        const { code, stdout, stderr } = await mcp(['help'], { DATA_DIR: undefined });
+
+        expect(code).toBe(0);
+        expect(stdout).toBe(`${HELP}\n`);
+        expect(stderr).toBe('');
+
+        for (const term of [
+            'bun run mcp add <name> <url>',
+            'bun run mcp add <name> [options] -- <command>',
+            'bun run mcp list',
+            'bun run mcp get <name>',
+            'bun run mcp remove <name>',
+            'bun run mcp disable <name>',
+            'bun run mcp enable <name>',
+            '--header',
+            '--env',
+            '--cwd',
+            '--include-tool',
+            '--exclude-tool',
+            '--startup-timeout',
+            '--tool-timeout',
+            '--disabled',
+            '30s',
+            '2m',
+            "'Authorization: Bearer ${GITHUB_PAT}'",
+            'DATA_DIR',
+            'mcp:node',
+            '1 to 24',
+            'README',
+        ]) {
+            expect(stdout).toContain(term);
+        }
+    });
+
+    test('within 80 columns', () => {
+        for (const line of HELP.split('\n')) {
+            expect(line.length).toBeLessThanOrEqual(80);
+        }
+    });
+
+    test("help, however it's asked for, and no store opened", async () => {
+        await freshFolder();
+
+        const byFlag = await mcp(['--help']);
+        const byLetter = await mcp(['-h']);
+        const withMore = await mcp(['help', 'add']);
+
+        expect([byFlag.code, byLetter.code, withMore.code]).toEqual([0, 0, 0]);
+        expect([byFlag.stdout, byLetter.stdout, withMore.stdout]).toEqual([
+            `${HELP}\n`,
+            `${HELP}\n`,
+            `${HELP}\n`,
         ]);
+        expect(await readdir(folder)).toEqual([]);
+    });
+
+    test('no arguments: the same text, and exit code 1', async () => {
+        await freshFolder();
+
+        const { code, stdout } = await mcp([]);
+
+        expect(code).toBe(1);
+        expect(stdout).toBe(`${HELP}\n`);
+        expect(await readdir(folder)).toEqual([]);
     });
 });
 
@@ -670,34 +688,45 @@ const runAs = (program: string, args: readonly string[], env: Readonly<Record<st
         stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
+    let stderr = '';
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
         stdout += chunk;
     });
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk: string) => {
+        stderr += chunk;
+    });
 
-    return new Promise<{ code: number | null; stdout: string }>((resolve) => {
+    return new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
         child.once('close', (code) => {
-            resolve({ code, stdout });
+            resolve({ code, stdout, stderr });
         });
     });
 };
 
 describe('On Bun and on Node', { timeout: 15_000 }, () => {
-    test('the same records', async () => {
+    test('the same output', async () => {
         await freshFolder();
         await mcp(['add', 'docs', DOCS]);
-        const env = { LOG_FORMAT: 'json', DATA_DIR: folder };
+        const env = { DATA_DIR: folder };
 
         const onNode = await runAs('node', ['list'], env);
         const onBun = await runAs('bun', ['list'], env);
+        const errorOnNode = await runAs('node', ['remove', 'nope'], env);
+        const errorOnBun = await runAs('bun', ['remove', 'nope'], env);
 
-        expect(onNode.code).toBe(0);
-        expect(onBun.code).toBe(0);
-        expect(withoutTime(parseRecords(onNode.stdout))).toEqual(
-            withoutTime(parseRecords(onBun.stdout)),
-        );
-        expect(parseRecords(onNode.stdout)).toMatchObject([
-            { message: 'mcp server', name: 'docs' },
-        ]);
+        expect(onNode).toEqual(onBun);
+        expect(onNode).toEqual({
+            code: 0,
+            stdout: 'NAME  TRANSPORT  TARGET                        ENABLED\ndocs  http       https://docs.example.com/mcp  yes\n',
+            stderr: '',
+        });
+        expect(errorOnNode).toEqual(errorOnBun);
+        expect(errorOnNode).toEqual({
+            code: 1,
+            stdout: '',
+            stderr: 'error: There is no MCP server named nope: bun run mcp list shows them.\n',
+        });
     });
 });

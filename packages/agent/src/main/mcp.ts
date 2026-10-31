@@ -1,55 +1,27 @@
-// `bun run mcp`: adds, lists, removes, disables and enables the MCP servers a run connects to.
-// It opens the store and nothing else: it never resolves a reference, nor contacts a server.
-import { text } from 'node:stream/consumers';
-import { type Result, err, ok } from '@mecha-gremlin/core/result';
+// `bun run mcp`: adds, lists, shows, removes, disables and enables the MCP servers a run connects
+// to. It opens the store and nothing else: it never resolves a reference, nor contacts a server.
+import { type Result, ok } from '@mecha-gremlin/core/result';
 import {
-    type McpServer,
     addMcpServer,
     listMcpServers,
     removeMcpServer,
     setMcpServerDisabled,
 } from '@mecha-gremlin/store/mcp-server';
 import { type Store, closeStore, openStore } from '@mecha-gremlin/store/store';
-import { loadLogFormat, loadMcpConfig } from '../config/config.ts';
-import { type Logger, createLogger } from '../log/log.ts';
-import {
-    type CheckedEntry,
-    checkEntry,
-    checkName,
-    prefixOf,
-    transportOfEntry,
-} from '../mcp/entry.ts';
-import { jsonOf, parseJson } from '../mcp/json.ts';
+import { loadMcpConfig } from '../config/config.ts';
+import { type CheckedEntry, prefixOf } from '../mcp/entry.ts';
+import { type Change, type Command, readCommand } from './mcp-args.ts';
 import { HELP } from './mcp-help.ts';
-
-type Change = 'remove' | 'disable' | 'enable';
-
-type Command =
-    | { readonly kind: 'add'; readonly name: string; readonly entry: string }
-    | { readonly kind: 'list' }
-    | { readonly kind: Change; readonly name: string };
-
-// What a command does, once its entry, if it has one, has been read and checked.
-type Task =
-    | { readonly kind: 'add'; readonly name: string; readonly checked: CheckedEntry }
-    | Exclude<Command, { readonly kind: 'add' }>;
-
-const SUBCOMMANDS = 'add <name> <entry>, list, remove <name>, disable <name> or enable <name>';
-
-const SEE_HELP = 'bun run mcp help explains the command.';
+import {
+    addedLine,
+    changedLine,
+    errorLine,
+    listLines,
+    serverLines,
+    warningLine,
+} from './mcp-output.ts';
 
 const HELP_WORDS = new Set(['help', '--help', '-h']);
-
-const DONE = {
-    remove: 'mcp server removed',
-    disable: 'mcp server disabled',
-    enable: 'mcp server enabled',
-} as const;
-
-// Two strings, which TypeScript can't tell from the length alone.
-const isPair = (values: readonly string[]): values is readonly [string, string] => {
-    return values.length === 2;
-};
 
 // The exit code of a request for help: 0 when it was asked for, and 1 when the command was run
 // bare, since nothing was done. Anything else isn't one.
@@ -63,117 +35,93 @@ const helpExitCode = (args: readonly string[]): number | undefined => {
     return HELP_WORDS.has(first) ? 0 : undefined;
 };
 
-const parseCommand = (args: readonly string[]): Result<Command, string> => {
-    const [subcommand, first, ...rest] = args;
-
-    switch (subcommand) {
-        case 'add': {
-            const operands = args.slice(1);
-
-            return isPair(operands)
-                ? ok({ kind: 'add', name: operands[0], entry: operands[1] })
-                : err(
-                      `add takes a name and an entry: bun run mcp add <name> <entry>, with - as the entry to read it from stdin. ${SEE_HELP}`,
-                  );
-        }
-        case 'list':
-            return first === undefined
-                ? ok({ kind: 'list' })
-                : err(`list takes no arguments. ${SEE_HELP}`);
-        case 'remove':
-        case 'disable':
-        case 'enable':
-            return first === undefined || rest.length > 0
-                ? err(
-                      `${subcommand} takes a server's name: bun run mcp ${subcommand} <name>. ${SEE_HELP}`,
-                  )
-                : ok({ kind: subcommand, name: first });
-        default:
-            return err(`Give one of the subcommands: ${SUBCOMMANDS}. ${SEE_HELP}`);
-    }
+const print = (lines: readonly string[]): void => {
+    console.log(lines.join('\n'));
 };
 
-// An entry of `-` comes from stdin, which keeps it out of the shell's history, the process list
-// and the command line that `bun run` echoes.
-const prepare = async (command: Command): Promise<Result<Task, string[]>> => {
-    if (command.kind !== 'add') {
-        return ok(command);
+const fail = (problems: readonly string[]): number => {
+    for (const problem of problems) {
+        console.error(errorLine(problem));
     }
 
-    const { name, entry } = command;
-    const parsed = parseJson(entry === '-' ? await text(process.stdin) : entry);
-    const checked = parsed.value === undefined ? err([]) : checkEntry(parsed.value);
-    const problems = [...checkName(name), ...parsed.problems, ...(checked.ok ? [] : checked.error)];
+    return 1;
+};
 
-    return checked.ok && problems.length === 0
-        ? ok({ kind: 'add', name, checked: checked.value })
-        : err(problems);
+const unknown = (name: string): string => {
+    return `There is no MCP server named ${name}: bun run mcp list shows them.`;
 };
 
 const add = async (
     store: Store,
     name: string,
     { entry, stored, disabled, warnings }: CheckedEntry,
-    log: Logger,
 ): Promise<number> => {
     const prefix = prefixOf(name);
     const listed = await listMcpServers(store);
 
     if (!listed.ok) {
-        log.error(listed.error);
-
-        return 1;
+        return fail([listed.error]);
     }
 
     // The store refuses both too, but only these errors can name the other server.
     const sharing = listed.value.find((server) => server.prefix === prefix);
 
     if (sharing?.name === name) {
-        log.error(
+        return fail([
             `The MCP server ${name} exists. To change it, remove it with bun run mcp remove ${name}, then add it again.`,
-        );
-
-        return 1;
+        ]);
     }
 
     if (sharing !== undefined) {
-        log.error(
+        return fail([
             `The tools of ${name} would share the prefix ${prefix} with those of the MCP server ${sharing.name}: give it another name.`,
-        );
-
-        return 1;
+        ]);
     }
 
     const added = await addMcpServer(store, { name, prefix, entry: stored, disabled });
 
     if (!added.ok) {
-        log.error(added.error);
-
-        return 1;
+        return fail([added.error]);
     }
 
-    for (const { message, reason } of warnings) {
-        log.warn(message, { name, reason });
+    // Before the result, so that they aren't missed.
+    for (const { reason } of warnings) {
+        console.error(warningLine(reason));
     }
 
-    log.info('mcp server added', { name, transport: entry.transport });
+    console.log(addedLine(name, entry.transport, disabled));
 
     return 0;
 };
 
-const list = (servers: readonly McpServer[], log: Logger): void => {
-    if (servers.length === 0) {
-        log.info('no mcp servers');
+const list = async (store: Store): Promise<number> => {
+    const listed = await listMcpServers(store);
+
+    if (!listed.ok) {
+        return fail([listed.error]);
     }
 
-    for (const { name, entry, disabled } of servers) {
-        log.info('mcp server', {
-            name,
-            transport: transportOfEntry(entry),
-            disabled,
-            entry: jsonOf(entry),
-        });
+    print(listLines(listed.value));
+
+    return 0;
+};
+
+const get = async (store: Store, name: string): Promise<number> => {
+    const listed = await listMcpServers(store);
+
+    if (!listed.ok) {
+        return fail([listed.error]);
     }
+
+    const server = listed.value.find((candidate) => candidate.name === name);
+
+    if (server === undefined) {
+        return fail([unknown(name)]);
+    }
+
+    print(serverLines(server));
+
+    return 0;
 };
 
 const change = async (
@@ -190,90 +138,62 @@ const change = async (
     return removed.ok ? ok(removed.value > 0) : removed;
 };
 
-const perform = async (store: Store, task: Task, log: Logger): Promise<number> => {
-    if (task.kind === 'add') {
-        return add(store, task.name, task.checked, log);
+const perform = async (store: Store, command: Command): Promise<number> => {
+    if (command.kind === 'add') {
+        return add(store, command.name, command.checked);
     }
 
-    if (task.kind === 'list') {
-        const listed = await listMcpServers(store);
-
-        if (listed.ok) {
-            list(listed.value, log);
-        } else {
-            log.error(listed.error);
-        }
-
-        return listed.ok ? 0 : 1;
+    if (command.kind === 'list') {
+        return list(store);
     }
 
-    const changed = await change(store, task.kind, task.name);
+    if (command.kind === 'get') {
+        return get(store, command.name);
+    }
+
+    const changed = await change(store, command.kind, command.name);
 
     if (!changed.ok) {
-        log.error(changed.error);
-    } else if (changed.value) {
-        log.info(DONE[task.kind], { name: task.name });
-    } else {
-        log.error(`There is no MCP server named ${task.name}: bun run mcp list shows them.`);
+        return fail([changed.error]);
     }
 
-    return changed.ok && changed.value ? 0 : 1;
+    if (!changed.value) {
+        return fail([unknown(command.name)]);
+    }
+
+    console.log(changedLine(command.kind, command.name));
+
+    return 0;
 };
 
 const run = async (args: readonly string[]): Promise<number> => {
     const help = helpExitCode(args);
 
-    // Plain text, whatever LOG_FORMAT is, before any setting is read: help may be the first thing
-    // anyone runs, and a question shouldn't create a database.
+    // Before any setting is read: help may be the first thing anyone runs, and a question
+    // shouldn't create a database.
     if (help !== undefined) {
         console.log(HELP);
 
         return help;
     }
 
-    // An invalid LOG_FORMAT is one of the errors loadMcpConfig reports, which still need a format.
-    const log = createLogger(loadLogFormat(process.env) ?? 'pretty');
     const loaded = loadMcpConfig(process.env);
-    const parsed = parseCommand(args);
+    const command = readCommand(args);
 
-    if (!loaded.ok || !parsed.ok) {
-        for (const problem of [
-            ...(loaded.ok ? [] : loaded.error),
-            ...(parsed.ok ? [] : [parsed.error]),
-        ]) {
-            log.error(problem);
-        }
-
-        return 1;
-    }
-
-    // Before the store opens: every problem with an entry is reported together.
-    const prepared = await prepare(parsed.value);
-
-    if (!prepared.ok) {
-        for (const problem of prepared.error) {
-            log.error(problem);
-        }
-
-        return 1;
+    if (!loaded.ok || !command.ok) {
+        return fail([...(loaded.ok ? [] : loaded.error), ...(command.ok ? [] : command.error)]);
     }
 
     const opened = await openStore(loaded.value.dataDir);
 
     if (!opened.ok) {
-        log.error(opened.error);
-
-        return 1;
+        return fail([opened.error]);
     }
 
-    const { store, migrated } = opened.value;
-
-    if (migrated.length > 0) {
-        log.info('migrated', { names: migrated });
-    }
+    const { store } = opened.value;
 
     try {
-        return await perform(store, prepared.value, log);
+        return await perform(store, command.value);
     } finally {
         await closeStore(store);
     }

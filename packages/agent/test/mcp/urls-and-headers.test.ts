@@ -3,7 +3,7 @@ import { headerNameProblems, headerValueProblems } from '../../src/mcp/headers.t
 import { authorityEnd, urlProblems } from '../../src/mcp/urls.ts';
 
 const ADVICE =
-    "Give it as a reference, such as ${NAME}, to a variable set in .env. A secret typed on a command line is in the shell's history: change it.";
+    "Give it as a reference, such as ${NAME}, to a variable set in .env, in single quotes, so that your shell leaves it alone. A secret typed on a command line is in the shell's history: change it.";
 
 describe("Find where a URL's authority ends", () => {
     test.each([

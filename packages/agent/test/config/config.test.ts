@@ -440,24 +440,31 @@ describe('loadLogFormat', () => {
 });
 
 describe('loadMcpConfig', () => {
-    test('DATA_DIR and LOG_FORMAT, trimmed, without any model setting', () => {
-        expect(loadMcpConfig({ LOG_FORMAT: ' json ', DATA_DIR: ` ${DATA_DIR} ` })).toEqual({
+    test('DATA_DIR alone, trimmed, without any other setting', () => {
+        expect(loadMcpConfig({ DATA_DIR: ` ${DATA_DIR} ` })).toStrictEqual({
             ok: true,
-            value: { logFormat: 'json', dataDir: realpathSync.native(DATA_DIR) },
+            value: { dataDir: realpathSync.native(DATA_DIR) },
         });
     });
 
-    test("checks both as the agent's settings are checked", () => {
-        expect(loadMcpConfig({ LOG_FORMAT: 'xml', DATA_DIR: join(DATA_DIR, 'missing') })).toEqual({
+    test('LOG_FORMAT is not read', () => {
+        expect(loadMcpConfig({ LOG_FORMAT: 'xml', DATA_DIR })).toStrictEqual({
+            ok: true,
+            value: { dataDir: realpathSync.native(DATA_DIR) },
+        });
+    });
+
+    test("checks DATA_DIR as the agent's DATA_DIR is checked", () => {
+        expect(loadMcpConfig({ DATA_DIR: join(DATA_DIR, 'missing') })).toEqual({
             ok: false,
             error: [
-                'LOG_FORMAT must be one of pretty, json; got "xml".',
                 `DATA_DIR must name an existing directory; ${join(DATA_DIR, 'missing')} isn't one.`,
             ],
         });
-        expect(loadMcpConfig({})).toEqual({
+        expect(loadMcpConfig({})).toEqual({ ok: false, error: ['DATA_DIR is required.'] });
+        expect(loadMcpConfig({ DATA_DIR: '  ' })).toEqual({
             ok: false,
-            error: ['LOG_FORMAT is required; choose pretty, json.', 'DATA_DIR is required.'],
+            error: ['DATA_DIR is required.'],
         });
     });
 });

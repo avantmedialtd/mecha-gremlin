@@ -193,23 +193,15 @@ const messagesOf = (result: {
     return result.error?.issues.map((issue) => issue.message) ?? [];
 };
 
-/** The settings of the `mcp` command, which needs no model. */
+/** The settings of the `mcp` command, which needs no model, and prints no records. */
 export type McpConfig = {
-    readonly logFormat: LogFormat;
     readonly dataDir: string;
 };
 
-const mcpSchema = z.object({ LOG_FORMAT: common.LOG_FORMAT, DATA_DIR: common.DATA_DIR });
-
 export const loadMcpConfig = (env: Env): Result<McpConfig, string[]> => {
-    const result = mcpSchema.safeParse({
-        LOG_FORMAT: read(env, 'LOG_FORMAT'),
-        DATA_DIR: read(env, 'DATA_DIR'),
-    });
+    const result = common.DATA_DIR.safeParse(read(env, 'DATA_DIR'));
 
-    return result.success
-        ? ok({ logFormat: result.data.LOG_FORMAT, dataDir: result.data.DATA_DIR })
-        : err(messagesOf(result));
+    return result.success ? ok({ dataDir: result.data }) : err(messagesOf(result));
 };
 
 // The file tools refuse everything in the data folder, so they couldn't touch a working directory

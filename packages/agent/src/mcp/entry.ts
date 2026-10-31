@@ -101,9 +101,9 @@ const TIMEOUT_EXAMPLE = '"startupTimeoutMs": 30000 and "toolTimeoutMs": 120000';
 
 // setTimeout fires at once beyond its 32-bit limit; the floor catches a value given in seconds
 // (Brief R18.1).
-const LONGEST_TIMEOUT_MS = 2_147_483_647;
+export const LONGEST_TIMEOUT_MS = 2_147_483_647;
 
-const SHORTEST_TIMEOUT_MS = 1000;
+export const SHORTEST_TIMEOUT_MS = 1000;
 
 const CONTROL = /\p{Cc}/u;
 
