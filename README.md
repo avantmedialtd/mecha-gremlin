@@ -13,7 +13,7 @@ A self-hosted, scheduled agent runner, in early development. The design and its 
 | [`packages/agent`](packages/agent) | `@mecha-gremlin/agent`: the agent. It carries out a task in an agent loop, with a shell, file tools, skills and MCP servers' tools, and opens the store in its data folder. It runs on Bun or Node. |
 
 Inside `packages/agent/src`, the code is grouped by concern:
-- `main`: the entry points, `main.ts` for a run and `mcp.ts` for the `mcp` command, and the helpers for the arguments, the log fields and the failure messages;
+- `main`: the entry points, `main.ts` for a run and `mcp.ts` for the `mcp` command, with its help text in `mcp-help.ts`, and the helpers for the arguments, the log fields and the failure messages;
 - `config`;
 - `model`: model choice, LM Studio's model list, and the Responses and Anthropic Messages adapters;
 - `session`: the agent loop, as a session that yields each step's result;
@@ -123,7 +123,7 @@ The agent keeps a SQLite database, `db.sqlite`, in the data folder that `DATA_DI
 
 ### MCP servers
 
-The agent can use the tools of [MCP](https://modelcontextprotocol.io) servers: local servers, which a run starts and talks to over stdio, and remote ones, which it reaches over Streamable HTTP. The `mcp` command keeps their definitions in the data folder, and each run connects to every server that isn't disabled before its first model call. OAuth isn't supported yet, so neither is a server that needs a login; nor are MCP resources and prompts, and an image a tool returns is described to the model but not shown.
+The agent can use the tools of [MCP](https://modelcontextprotocol.io) servers: local servers, which a run starts and talks to over stdio, and remote ones, which it reaches over Streamable HTTP. The `mcp` command keeps their definitions in the data folder, and each run connects to every server that isn't disabled before its first model call. OAuth isn't supported yet, so neither is a server that needs a login; nor are MCP resources and prompts, and an image a tool returns is described to the model but not shown. `bun run mcp help` summarises this section at the terminal, and needs no setting.
 
 **Adding a server.** `bun run mcp add <name> <entry>` takes a name and an entry: one server's object from inside a `mcpServers` map, the format most vendors publish. An entry of `-` is read from stdin, which keeps it out of your shell's history, out of the process list, and out of the command line that `bun run` echoes. A remote server, whose header holds a reference to a variable:
 
@@ -230,7 +230,7 @@ Settings come from the environment, and from a local `.env` file, which is gitig
 - **On Bun,** `.env` is read along with `.env.local`, and a file for `NODE_ENV` (`.env.development` when it's unset).
 - **On Node,** only `.env` is read, through the `--env-file-if-exists` flag in `agent:node`. Without a `.env`, Node prints ".env not found. Continuing without it." to stderr, and carries on.
 
-The `mcp` command needs only `DATA_DIR` and `LOG_FORMAT` (see [MCP servers](#mcp-servers)).
+The `mcp` command needs only `DATA_DIR` and `LOG_FORMAT`, and `bun run mcp help` needs neither (see [MCP servers](#mcp-servers)).
 
 There are no implicit provider, model or operational settings. The Claude cache policy below is the only new provider default. Missing or invalid settings are reported together before networking.
 

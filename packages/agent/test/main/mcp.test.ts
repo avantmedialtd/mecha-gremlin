@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { withDataSource } from '@mecha-gremlin/store/connection';
 import { closeStore, openStore } from '@mecha-gremlin/store/store';
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from 'vitest';
+import { HELP } from '../../src/main/mcp-help.ts';
 
 const COMMAND = fileURLToPath(new URL('../../src/main/mcp.ts', import.meta.url));
 
@@ -36,6 +37,8 @@ type LogRecord = {
 
 const DOCS =
     '{"url":"https://docs.example.com/mcp","startupTimeoutMs":30000,"toolTimeoutMs":120000}';
+
+const SEE_HELP = 'bun run mcp help explains the command.';
 
 const MIGRATIONS = ['CreateCredential1793232000000', 'CreateMcpServer1793318400000'];
 
@@ -113,7 +116,10 @@ const mcp = async (args: readonly string[], env: Settings = {}, stdin?: string) 
     return {
         code,
         output,
-        records: settings.LOG_FORMAT === 'json' ? parseRecords(output) : [],
+        // Parsed when a test reads them: help prints plain text, whatever the format.
+        get records() {
+            return settings.LOG_FORMAT === 'json' ? parseRecords(output) : [];
+        },
         fetch,
     };
 };
@@ -276,28 +282,27 @@ describe('Manage MCP servers with the mcp command', () => {
     test.each([
         [
             ['start'],
-            'Give one of the subcommands: add <name> <entry>, list, remove <name>, disable <name> or enable <name>.',
-        ],
-        [
-            [],
-            'Give one of the subcommands: add <name> <entry>, list, remove <name>, disable <name> or enable <name>.',
+            `Give one of the subcommands: add <name> <entry>, list, remove <name>, disable <name> or enable <name>. ${SEE_HELP}`,
         ],
         [
             ['add', 'docs'],
-            'add takes a name and an entry: bun run mcp add <name> <entry>, with - as the entry to read it from stdin.',
+            `add takes a name and an entry: bun run mcp add <name> <entry>, with - as the entry to read it from stdin. ${SEE_HELP}`,
         ],
         [
             ['add'],
-            'add takes a name and an entry: bun run mcp add <name> <entry>, with - as the entry to read it from stdin.',
+            `add takes a name and an entry: bun run mcp add <name> <entry>, with - as the entry to read it from stdin. ${SEE_HELP}`,
         ],
         [
             ['add', 'docs', DOCS, 'more'],
-            'add takes a name and an entry: bun run mcp add <name> <entry>, with - as the entry to read it from stdin.',
+            `add takes a name and an entry: bun run mcp add <name> <entry>, with - as the entry to read it from stdin. ${SEE_HELP}`,
         ],
-        [['list', 'docs'], 'list takes no arguments.'],
-        [['remove'], "remove takes a server's name: bun run mcp remove <name>."],
-        [['disable', 'a', 'b'], "disable takes a server's name: bun run mcp disable <name>."],
-        [['enable'], "enable takes a server's name: bun run mcp enable <name>."],
+        [['list', 'extra'], `list takes no arguments. ${SEE_HELP}`],
+        [['remove'], `remove takes a server's name: bun run mcp remove <name>. ${SEE_HELP}`],
+        [
+            ['disable', 'a', 'b'],
+            `disable takes a server's name: bun run mcp disable <name>. ${SEE_HELP}`,
+        ],
+        [['enable'], `enable takes a server's name: bun run mcp enable <name>. ${SEE_HELP}`],
     ])('the usage error for %j', async (args, problem) => {
         await freshFolder();
 
@@ -305,6 +310,64 @@ describe('Manage MCP servers with the mcp command', () => {
 
         expect(code).toBe(1);
         expect(withoutTime(records)).toEqual([{ level: 'error', message: problem }]);
+    });
+
+    test('help, with no setting at all', async () => {
+        await freshFolder();
+
+        const { code, output } = await mcp(['help'], {
+            LOG_FORMAT: undefined,
+            DATA_DIR: undefined,
+        });
+
+        expect(code).toBe(0);
+        expect(output).toBe(`${HELP}\n`);
+
+        for (const term of [
+            'add <name> <entry>',
+            'list',
+            'remove <name>',
+            'disable <name>',
+            'enable <name>',
+            'read from stdin',
+            'mcp:node',
+            '1 to 24',
+            '"mcpServers"',
+            'startupTimeoutMs',
+            'toolTimeoutMs',
+            '${GITHUB_PAT}',
+            'DATA_DIR',
+            'LOG_FORMAT',
+            'README',
+        ]) {
+            expect(output).toContain(term);
+        }
+    });
+
+    test("help, however it's asked for, as plain text, and no store opened", async () => {
+        await freshFolder();
+
+        const byFlag = await mcp(['--help']);
+        const byLetter = await mcp(['-h']);
+        const withMore = await mcp(['help', 'add']);
+
+        expect([byFlag.code, byLetter.code, withMore.code]).toEqual([0, 0, 0]);
+        expect([byFlag.output, byLetter.output, withMore.output]).toEqual([
+            `${HELP}\n`,
+            `${HELP}\n`,
+            `${HELP}\n`,
+        ]);
+        expect(await readdir(folder)).toEqual([]);
+    });
+
+    test('no arguments: the same text, and exit code 1', async () => {
+        await freshFolder();
+
+        const { code, output } = await mcp([]);
+
+        expect(code).toBe(1);
+        expect(output).toBe(`${HELP}\n`);
+        expect(await readdir(folder)).toEqual([]);
     });
 
     test('the settings it needs', async () => {

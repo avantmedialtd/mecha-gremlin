@@ -20,6 +20,7 @@ import {
     transportOfEntry,
 } from '../mcp/entry.ts';
 import { jsonOf, parseJson } from '../mcp/json.ts';
+import { HELP } from './mcp-help.ts';
 
 type Change = 'remove' | 'disable' | 'enable';
 
@@ -35,6 +36,10 @@ type Task =
 
 const SUBCOMMANDS = 'add <name> <entry>, list, remove <name>, disable <name> or enable <name>';
 
+const SEE_HELP = 'bun run mcp help explains the command.';
+
+const HELP_WORDS = new Set(['help', '--help', '-h']);
+
 const DONE = {
     remove: 'mcp server removed',
     disable: 'mcp server disabled',
@@ -44,6 +49,18 @@ const DONE = {
 // Two strings, which TypeScript can't tell from the length alone.
 const isPair = (values: readonly string[]): values is readonly [string, string] => {
     return values.length === 2;
+};
+
+// The exit code of a request for help: 0 when it was asked for, and 1 when the command was run
+// bare, since nothing was done. Anything else isn't one.
+const helpExitCode = (args: readonly string[]): number | undefined => {
+    const [first] = args;
+
+    if (first === undefined) {
+        return 1;
+    }
+
+    return HELP_WORDS.has(first) ? 0 : undefined;
 };
 
 const parseCommand = (args: readonly string[]): Result<Command, string> => {
@@ -56,19 +73,23 @@ const parseCommand = (args: readonly string[]): Result<Command, string> => {
             return isPair(operands)
                 ? ok({ kind: 'add', name: operands[0], entry: operands[1] })
                 : err(
-                      'add takes a name and an entry: bun run mcp add <name> <entry>, with - as the entry to read it from stdin.',
+                      `add takes a name and an entry: bun run mcp add <name> <entry>, with - as the entry to read it from stdin. ${SEE_HELP}`,
                   );
         }
         case 'list':
-            return first === undefined ? ok({ kind: 'list' }) : err('list takes no arguments.');
+            return first === undefined
+                ? ok({ kind: 'list' })
+                : err(`list takes no arguments. ${SEE_HELP}`);
         case 'remove':
         case 'disable':
         case 'enable':
             return first === undefined || rest.length > 0
-                ? err(`${subcommand} takes a server's name: bun run mcp ${subcommand} <name>.`)
+                ? err(
+                      `${subcommand} takes a server's name: bun run mcp ${subcommand} <name>. ${SEE_HELP}`,
+                  )
                 : ok({ kind: subcommand, name: first });
         default:
-            return err(`Give one of the subcommands: ${SUBCOMMANDS}.`);
+            return err(`Give one of the subcommands: ${SUBCOMMANDS}. ${SEE_HELP}`);
     }
 };
 
@@ -200,6 +221,16 @@ const perform = async (store: Store, task: Task, log: Logger): Promise<number> =
 };
 
 const run = async (args: readonly string[]): Promise<number> => {
+    const help = helpExitCode(args);
+
+    // Plain text, whatever LOG_FORMAT is, before any setting is read: help may be the first thing
+    // anyone runs, and a question shouldn't create a database.
+    if (help !== undefined) {
+        console.log(HELP);
+
+        return help;
+    }
+
     // An invalid LOG_FORMAT is one of the errors loadMcpConfig reports, which still need a format.
     const log = createLogger(loadLogFormat(process.env) ?? 'pretty');
     const loaded = loadMcpConfig(process.env);
