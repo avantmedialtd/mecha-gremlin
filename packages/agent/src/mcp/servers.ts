@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import { type Result, err, ok } from '@mecha-gremlin/core/result';
 import type { ToolOutcome } from '@mecha-gremlin/core/tools';
+import type { Store } from '@mecha-gremlin/store/store';
 import {
     Client,
     ProtocolError,
@@ -19,6 +20,7 @@ import { z } from 'zod';
 import type { Env } from '../config/config.ts';
 import type { Logger } from '../log/log.ts';
 import { type ToolHandler, defineTool } from '../tools/tool-handler.ts';
+import { type Bearer, findLogin } from './bearer.ts';
 import { withModelNames } from './names.ts';
 import { type Redact, redactor } from './redact.ts';
 import {
@@ -44,6 +46,8 @@ export type McpOptions = {
     readonly runId: string;
     readonly workDir: string;
     readonly dataDir: string;
+    /** The store that holds the servers' saved logins. */
+    readonly store: Store;
     readonly log: Logger;
     readonly limits?: CloseLimits;
 };
@@ -64,7 +68,14 @@ type Connection = {
     readonly server: ServerConfig;
     readonly client: Client;
     readonly stdio: StdioView | undefined;
+    readonly bearer: Bearer | undefined;
     readonly redact: Redact;
+};
+
+// A server whose references resolved, with the bearer of its saved login, if it has one.
+type Prepared = {
+    readonly server: ServerConfig;
+    readonly bearer: Bearer | undefined;
 };
 
 type Connected = {
@@ -83,7 +94,8 @@ type Failure = {
     readonly gone: StdioView | undefined;
 };
 
-const CLIENT = { name: 'mecha-gremlin', version: '0.0.0' };
+/** What each server is told the client is. */
+export const CLIENT = { name: 'mecha-gremlin', version: '0.0.0' };
 
 // Its blocks are checked one at a time, so that one malformed block doesn't lose the rest.
 const CallResult = z.looseObject({});
@@ -136,11 +148,14 @@ const reasonOf = (error: unknown): string => {
 
 /** Why a server failed to start, without any value its references resolved to. */
 const startFailure = ({ connection, error, gone }: Failure): string => {
-    const { server, redact } = connection;
+    const { server, bearer, redact } = connection;
 
-    // Without an authProvider, 2.4.0 reports a 401 this way, not as UnauthorizedError.
+    // Without an authProvider, 2.4.0 reports a 401 this way, not as UnauthorizedError; with one,
+    // so it reports the second 401, after a refresh.
     if (error instanceof SdkHttpError && error.data.status === 401) {
-        return "it needs a login, which isn't supported yet";
+        return bearer === undefined
+            ? `it needs a login: bun run mcp login ${server.name}`
+            : `it refused its login's token even after a refresh: log in again with bun run mcp login ${server.name}`;
     }
 
     if (error instanceof SdkError && error.code === SdkErrorCode.RequestTimeout) {
@@ -204,6 +219,7 @@ export const createMcpServers = ({
     runId,
     workDir,
     dataDir,
+    store,
     log,
     limits = CLOSE_LIMITS,
 }: McpOptions): McpServers => {
@@ -250,14 +266,17 @@ export const createMcpServers = ({
         }
     };
 
-    // The SDK's default redirectPolicy, same-origin, keeps the headers on their origin.
+    // The SDK's default redirectPolicy, same-origin, keeps the headers on their origin. A login's
+    // token takes the place of the entry's own Authorization header.
     const transportFor = (
         target: StdioConnection | HttpConnection,
+        bearer: Bearer | undefined,
     ): { readonly transport: Transport; readonly stdio: StdioTransport | undefined } => {
         if (target.transport === 'http') {
             return {
                 transport: new StreamableHTTPClientTransport(new URL(target.url), {
                     requestInit: { headers: { ...target.headers } },
+                    authProvider: bearer?.provider,
                 }),
                 stdio: undefined,
             };
@@ -278,14 +297,22 @@ export const createMcpServers = ({
         return { transport: stdio, stdio };
     };
 
-    const connectOne = async (server: ServerConfig): Promise<Result<Connected, Failure>> => {
+    const connectOne = async ({
+        server,
+        bearer,
+    }: Prepared): Promise<Result<Connected, Failure>> => {
         const deadline = Date.now() + server.startupTimeoutMs;
         // Every request names its own timeout: the SDK otherwise ends each one at 60 seconds.
         const remaining = (): number => deadline - Date.now();
-        const { transport, stdio } = transportFor(server.connection);
-        const redact = redactor(server.secrets);
+        const { transport, stdio } = transportFor(server.connection, bearer);
+        // A refresh brings new tokens, so the values are gathered for each text.
+        const redact: Redact = (text) => {
+            return redactor(
+                bearer === undefined ? server.secrets : [...server.secrets, ...bearer.secrets()],
+            )(text);
+        };
         const client = createClient();
-        const connection = { server, client, stdio, redact };
+        const connection = { server, client, stdio, bearer, redact };
 
         connections.push(connection);
         // The tools offered stay as they are for the session; the next run sees the change.
@@ -294,6 +321,14 @@ export const createMcpServers = ({
         });
 
         try {
+            if (bearer !== undefined) {
+                const ready = await bearer.prepare();
+
+                if (!ready.ok) {
+                    return err({ connection, error: ready.error, gone: undefined });
+                }
+            }
+
             await client.connect(transport, { timeout: remaining(), signal: controller.signal });
             const capabilities: ServerCapabilities = client.getServerCapabilities() ?? {};
 
@@ -356,17 +391,43 @@ export const createMcpServers = ({
         }
     };
 
-    const connect = async (rows: readonly Row[]): Promise<Result<ToolHandler[], string[]>> => {
-        const resolved = collect(rows.map((row) => resolveServer(row, parentEnv, runId)));
+    // A login that has to be given again fails the run as a reference that can't be resolved
+    // does, before any network request (D33).
+    const prepare = async (row: Row): Promise<Result<Prepared, string[]>> => {
+        const resolved = resolveServer(row, parentEnv, runId);
 
-        // Before any network request, and before any server starts.
         if (!resolved.ok) {
-            return err(resolved.error.flat());
+            return resolved;
         }
 
-        const servers = resolved.value;
+        const server = resolved.value;
+        const { connection } = server;
 
-        const needsDirectory = servers.some(({ connection }) => {
+        if (connection.transport === 'stdio') {
+            return ok({ server, bearer: undefined });
+        }
+
+        const found = await findLogin({
+            store,
+            name: server.name,
+            url: connection.writtenUrl,
+            owner: runId,
+        });
+
+        return found.ok ? ok({ server, bearer: found.value }) : err([found.error]);
+    };
+
+    const connect = async (rows: readonly Row[]): Promise<Result<ToolHandler[], string[]>> => {
+        const prepared = collect(await Promise.all(rows.map(prepare)));
+
+        // Before any network request, and before any server starts.
+        if (!prepared.ok) {
+            return err(prepared.error.flat());
+        }
+
+        const servers = prepared.value;
+
+        const needsDirectory = servers.some(({ server: { connection } }) => {
             return connection.transport === 'stdio' && connection.cwd === undefined;
         });
 

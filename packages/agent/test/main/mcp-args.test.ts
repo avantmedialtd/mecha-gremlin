@@ -51,7 +51,7 @@ describe('The subcommands and their operands', () => {
     test('list, and the subcommands that take a name', () => {
         expect(readCommand(['list'])).toEqual({ ok: true, value: { kind: 'list' } });
 
-        for (const kind of ['get', 'remove', 'disable', 'enable']) {
+        for (const kind of ['get', 'remove', 'disable', 'enable', 'logout']) {
             expect(readCommand([kind, 'docs'])).toEqual({
                 ok: true,
                 value: { kind, name: 'docs' },
@@ -68,9 +68,10 @@ describe('The subcommands and their operands', () => {
             `disable takes a server's name: bun run mcp disable <name>. ${SEE_HELP}`,
         ],
         [['enable'], `enable takes a server's name: bun run mcp enable <name>. ${SEE_HELP}`],
+        [['logout'], `logout takes a server's name: bun run mcp logout <name>. ${SEE_HELP}`],
         [
             ['start'],
-            `Give one of the subcommands: add <name> <url>, add <name> -- <command>, list, get <name>, remove <name>, disable <name> or enable <name>. ${SEE_HELP}`,
+            `Give one of the subcommands: add <name> <url>, add <name> -- <command>, list, get <name>, remove <name>, disable <name>, enable <name>, login <name> or logout <name>. ${SEE_HELP}`,
         ],
     ])('the usage error for %j', (args, problem) => {
         expect(readCommand(args)).toEqual({ ok: false, error: [problem] });
@@ -614,6 +615,148 @@ describe('Warn about unpinned packages', () => {
                 message: 'mcp server unpinned',
                 reason: "@playwright/mcp@latest isn't pinned to an exact version, so a run may start a version published later. Pin it, as in package@1.2.3.",
             },
+        ]);
+    });
+});
+
+type LoggingIn = Extract<Command, { readonly kind: 'login' }>;
+
+const LOGIN_SHAPE = `login takes a server's name, and its options: bun run mcp login <name> [options]. ${SEE_HELP}`;
+
+const REDIRECT_URI =
+    '--redirect-uri must be an http address on 127.0.0.1 or localhost, with its port, as in http://127.0.0.1:8765/callback.';
+
+const loginOf = (...args: readonly string[]): LoggingIn['login'] => {
+    const read = readCommand(['login', ...args]);
+
+    if (!read.ok) {
+        throw new Error(read.error.join('\n'));
+    }
+
+    return (read.value as LoggingIn).login;
+};
+
+const loginProblems = (...args: readonly string[]): string[] => {
+    const read = readCommand(['login', ...args]);
+
+    return read.ok ? [] : read.error;
+};
+
+describe('Log in with options', () => {
+    test('a name alone', () => {
+        expect(readCommand(['login', 'docs'])).toEqual({
+            ok: true,
+            value: {
+                kind: 'login',
+                name: 'docs',
+                login: {
+                    clientId: undefined,
+                    clientSecret: undefined,
+                    redirectUri: undefined,
+                    scope: undefined,
+                },
+            },
+        });
+    });
+
+    test('every option, with = or without, before the name or after it', () => {
+        const login = loginOf(
+            '--client-id',
+            'abc',
+            'docs',
+            '--client-secret=${DOCS_SECRET}',
+            '--redirect-uri',
+            'http://127.0.0.1:8765/callback',
+            '--scope=read write',
+        );
+
+        expect(login).toEqual({
+            clientId: 'abc',
+            clientSecret: [{ variable: 'DOCS_SECRET' }],
+            redirectUri: new URL('http://127.0.0.1:8765/callback'),
+            scope: 'read write',
+        });
+    });
+
+    test.each([[[]], [['docs', 'more']], [['--scope', 'read']]])(
+        'a shape that is wrong: %j',
+        (args) => {
+            expect(loginProblems(...args)).toEqual([LOGIN_SHAPE]);
+        },
+    );
+
+    test('an unknown option, and one that cannot be read', () => {
+        expect(loginProblems('docs', '--client-ID', 'abc')).toEqual([
+            `The option --client-ID isn't known. ${SEE_HELP}`,
+        ]);
+        expect(loginProblems('docs', '--constructor')).toEqual([
+            `The option --constructor isn't known. ${SEE_HELP}`,
+        ]);
+        expect(loginProblems('docs', '--scope')).toEqual([needs('--scope')]);
+        expect(loginProblems('docs', '--client-id', '--scope', 'read')).toEqual([
+            needs('--client-id'),
+        ]);
+        expect(loginProblems('docs', '--client-id=-x', '--bogus')).toEqual([
+            `The option --bogus isn't known. ${SEE_HELP}`,
+        ]);
+    });
+
+    test.each([
+        ['a literal', 'sesame'],
+        ['a literal beside a reference', 'x${DOCS_SECRET}'],
+        ['nothing', ''],
+    ])('a client secret that is %s: refused, and not shown', (_name, secret) => {
+        const refused = loginProblems('docs', '--client-id', 'abc', '--client-secret', secret);
+
+        expect(refused).toEqual([`--client-secret holds a literal secret. ${ADVICE}`]);
+    });
+
+    test('a reference that breaks the rules', () => {
+        expect(
+            loginProblems('docs', '--client-id', 'abc', '--client-secret', '${SECRET:-x}'),
+        ).toEqual([
+            "--client-secret holds a reference with a default, ${SECRET…}, and defaults aren't supported: set SECRET itself.",
+        ]);
+    });
+
+    test('two references, each a variable', () => {
+        expect(
+            loginOf('docs', '--client-id', 'abc', '--client-secret', '${A}${B}').clientSecret,
+        ).toEqual([{ variable: 'A' }, { variable: 'B' }]);
+    });
+
+    test('a client secret without a client', () => {
+        expect(loginProblems('docs', '--client-secret', '${DOCS_SECRET}')).toEqual([
+            '--client-secret needs --client-id: it is the secret of the client that --client-id names.',
+        ]);
+    });
+
+    test.each([
+        'http://localhost:8765/oauth/back',
+        'http://127.0.0.1:1/callback',
+        'http://127.0.0.1:65535/',
+    ])('a redirect URI a listener here can take: %s', (uri) => {
+        expect(loginOf('docs', '--redirect-uri', uri).redirectUri).toEqual(new URL(uri));
+    });
+
+    test.each([
+        'https://127.0.0.1:8765/callback',
+        'http://example.com:8765/callback',
+        'http://127.0.0.1/callback',
+        'http://[::1]:8765/callback',
+        'not a URL',
+    ])('a redirect URI a listener here cannot take: %s', (uri) => {
+        expect(loginProblems('docs', '--redirect-uri', uri)).toEqual([REDIRECT_URI]);
+    });
+
+    test('every problem at once', () => {
+        expect(
+            loginProblems('--client-secret', 'sesame', '--redirect-uri', 'https://x.example/'),
+        ).toEqual([
+            LOGIN_SHAPE,
+            '--client-secret needs --client-id: it is the secret of the client that --client-id names.',
+            `--client-secret holds a literal secret. ${ADVICE}`,
+            REDIRECT_URI,
         ]);
     });
 });

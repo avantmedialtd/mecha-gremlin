@@ -1,7 +1,10 @@
 // `bun run mcp`: adds, lists, shows, removes, disables and enables the MCP servers a run connects
-// to. It opens the store and nothing else: it never resolves a reference, nor contacts a server.
+// to, and logs in to them and out. Only `login` resolves references and contacts a server; every
+// other subcommand opens the store and nothing else.
 import { type Result, ok } from '@mecha-gremlin/core/result';
+import { deleteCredentials, findCredentials } from '@mecha-gremlin/store/credential';
 import {
+    type McpServer,
     addMcpServer,
     listMcpServers,
     removeMcpServer,
@@ -9,14 +12,21 @@ import {
 } from '@mecha-gremlin/store/mcp-server';
 import { type Store, closeStore, openStore } from '@mecha-gremlin/store/store';
 import { loadMcpConfig } from '../config/config.ts';
-import { type CheckedEntry, prefixOf } from '../mcp/entry.ts';
-import { type Change, type Command, readCommand } from './mcp-args.ts';
+import { type CheckedEntry, prefixOf, transportOfEntry, urlOfEntry } from '../mcp/entry.ts';
+import { logIn } from '../mcp/login.ts';
+import { resolve } from '../mcp/references.ts';
+import { resolveServer } from '../mcp/resolve.ts';
+import { type Command, type Login, readCommand } from './mcp-args.ts';
 import { HELP } from './mcp-help.ts';
 import {
+    type LoginState,
     addedLine,
+    authorizeLines,
     changedLine,
     errorLine,
     listLines,
+    loggedInLine,
+    loggedOutLine,
     serverLines,
     warningLine,
 } from './mcp-output.ts';
@@ -49,6 +59,16 @@ const fail = (problems: readonly string[]): number => {
 
 const unknown = (name: string): string => {
     return `There is no MCP server named ${name}: bun run mcp list shows them.`;
+};
+
+const local = (name: string): string => {
+    return `The MCP server ${name} is a local one, and a local server has no OAuth login: what it needs comes from its env and its arguments.`;
+};
+
+const find = async (store: Store, name: string): Promise<Result<McpServer | undefined, string>> => {
+    const listed = await listMcpServers(store);
+
+    return listed.ok ? ok(listed.value.find((candidate) => candidate.name === name)) : listed;
 };
 
 const add = async (
@@ -106,64 +126,208 @@ const list = async (store: Store): Promise<number> => {
     return 0;
 };
 
-const get = async (store: Store, name: string): Promise<number> => {
-    const listed = await listMcpServers(store);
+// The most recently saved row is the one a run uses.
+const loginState = async (
+    store: Store,
+    name: string,
+    url: string,
+): Promise<Result<LoginState, string>> => {
+    const found = await findCredentials(store, { server: name, url });
 
-    if (!listed.ok) {
-        return fail([listed.error]);
+    if (!found.ok) {
+        return found;
     }
 
-    const server = listed.value.find((candidate) => candidate.name === name);
+    const [row] = found.value;
+
+    if (row === undefined) {
+        return ok('no');
+    }
+
+    return ok(row.needsLogin ? 'needs a new login' : 'yes');
+};
+
+const get = async (store: Store, name: string): Promise<number> => {
+    const found = await find(store, name);
+
+    if (!found.ok) {
+        return fail([found.error]);
+    }
+
+    const server = found.value;
 
     if (server === undefined) {
         return fail([unknown(name)]);
     }
 
-    print(serverLines(server));
+    const url = urlOfEntry(server.entry);
+    const login = url === undefined ? ok(undefined) : await loginState(store, name, url);
+
+    if (!login.ok) {
+        return fail([login.error]);
+    }
+
+    print(serverLines(server, login.value));
 
     return 0;
 };
 
-const change = async (
-    store: Store,
-    kind: Change,
-    name: string,
-): Promise<Result<boolean, string>> => {
-    if (kind !== 'remove') {
-        return setMcpServerDisabled(store, { name, disabled: kind === 'disable' });
-    }
+// A remote server's saved logins, which outlive neither a logout nor the server.
+const forget = async (store: Store, server: McpServer): Promise<Result<number, string>> => {
+    const url = urlOfEntry(server.entry);
 
-    const removed = await removeMcpServer(store, name);
-
-    return removed.ok ? ok(removed.value > 0) : removed;
+    return url === undefined ? ok(0) : deleteCredentials(store, { server: server.name, url });
 };
 
-const perform = async (store: Store, command: Command): Promise<number> => {
-    if (command.kind === 'add') {
-        return add(store, command.name, command.checked);
+const logout = async (store: Store, name: string): Promise<number> => {
+    const found = await find(store, name);
+
+    if (!found.ok) {
+        return fail([found.error]);
     }
 
-    if (command.kind === 'list') {
-        return list(store);
+    const server = found.value;
+
+    if (server === undefined) {
+        return fail([unknown(name)]);
     }
 
-    if (command.kind === 'get') {
-        return get(store, command.name);
+    const forgotten = await forget(store, server);
+
+    if (!forgotten.ok) {
+        return fail([forgotten.error]);
     }
 
-    const changed = await change(store, command.kind, command.name);
+    console.log(loggedOutLine(name, forgotten.value));
+
+    return 0;
+};
+
+const remove = async (store: Store, name: string): Promise<number> => {
+    const found = await find(store, name);
+
+    if (!found.ok) {
+        return fail([found.error]);
+    }
+
+    const server = found.value;
+
+    if (server === undefined) {
+        return fail([unknown(name)]);
+    }
+
+    // The logins first: a server added again under its name and URL mustn't find them.
+    const forgotten = await forget(store, server);
+    const removed = forgotten.ok ? await removeMcpServer(store, name) : forgotten;
+
+    if (!removed.ok) {
+        return fail([removed.error]);
+    }
+
+    console.log(changedLine('remove', name));
+
+    return 0;
+};
+
+const login = async (store: Store, name: string, given: Login): Promise<number> => {
+    const found = await find(store, name);
+
+    if (!found.ok) {
+        return fail([found.error]);
+    }
+
+    const server = found.value;
+
+    if (server === undefined) {
+        return fail([unknown(name)]);
+    }
+
+    // A login has no run, but the server's references resolve as a run's do; a run ID of its own
+    // keeps a local server's environment as a run's would be.
+    const resolved = resolveServer(server, process.env, crypto.randomUUID());
+
+    if (!resolved.ok) {
+        return fail(transportOfEntry(server.entry) === 'stdio' ? [local(name)] : resolved.error);
+    }
+
+    const { connection } = resolved.value;
+
+    if (connection.transport === 'stdio') {
+        return fail([local(name)]);
+    }
+
+    const secret =
+        given.clientSecret === undefined ? undefined : resolve(given.clientSecret, process.env);
+    const missing = secret?.missing ?? [];
+
+    if (missing.length > 0) {
+        return fail(
+            missing.map((variable) => {
+                return `--client-secret refers to ${variable}, which is unset or blank: set it in .env.`;
+            }),
+        );
+    }
+
+    const logged = await logIn({
+        store,
+        server: resolved.value,
+        connection,
+        clientId: given.clientId,
+        clientSecret: secret?.text,
+        redirectUri: given.redirectUri,
+        scope: given.scope,
+        input: process.stdin,
+        show: (url) => {
+            print(authorizeLines(name, url));
+        },
+        warn: (text) => {
+            console.error(warningLine(text));
+        },
+    });
+
+    if (!logged.ok) {
+        return fail([logged.error]);
+    }
+
+    console.log(loggedInLine(name, logged.value));
+
+    return 0;
+};
+
+const toggle = async (store: Store, kind: 'disable' | 'enable', name: string): Promise<number> => {
+    const changed = await setMcpServerDisabled(store, { name, disabled: kind === 'disable' });
 
     if (!changed.ok) {
         return fail([changed.error]);
     }
 
     if (!changed.value) {
-        return fail([unknown(command.name)]);
+        return fail([unknown(name)]);
     }
 
-    console.log(changedLine(command.kind, command.name));
+    console.log(changedLine(kind, name));
 
     return 0;
+};
+
+const perform = (store: Store, command: Command): Promise<number> => {
+    switch (command.kind) {
+        case 'add':
+            return add(store, command.name, command.checked);
+        case 'list':
+            return list(store);
+        case 'get':
+            return get(store, command.name);
+        case 'remove':
+            return remove(store, command.name);
+        case 'login':
+            return login(store, command.name, command.login);
+        case 'logout':
+            return logout(store, command.name);
+        case 'disable':
+        case 'enable':
+            return toggle(store, command.kind, command.name);
+    }
 };
 
 const run = async (args: readonly string[]): Promise<number> => {

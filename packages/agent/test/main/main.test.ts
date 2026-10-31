@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withDataSource } from '@mecha-gremlin/store/connection';
+import { findCredentials, saveCredential } from '@mecha-gremlin/store/credential';
 import { type NewMcpServer, addMcpServer } from '@mecha-gremlin/store/mcp-server';
 import { closeStore, openStore } from '@mecha-gremlin/store/store';
 import type { ResponseOutputItem, ResponseUsage } from 'openai/resources/responses/responses';
@@ -32,6 +33,7 @@ import {
 import { listProcesses } from '../../../../test/signal-guard.ts';
 import { freshRunId, helperCommand, isGone, stopLeftovers, track } from '../exec/processes.ts';
 import { claudeReply } from '../fake-anthropic.ts';
+import { startAuthServer } from '../mcp/auth-server.ts';
 import { startHttpServer } from '../mcp/http-server.ts';
 
 // The test helper supplies a task explicitly; the application no longer supplies one.
@@ -1971,5 +1973,75 @@ describe('MCP servers in a run', { timeout: 20_000 }, () => {
         expect(others.flatMap((spy) => spy.mock.calls)).toEqual([]);
         expect(output.trim().split('\n')).toHaveLength(records.length);
         expect(find(records, 'mcp server')).toMatchObject({ name: 'quiet', tools: [] });
+    });
+
+    test('a saved login: refreshed ahead of expiry and sent, and once spent, the run fails before any request', async () => {
+        prepare();
+        const auth = await startAuthServer();
+        let url = '';
+        const server = await startHttpServer({
+            tools: [
+                { name: 'lookup', call: () => ({ content: [{ type: 'text', text: 'found' }] }) },
+            ],
+            answer: (request) => auth.guard(request, url),
+        });
+        url = server.url;
+        const origin = new URL(url).origin;
+        const routes = { mcp: { [origin]: origin }, origins: [auth.issuer] };
+        const data = await tracked(
+            dataWithServers([
+                { name: 'docs', prefix: 'docs', entry: { url, ...MCP_TIMEOUTS }, disabled: false },
+            ]),
+        );
+        auth.grant({ clientId: 'client-1', accessToken: 'at1', refreshToken: 'rt1' });
+        const opened = await openStore(data);
+
+        if (!opened.ok) {
+            throw new Error(opened.error);
+        }
+
+        await saveCredential(opened.value.store, {
+            server: 'docs',
+            url,
+            issuer: auth.issuer,
+            client: { client_id: 'client-1', issuer: auth.issuer },
+            tokens: { access_token: 'at1', token_type: 'Bearer', refresh_token: 'rt1' },
+            discovery: { authorizationServerUrl: auth.issuer },
+            expiresAt: Date.now() + 60_000,
+        });
+        await closeStore(opened.value.store);
+
+        try {
+            const used = await runAgent({ DATA_DIR: data }, routes);
+            const reopened = await openStore(data);
+            const found = reopened.ok
+                ? await findCredentials(reopened.value.store, { server: 'docs', url })
+                : reopened;
+
+            if (reopened.ok) {
+                await withDataSource(reopened.value.store, 'spend the login', (dataSource) => {
+                    return dataSource.query('UPDATE credential SET needs_login = 1');
+                });
+                await closeStore(reopened.value.store);
+            }
+
+            const sent = server.requests.length;
+            const spent = await runAgent({ DATA_DIR: data }, routes);
+            const token = found.ok ? Object(found.value[0]?.tokens).access_token : undefined;
+
+            expect(used.code).toBe(0);
+            expect(toolNames(used.modelCall)).toContain('mcp__docs__lookup');
+            expect(auth.tokenRequests).toMatchObject([{ grant_type: 'refresh_token' }]);
+            expect(server.requests.at(-1)?.headers.authorization).toBe(`Bearer ${token}`);
+            expect(spent.code).toBe(1);
+            expect(errors(spent.records)).toEqual([
+                "The MCP server docs can't start. Its login was refused when refreshed, so it needs a new login: bun run mcp login docs. To run without it: bun run mcp disable docs.",
+            ]);
+            expect(server.requests).toHaveLength(sent);
+            expect(spent.output).not.toContain(String(token));
+        } finally {
+            await server.close();
+            await auth.close();
+        }
     });
 });

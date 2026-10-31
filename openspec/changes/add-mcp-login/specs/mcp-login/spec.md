@@ -3,11 +3,16 @@
 ### Requirement: Log in to a Streamable HTTP server with OAuth
 `bun run mcp login <name>` SHALL log in to the Streamable HTTP server it names, with OAuth's authorization code flow and PKCE (S256):
 1. It SHALL check the server's entry and resolve its references as a run does (`mcp-client`), failing as a run would.
-2. It SHALL discover the server's protected-resource metadata and its authorization server's metadata. A server that offers neither SHALL be refused, with an error saying it offers no OAuth login.
+2. It SHALL first send the server, at its own URL alone, the `initialize` a run sends, with the entry's headers and no token, following no redirect.
+   - On a 401 whose `WWW-Authenticate` names `resource_metadata`, it SHALL read the server's protected-resource metadata from that URL, and ask for the challenge's `scope` unless `--scope` is given.
+   - On a 2xx, or a 401 that names no such URL, it SHALL try the well-known URLs.
+   - Any other answer SHALL fail the login before any browser step, with an error naming the server.
+
+   It SHALL then read the authorization server's metadata. A server that offers no metadata SHALL be refused, with an error saying it offers no OAuth login.
 3. It SHALL take or register a client ("Register a client for the login").
 4. It SHALL print the authorization URL to stdout, with what to do: open it in a browser and sign in, and paste the address the browser ends on if the browser can't reach this machine.
 5. It SHALL take the redirect ("Take the redirect at a loopback listener or pasted"), and exchange its code for tokens, with the code verifier and the `resource` the SDK sends.
-6. It SHALL save the login ("Save what later runs need"). It SHALL then connect to the server with the new token, list its tools, and print `Logged in to <name>: <n> tools.`
+6. It SHALL save the login ("Save what later runs need"). It SHALL then connect to the server with the new token, list the tools a run would offer, after the entry's filters, and print `Logged in to <name>: <n> tools.`, or `1 tool.` for one. When that connection fails, the login SHALL stay saved, and the error SHALL say so.
 
 - **Options:** `--client-id <id>`, `--client-secret <reference>`, `--redirect-uri <uri>` and `--scope <scopes>`, each as `--option value` or `--option=value`. `--scope` replaces the scope the SDK would ask for.
 - **Refused:** a stdio server, with an error saying that a local server has no OAuth login; and an unknown name, as the other subcommands refuse one.
@@ -27,6 +32,26 @@
 - **WHEN** `login playwright` runs, and `playwright` is a stdio server
 - **THEN** it's refused, with an error saying a local server has no OAuth login
 
+#### Scenario: Metadata named by the challenge
+- **WHEN** the server answers the token-less `initialize` with a 401 whose `resource_metadata` names a URL, and both well-known URLs answer 404
+- **THEN** the login reads the metadata from the named URL, and succeeds
+
+#### Scenario: A server that answers without a token
+- **WHEN** the server answers the token-less `initialize` with 200, and publishes its metadata at the well-known URL
+- **THEN** the login reads it from there, and succeeds
+
+#### Scenario: The challenge's scope
+- **WHEN** the 401 names the scope `mcp:read`, and no `--scope` is given
+- **THEN** the authorization URL asks for `mcp:read`
+
+#### Scenario: A failed probe
+- **WHEN** the server answers the token-less `initialize` with 500
+- **THEN** the login fails with an error naming the server, before printing any URL
+
+#### Scenario: The entry's headers stay with the server
+- **WHEN** the entry has a header holding a reference, and the login reads metadata from the server and from its authorization server
+- **THEN** the header reaches the `initialize` sent to the server's URL, and none of the metadata, registration or token requests
+
 #### Scenario: Nothing secret printed
 - **WHEN** a login with a configured client secret succeeds
 - **THEN** neither the code, the tokens, the code verifier nor the secret appears in stdout or stderr
@@ -37,7 +62,7 @@
 
 ### Requirement: Register a client for the login
 The login's client SHALL be the first of these that applies:
-1. the client `--client-id` names, with the secret that `--client-secret`'s reference resolves to, when one is given. `--client-secret` SHALL hold a reference, as every secret on the command line does (`mcp-servers`);
+1. the client `--client-id` names, with the secret that `--client-secret`'s reference resolves to, when one is given. `--client-secret` SHALL hold references only, as every secret on the command line does (`mcp-servers`), and SHALL need `--client-id`;
 2. the client that an earlier login saved for the same server, URL and issuer;
 3. a client registered through dynamic client registration. It is named `mecha-gremlin`, with `application_type` `native`, `token_endpoint_auth_method` `none`, `grant_types` `authorization_code` and `refresh_token`, and the login's one redirect URI. A secret the server returns SHALL be kept.
 
@@ -59,18 +84,22 @@ An authorization server that offers no dynamic registration, when no client is g
 - **WHEN** `--client-secret` is given a value that isn't a reference
 - **THEN** it's refused, with an error saying to give it as a reference, in single quotes, and the value appears in no output
 
+#### Scenario: A secret without a client
+- **WHEN** `login docs --client-secret '${DOCS_SECRET}'` runs with no `--client-id`
+- **THEN** it's refused, with an error naming `--client-id`
+
 #### Scenario: No dynamic registration
 - **WHEN** the authorization server offers no registration endpoint, and no client is given or saved
 - **THEN** it's refused, with an error naming `--client-id`
 
 ### Requirement: Take the redirect at a loopback listener or pasted
-- **The listener** SHALL be bound to 127.0.0.1 alone, and SHALL serve one path, `/callback`. The redirect URI SHALL be `http://127.0.0.1:<port>/callback`, unless `--redirect-uri` gives another, whose scheme SHALL be `http` and whose host SHALL be `127.0.0.1` or `localhost`.
+- **The listener** SHALL be bound to 127.0.0.1 alone, and SHALL serve one path, the redirect URI's. The redirect URI SHALL be `http://127.0.0.1:<port>/callback`, unless `--redirect-uri` gives another, whose scheme SHALL be `http`, whose host SHALL be `127.0.0.1` or `localhost`, and which SHALL name a port. A redirect URI that a saved client registered SHALL be sent exactly as registered.
 - **The port** SHALL be:
   1. `--redirect-uri`'s;
-  2. else the port of the redirect URI the saved client registered, when it's free;
+  2. else the port of the redirect URI that the saved client registered, when it's free;
   3. else a port the system picks.
 
-  A client registered through dynamic registration whose port is taken SHALL be registered again with the new one.
+  A client registered through dynamic registration SHALL be registered again when its registered redirect URIs don't include the one in use, as when its port is taken.
 - **The paste.** While it listens, the login SHALL read stdin. A line holding a URL with the redirect's parameters SHALL be taken as the redirect, as if the browser had reached the listener.
 - **Checks:**
   - a redirect whose `state` doesn't match SHALL fail the login, with no code exchanged;

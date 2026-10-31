@@ -49,7 +49,12 @@
                     {
                         "from": "package",
                         "package": "@modelcontextprotocol/client",
-                        "name": ["AjvJsonSchemaValidator", "Client"]
+                        "name": [
+                            "AjvJsonSchemaValidator",
+                            "Client",
+                            "OAuthDiscoveryState",
+                            "OAuthServerInfo"
+                        ]
                     }
                 ]
             }

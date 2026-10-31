@@ -55,6 +55,13 @@ bun run mcp logout <name>
 - `logout` deletes the server's saved logins, and so does `remove`. Before, the add-mcp-servers design left that to this change.
 - `get` shows a remote server's login: `yes`, `no`, or `needs a new login`.
 
+- **Discovery starts with a probe.** The login sends the server the token-less `initialize` a run sends, to its own URL alone, following no redirect, so the entry's headers can't reach another site.
+  - A 401 that names `resource_metadata` gives the metadata's URL, and its `scope`, unless `--scope` replaces it.
+  - A 2xx, or a 401 naming no URL, falls back to the well-known URLs.
+
+  The MCP specification says a client MUST use the named URL. In R17.4 every one of the 25 servers that answered 401 named one, and the root well-known URL answered 404 on six of them and the path-inserted one on Slack's. Hugging Face and Context7 answer a token-less `initialize` with 200, so the fallback stays.
+- **The code exchange** goes through the SDK's `fetchToken()`, which still checks `iss`, rather than a second `auth()`. `auth()` retries a refused code, with a console warning.
+
 ### 3. Registration (D31)
 
 The client comes from the first of these that applies:

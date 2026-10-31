@@ -2,12 +2,17 @@ import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { withDataSource } from '@mecha-gremlin/store/connection';
+import { type Credential, findCredentials } from '@mecha-gremlin/store/credential';
 import { type NewMcpServer, addMcpServer, listMcpServers } from '@mecha-gremlin/store/mcp-server';
 import { type Store, closeStore, openStore } from '@mecha-gremlin/store/store';
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from 'vitest';
 import { HELP } from '../../src/main/mcp-help.ts';
+import { createMcpServers } from '../../src/mcp/servers.ts';
+import { type AuthOptions, type FakeAuth, startAuthServer } from '../mcp/auth-server.ts';
+import { type FakeHttp, startHttpServer } from '../mcp/http-server.ts';
 
 const COMMAND = fileURLToPath(new URL('../../src/main/mcp.ts', import.meta.url));
 
@@ -216,6 +221,7 @@ describe('Manage MCP servers from the command line', () => {
                 '  Header           Authorization: Bearer ${DOCS_TOKEN}',
                 '  Startup timeout  30s',
                 '  Tool timeout     5m',
+                '  Login            no',
                 '  Enabled          yes',
                 'To change it, remove it with bun run mcp remove docs, then add it again.',
                 '',
@@ -272,19 +278,22 @@ describe('Manage MCP servers from the command line', () => {
         expect(afterwards.stdout.split('\n')[1]).toMatch(/^docs .* yes$/);
     });
 
-    test.each(['get', 'remove', 'disable', 'enable'])('%s an unknown name', async (subcommand) => {
-        await freshFolder();
-        await mcp(['add', 'docs', DOCS]);
+    test.each(['get', 'remove', 'disable', 'enable', 'login', 'logout'])(
+        '%s an unknown name',
+        async (subcommand) => {
+            await freshFolder();
+            await mcp(['add', 'docs', DOCS]);
 
-        const result = await mcp([subcommand, 'nope']);
+            const result = await mcp([subcommand, 'nope']);
 
-        expect(result).toMatchObject({
-            code: 1,
-            stdout: '',
-            stderr: 'error: There is no MCP server named nope: bun run mcp list shows them.\n',
-        });
-        expect(await stored()).toMatchObject([{ name: 'docs', disabled: false }]);
-    });
+            expect(result).toMatchObject({
+                code: 1,
+                stdout: '',
+                stderr: 'error: There is no MCP server named nope: bun run mcp list shows them.\n',
+            });
+            expect(await stored()).toMatchObject([{ name: 'docs', disabled: false }]);
+        },
+    );
 
     test('a name in use', async () => {
         await freshFolder();
@@ -322,7 +331,7 @@ describe('Manage MCP servers from the command line', () => {
     test.each([
         [
             ['start'],
-            `Give one of the subcommands: add <name> <url>, add <name> -- <command>, list, get <name>, remove <name>, disable <name> or enable <name>. ${SEE_HELP}`,
+            `Give one of the subcommands: add <name> <url>, add <name> -- <command>, list, get <name>, remove <name>, disable <name>, enable <name>, login <name> or logout <name>. ${SEE_HELP}`,
         ],
         [['list', 'extra'], `list takes no arguments. ${SEE_HELP}`],
         [['get'], `get takes a server's name: bun run mcp get <name>. ${SEE_HELP}`],
@@ -577,18 +586,22 @@ describe("Report the store's failures", () => {
             await mcp(['add', 'docs', DOCS]),
             await mcp(['remove', 'docs']),
             await mcp(['disable', 'docs']),
+            await mcp(['login', 'docs']),
+            await mcp(['logout', 'docs']),
         ];
 
-        expect(results.map((result) => result.code)).toEqual([1, 1, 1, 1, 1]);
-        expect(results.map((result) => result.stdout)).toEqual(['', '', '', '', '']);
+        expect(results.map((result) => result.code)).toEqual([1, 1, 1, 1, 1, 1, 1]);
+        expect(results.map((result) => result.stdout)).toEqual(['', '', '', '', '', '', '']);
         expect(results.map((result) => result.stderr)).toEqual([
             expect.stringMatching(
                 /^error: Can't list the MCP servers in the database at .*: SqliteError: no such table: mcp_server\n$/,
             ),
             expect.stringMatching(/^error: Can't list the MCP servers in the database at /),
             expect.stringMatching(/^error: Can't list the MCP servers in the database at /),
-            expect.stringMatching(/^error: Can't remove the MCP server in the database at /),
+            expect.stringMatching(/^error: Can't list the MCP servers in the database at /),
             expect.stringMatching(/^error: Can't set the MCP server flag in the database at /),
+            expect.stringMatching(/^error: Can't list the MCP servers in the database at /),
+            expect.stringMatching(/^error: Can't list the MCP servers in the database at /),
         ]);
     });
 
@@ -635,6 +648,12 @@ describe('Help', () => {
             '--startup-timeout',
             '--tool-timeout',
             '--disabled',
+            'bun run mcp login <name>',
+            'bun run mcp logout <name>',
+            '--client-id',
+            '--client-secret',
+            '--redirect-uri',
+            '--scope',
             '30s',
             '2m',
             "'Authorization: Bearer ${GITHUB_PAT}'",
@@ -729,4 +748,544 @@ describe('On Bun and on Node', { timeout: 15_000 }, () => {
             stderr: 'error: There is no MCP server named nope: bun run mcp list shows them.\n',
         });
     });
+});
+
+// Captured before any test stubs it.
+const realFetch = globalThis.fetch;
+
+const PROXIES = [
+    'HTTP_PROXY',
+    'http_proxy',
+    'HTTPS_PROXY',
+    'https_proxy',
+    'ALL_PROXY',
+    'all_proxy',
+];
+
+type Started = {
+    readonly done: Promise<{ code: unknown; stdout: string; stderr: string }>;
+    readonly stdout: () => string;
+    readonly stdin: PassThrough;
+    /** The authorization URL, once the command has printed it. */
+    readonly url: () => Promise<string>;
+};
+
+/**
+ * Runs the command in this process, as mcp() does, without waiting for it: a login waits for its
+ * redirect. Requests reach the network, which is 127.0.0.1 here, and stdin is the test's.
+ */
+const startMcp = (
+    args: readonly string[],
+    env: Settings & Readonly<Record<string, string>> = {},
+) => {
+    const settings: Readonly<Record<string, string | undefined>> = { DATA_DIR: folder, ...env };
+
+    for (const name of [...SETTINGS, ...Object.keys(env)]) {
+        vi.stubEnv(name, settings[name]);
+    }
+
+    // A request to 127.0.0.1 mustn't go through the developer's proxy (Brief R18.1).
+    for (const name of PROXIES) {
+        vi.stubEnv(name, undefined);
+    }
+
+    vi.stubEnv('NO_PROXY', '127.0.0.1,localhost');
+    // mcp() leaves its fake in place until the test ends.
+    vi.stubGlobal('fetch', realFetch);
+    const stdin = new PassThrough();
+    const original = Object.getOwnPropertyDescriptor(process, 'stdin');
+    Object.defineProperty(process, 'stdin', { value: stdin, configurable: true });
+    const argv = process.argv;
+    process.argv = [...argv.slice(0, 1), 'mcp.ts', ...args];
+    let stdout = '';
+    let stderr = '';
+    const out = vi.spyOn(console, 'log').mockImplementation((text: unknown) => {
+        stdout += `${String(text)}\n`;
+    });
+    const error = vi.spyOn(console, 'error').mockImplementation((text: unknown) => {
+        stderr += `${String(text)}\n`;
+    });
+
+    vi.resetModules();
+    const done = import('../../src/main/mcp.ts').then(() => {
+        const code = process.exitCode;
+        process.exitCode = undefined;
+
+        return { code, stdout, stderr };
+    });
+    const restored = done.finally(() => {
+        process.argv = argv;
+        out.mockRestore();
+        error.mockRestore();
+
+        if (original !== undefined) {
+            Object.defineProperty(process, 'stdin', original);
+        }
+    });
+
+    return {
+        done: restored,
+        stdout: () => stdout,
+        stdin,
+        url: async () => {
+            await vi.waitFor(
+                () => {
+                    expect(stdout).toMatch(/^http:\/\/\S+$/m);
+                },
+                { timeout: 10_000, interval: 10 },
+            );
+
+            return String(/^http:\/\/\S+$/m.exec(stdout)?.[0]);
+        },
+    } satisfies Started;
+};
+
+const loginCleanups: (() => Promise<void>)[] = [];
+
+afterEach(async () => {
+    await Promise.all(loginCleanups.splice(0).map((cleanup) => cleanup()));
+});
+
+type Guarded = {
+    readonly auth: FakeAuth;
+    readonly server: FakeHttp;
+};
+
+/** A Streamable HTTP server with two tools, which the fake authorization server guards. */
+const guarded = async (options: AuthOptions = {}): Promise<Guarded> => {
+    const auth = await startAuthServer(options);
+    let url = '';
+    const server = await startHttpServer({
+        tools: ['search', 'fetch'].map((name) => ({
+            name,
+            call: () => ({ content: [{ type: 'text', text: name }] }),
+        })),
+        answer: (request) => auth.guard(request, url),
+    });
+    url = server.url;
+    loginCleanups.push(server.close, auth.close);
+
+    return { auth, server };
+};
+
+const credentials = (url: string): Promise<Credential[]> => {
+    return withStore(async (store) => {
+        const found = await findCredentials(store, { server: 'docs', url });
+
+        if (!found.ok) {
+            throw new Error(found.error);
+        }
+
+        return found.value;
+    });
+};
+
+/** `login docs`, the browser following the URL it prints and coming back. */
+const loginThroughBrowser = async (
+    { auth }: Guarded,
+    args: readonly string[] = [],
+    env: Readonly<Record<string, string>> = {},
+) => {
+    const started = startMcp(['login', 'docs', ...args], env);
+    const url = await started.url();
+    const redirect = await auth.authorize(url);
+    await realFetch(redirect);
+    const result = await started.done;
+
+    return { ...result, url, redirect };
+};
+
+// A run, as a later one would reach the server: its own store on the data folder.
+const laterRun = async (url: string) => {
+    vi.stubGlobal('fetch', realFetch);
+
+    return withStore(async (store) => {
+        const run = createMcpServers({
+            parentEnv: {},
+            runId: 'later00',
+            workDir: folder,
+            dataDir: folder,
+            store,
+            log: { info: () => undefined, warn: () => undefined, error: () => undefined },
+        });
+
+        try {
+            return await run.connect([
+                {
+                    name: 'docs',
+                    prefix: 'docs',
+                    entry: { url, startupTimeoutMs: 10_000, toolTimeoutMs: 10_000 },
+                },
+            ]);
+        } finally {
+            await run.close();
+        }
+    });
+};
+
+describe('Log in to a Streamable HTTP server with OAuth', { timeout: 20_000 }, () => {
+    test('a login through the browser, and a later run with the saved token', async () => {
+        await freshFolder();
+        const guard = await guarded();
+        await mcp(['add', 'docs', guard.server.url]);
+
+        const { code, stdout, stderr, url } = await loginThroughBrowser(guard);
+        const [row] = await credentials(guard.server.url);
+        const later = await laterRun(guard.server.url);
+
+        expect({ code, stderr }).toEqual({ code: 0, stderr: '' });
+        expect(stdout).toBe(
+            [
+                'Open this address in a browser, and sign in to docs:',
+                '',
+                url,
+                '',
+                "If the browser can't reach this machine, as over SSH, paste here the address it ends on, and press Enter. The login waits 5 minutes.",
+                'Logged in to docs: 2 tools.',
+                '',
+            ].join('\n'),
+        );
+        expect(later.ok).toBe(true);
+        expect(guard.server.requests.at(-1)?.headers.authorization).toBe(
+            `Bearer ${String(Object(row?.tokens).access_token)}`,
+        );
+    });
+
+    test('a pasted redirect', async () => {
+        await freshFolder();
+        const guard = await guarded();
+        await mcp(['add', 'docs', guard.server.url]);
+        const started = startMcp(['login', 'docs']);
+        const redirect = await guard.auth.authorize(await started.url());
+
+        started.stdin.write(`${redirect}\n`);
+        const { code, stdout } = await started.done;
+
+        expect(code).toBe(0);
+        expect(stdout).toMatch(/\nLogged in to docs: 2 tools\.\n$/);
+    });
+
+    test('a warning about a pasted line, before the result', async () => {
+        await freshFolder();
+        const guard = await guarded();
+        await mcp(['add', 'docs', guard.server.url]);
+        const started = startMcp(['login', 'docs']);
+        const url = await started.url();
+
+        started.stdin.write('the wrong thing\n');
+        await realFetch(await guard.auth.authorize(url));
+        const { code, stderr } = await started.done;
+
+        expect(code).toBe(0);
+        expect(stderr).toBe(
+            "warning: That line isn't the address the browser ended on: paste all of it, which holds code= or error=.\n",
+        );
+    });
+
+    test('a server that offers no OAuth', async () => {
+        await freshFolder();
+        const server = await startHttpServer();
+        loginCleanups.push(server.close);
+        await mcp(['add', 'docs', server.url]);
+
+        const result = await startMcp(['login', 'docs']).done;
+
+        expect(result).toEqual({
+            code: 1,
+            stdout: '',
+            stderr: 'error: The MCP server docs offers no OAuth login: it publishes no OAuth metadata.\n',
+        });
+    });
+
+    test('a local server', async () => {
+        await freshFolder();
+        await mcp(['add', 'playwright', '--', 'npx', '-y', '@playwright/mcp@0.0.83']);
+        await mcp(['add', 'unresolved', '--env', 'TOKEN=${UNSET_TOKEN}', '--', 'server']);
+
+        const results = [
+            await startMcp(['login', 'playwright']).done,
+            await startMcp(['login', 'unresolved']).done,
+        ];
+
+        expect(results).toEqual([
+            {
+                code: 1,
+                stdout: '',
+                stderr: 'error: The MCP server playwright is a local one, and a local server has no OAuth login: what it needs comes from its env and its arguments.\n',
+            },
+            {
+                code: 1,
+                stdout: '',
+                stderr: 'error: The MCP server unresolved is a local one, and a local server has no OAuth login: what it needs comes from its env and its arguments.\n',
+            },
+        ]);
+    });
+
+    test("a remote server whose references don't resolve fails as a run would", async () => {
+        await freshFolder();
+        await mcp(['add', 'docs', 'https://docs.example.test/mcp?key=${DOCS_KEY_UNSET}']);
+
+        const result = await startMcp(['login', 'docs']).done;
+
+        expect(result).toEqual({
+            code: 1,
+            stdout: '',
+            stderr: "error: The MCP server docs can't start. It refers to DOCS_KEY_UNSET, which is unset or blank: set it in .env. To run without it: bun run mcp disable docs.\n",
+        });
+    });
+
+    test('nothing secret printed: the code, the tokens, the verifier and the client secret', async () => {
+        await freshFolder();
+        const guard = await guarded({ clients: { abc: 'open-sesame' } });
+        await mcp(['add', 'docs', guard.server.url]);
+
+        const { code, stdout, stderr, redirect } = await loginThroughBrowser(
+            guard,
+            ['--client-id', 'abc', '--client-secret', '${DOCS_SECRET}'],
+            { DOCS_SECRET: 'open-sesame' },
+        );
+        const [row] = await credentials(guard.server.url);
+        const tokens = Object(row?.tokens);
+        const [exchange] = guard.auth.tokenRequests;
+        const output = `${stdout}${stderr}`;
+
+        expect(code).toBe(0);
+        expect(exchange?.authorization).toBe(
+            `Basic ${Buffer.from('abc:open-sesame').toString('base64')}`,
+        );
+
+        for (const secret of [
+            String(new URL(redirect).searchParams.get('code')),
+            String(tokens.access_token),
+            String(tokens.refresh_token),
+            String(exchange?.code_verifier),
+            'open-sesame',
+        ]) {
+            expect(output).not.toContain(secret);
+        }
+    });
+
+    test("a client secret whose variable isn't set", async () => {
+        await freshFolder();
+        await mcp(['add', 'docs', 'https://docs.example.test/mcp']);
+
+        const result = await startMcp([
+            'login',
+            'docs',
+            '--client-id',
+            'abc',
+            '--client-secret',
+            '${DOCS_SECRET_UNSET}',
+        ]).done;
+
+        expect(result).toEqual({
+            code: 1,
+            stdout: '',
+            stderr: 'error: --client-secret refers to DOCS_SECRET_UNSET, which is unset or blank: set it in .env.\n',
+        });
+    });
+
+    test('a literal client secret: refused, and shown nowhere', async () => {
+        await freshFolder();
+        await mcp(['add', 'docs', 'https://docs.example.test/mcp']);
+
+        const { code, stdout, stderr } = await startMcp([
+            'login',
+            'docs',
+            '--client-id',
+            'abc',
+            '--client-secret',
+            'hunter2-literal',
+        ]).done;
+
+        expect(code).toBe(1);
+        expect(stderr).toContain('error: --client-secret holds a literal secret.');
+        expect(stderr).toContain('in single quotes, so that your shell leaves it alone.');
+        expect(`${stdout}${stderr}`).not.toContain('hunter2-literal');
+    });
+
+    test('the scope given', async () => {
+        await freshFolder();
+        const guard = await guarded();
+        await mcp(['add', 'docs', guard.server.url]);
+
+        const { code, url } = await loginThroughBrowser(guard, ['--scope', 'read write']);
+
+        expect(code).toBe(0);
+        expect(new URL(url).searchParams.get('scope')).toBe('read write');
+    });
+
+    test('a refusal', async () => {
+        await freshFolder();
+        const guard = await guarded();
+        await mcp(['add', 'docs', guard.server.url]);
+        const started = startMcp(['login', 'docs']);
+        const redirect = await guard.auth.authorize(await started.url(), { deny: true });
+
+        await realFetch(redirect);
+        const { code, stderr } = await started.done;
+
+        expect(code).toBe(1);
+        expect(stderr).toBe(
+            'error: The authorization server refused the login to docs: access_denied.\n',
+        );
+    });
+});
+
+const loginLine = (stdout: string): string | undefined => {
+    return stdout.split('\n').find((line) => line.startsWith('  Login'));
+};
+
+describe('Log out, and show a login', { timeout: 20_000 }, () => {
+    test('logging out: the rows gone, and a later run needs a login', async () => {
+        await freshFolder();
+        const guard = await guarded();
+        await mcp(['add', 'docs', guard.server.url]);
+        await loginThroughBrowser(guard);
+
+        const out = await mcp(['logout', 'docs']);
+        const again = await mcp(['logout', 'docs']);
+        const later = await laterRun(guard.server.url);
+
+        expect(out).toMatchObject({ code: 0, stdout: 'Logged out of docs.\n', stderr: '' });
+        expect(again).toMatchObject({ code: 0, stdout: 'docs has no login.\n', stderr: '' });
+        expect(await credentials(guard.server.url)).toEqual([]);
+        expect(later).toEqual({
+            ok: false,
+            error: [
+                "The MCP server docs couldn't start: it needs a login: bun run mcp login docs.\nTo run without it: bun run mcp disable docs.",
+            ],
+        });
+    });
+
+    test('a local server has no login to log out of, and needs no table of them', async () => {
+        await freshFolder();
+        await mcp(['add', 'files', '--', 'server']);
+        await outside('DROP TABLE credential');
+
+        const out = await mcp(['logout', 'files']);
+        const removed = await mcp(['remove', 'files']);
+
+        expect(out).toMatchObject({ code: 0, stdout: 'files has no login.\n', stderr: '' });
+        expect(removed).toMatchObject({ code: 0, stdout: 'Removed files.\n', stderr: '' });
+    });
+
+    test('removing a server that is logged in: its rows gone', async () => {
+        await freshFolder();
+        const guard = await guarded();
+        await mcp(['add', 'docs', guard.server.url]);
+        await loginThroughBrowser(guard);
+
+        const removed = await mcp(['remove', 'docs']);
+
+        expect(removed).toMatchObject({ code: 0, stdout: 'Removed docs.\n', stderr: '' });
+        expect(await credentials(guard.server.url)).toEqual([]);
+        expect(await stored()).toEqual([]);
+    });
+
+    test('showing a login: no, yes, and needs a new login', async () => {
+        await freshFolder();
+        const guard = await guarded();
+        await mcp(['add', 'docs', guard.server.url]);
+        const before = loginLine((await mcp(['get', 'docs'])).stdout);
+        await loginThroughBrowser(guard);
+        const after = loginLine((await mcp(['get', 'docs'])).stdout);
+        await outside('UPDATE credential SET needs_login = 1');
+        const refused = loginLine((await mcp(['get', 'docs'])).stdout);
+
+        expect([before, after, refused]).toEqual([
+            '  Login            no',
+            '  Login            yes',
+            '  Login            needs a new login',
+        ]);
+    });
+
+    test("logins that can't be read", async () => {
+        await freshFolder();
+        await mcp(['add', 'docs', DOCS]);
+        await outside('DROP TABLE credential');
+
+        const results = [
+            await mcp(['get', 'docs']),
+            await mcp(['logout', 'docs']),
+            await mcp(['remove', 'docs']),
+        ];
+
+        expect(results.map((result) => result.code)).toEqual([1, 1, 1]);
+        expect(results.map((result) => result.stderr)).toEqual([
+            expect.stringMatching(/^error: Can't find the credentials in the database at /),
+            expect.stringMatching(/^error: Can't delete the credentials in the database at /),
+            expect.stringMatching(/^error: Can't delete the credentials in the database at /),
+        ]);
+        expect(await stored()).toMatchObject([{ name: 'docs' }]);
+    });
+
+    test("a server that can't be removed after its logins are", async () => {
+        await freshFolder();
+        await mcp(['add', 'docs', DOCS]);
+        await outside(
+            "CREATE TRIGGER refuse BEFORE DELETE ON mcp_server BEGIN SELECT RAISE(ABORT, 'refused'); END",
+        );
+
+        const { code, stderr } = await mcp(['remove', 'docs']);
+
+        expect(code).toBe(1);
+        expect(stderr).toMatch(
+            /^error: Can't remove the MCP server in the database at .*: SqliteError: refused\n$/,
+        );
+    });
+});
+
+// The command as `bun run mcp login` runs it: a process of its own, whose stdin stays open.
+const loginAs = (program: string, guard: Guarded) => {
+    const child = spawn(program, [COMMAND, 'login', 'docs'], {
+        cwd: folder,
+        env: { PATH: process.env.PATH ?? '/usr/bin:/bin', DATA_DIR: folder, NO_PROXY: '127.0.0.1' },
+        stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk: string) => {
+        stderr += chunk;
+    });
+    const authorized = new Promise<void>((resolve, reject) => {
+        child.stdout.on('data', (chunk: string) => {
+            stdout += chunk;
+            const url = /^http:\/\/\S+$/m.exec(stdout)?.[0];
+
+            if (url !== undefined && !stdout.includes('Logged in')) {
+                guard.auth
+                    .authorize(url)
+                    .then(realFetch)
+                    .then(() => resolve(), reject);
+            }
+        });
+    });
+
+    return new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
+        child.once('close', (code) => {
+            child.stdin.destroy();
+            resolve({ code, stdout, stderr });
+        });
+        void authorized.catch(() => child.kill());
+    });
+};
+
+describe('Log in on Bun and on Node', { timeout: 30_000 }, () => {
+    test.each(['bun', 'node'])(
+        'on %s, the process ends though stdin stays open',
+        async (program) => {
+            await freshFolder();
+            const guard = await guarded();
+            await mcp(['add', 'docs', guard.server.url]);
+
+            const result = await loginAs(program, guard);
+
+            expect(result.code).toBe(0);
+            expect(result.stderr).toBe('');
+            expect(result.stdout).toMatch(/\nLogged in to docs: 2 tools\.\n$/);
+        },
+    );
 });

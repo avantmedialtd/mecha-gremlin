@@ -103,13 +103,14 @@ export const startHttpServer = async ({
         void (async () => {
             const recorded = await recordOf(incoming);
             requests.push(recorded);
-            const transport = await session(recorded.headers['mcp-session-id']);
             // No stream of the server's own messages: the client takes 405 for that.
             const response =
                 (await answer?.(recorded)) ??
                 (recorded.method === 'GET'
                     ? new Response(null, { status: 405 })
-                    : await transport.handleRequest(
+                    : await (
+                          await session(recorded.headers['mcp-session-id'])
+                      ).handleRequest(
                           new Request(`http://127.0.0.1${recorded.url}`, {
                               method: recorded.method,
                               headers: recorded.headers,

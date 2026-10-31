@@ -10,6 +10,8 @@ Usage:
   bun run mcp remove <name>                             remove a server
   bun run mcp disable <name>                            stop starting it
   bun run mcp enable <name>                             start it again
+  bun run mcp login <name> [options]                    log in to a remote one
+  bun run mcp logout <name>                             forget its login
   bun run mcp help                                      show this text
 On Node, bun run mcp:node takes the same subcommands.
 
@@ -25,15 +27,25 @@ Options for add:
   --disabled                add it, but don't start it yet
 A <time> is a whole number and a unit, ms, s, m or h, as in 90s.
 
+Options for login:
+  --client-id <id>          a client registered with the authorization
+                            server, for one that can't register clients
+  --client-secret '\${NAME}' that client's secret, as a reference
+  --redirect-uri <uri>      the redirect URI that client registered, such
+                            as http://127.0.0.1:8765/callback
+  --scope <scopes>          the scopes to ask for, separated by spaces
+login prints an address to open in a browser. Over SSH, paste back the
+address the browser ends on.
+
 A <name> is 1 to 24 letters and digits, in words joined by single - or _
 characters. The model sees the server's tools as mcp__<name>__<tool>.
 
-Secrets are never stored. Give a reference to a variable set in .env, in
-single quotes, so that your shell leaves it alone:
+A server's entry holds no secret. Give a reference to a variable set in .env,
+in single quotes, so that your shell leaves it alone:
   bun run mcp add github https://api.githubcopilot.com/mcp/ \\
     --header 'Authorization: Bearer \${GITHUB_PAT}'
   bun run mcp add playwright -- npx -y @playwright/mcp@0.0.83
 
 The command needs DATA_DIR, the folder that holds the agent's database, from
-the environment or .env. It never contacts a server. The README's "MCP
+the environment or .env. Only login contacts a server. The README's "MCP
 servers" section has the full rules.`;

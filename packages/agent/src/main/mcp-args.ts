@@ -1,17 +1,31 @@
-// The `mcp` command's arguments: a subcommand and its operands, and for `add`, a server described
-// with flags, as `claude mcp add` takes them. `add` turns the flags into the `mcpServers` entry
-// that it stored before there were flags, and checks that entry as before.
-import { parseArgs } from 'node:util';
+// The `mcp` command's arguments: a subcommand and its operands, for `add` a server described with
+// flags, as `claude mcp add` takes them, and for `login` the client to log in with. `add` turns
+// the flags into the `mcpServers` entry that it stored before there were flags, and checks that
+// entry as before.
+import { type ParseArgsOptionsConfig, parseArgs } from 'node:util';
 import { type Result, err, ok } from '@mecha-gremlin/core/result';
 import { type CheckedEntry, checkEntry, checkName } from '../mcp/entry.ts';
+import { loopbackUri } from '../mcp/redirect.ts';
+import { type Template, hasReference, parseTemplate } from '../mcp/references.ts';
+import { ADVICE } from '../mcp/secrets.ts';
 import { readTime } from './mcp-time.ts';
 
 export type Change = 'remove' | 'disable' | 'enable';
 
+/** The client `login` is given, if any, and the scope it asks for. */
+export type Login = {
+    readonly clientId: string | undefined;
+    /** `--client-secret`'s reference, which the login resolves. */
+    readonly clientSecret: Template | undefined;
+    readonly redirectUri: URL | undefined;
+    readonly scope: string | undefined;
+};
+
 export type Command =
     | { readonly kind: 'add'; readonly name: string; readonly checked: CheckedEntry }
     | { readonly kind: 'list' }
-    | { readonly kind: 'get' | Change; readonly name: string };
+    | { readonly kind: 'get' | 'logout' | Change; readonly name: string }
+    | { readonly kind: 'login'; readonly name: string; readonly login: Login };
 
 type Read<T> = {
     readonly value: T;
@@ -51,7 +65,7 @@ type OptionToken = {
 const SEE_HELP = 'bun run mcp help explains the command.';
 
 const SUBCOMMANDS =
-    'add <name> <url>, add <name> -- <command>, list, get <name>, remove <name>, disable <name> or enable <name>';
+    'add <name> <url>, add <name> -- <command>, list, get <name>, remove <name>, disable <name>, enable <name>, login <name> or logout <name>';
 
 const FORMS =
     'bun run mcp add <name> <url> [options], or bun run mcp add <name> [options] -- <command> [args…]';
@@ -64,7 +78,9 @@ const FOR_LOCAL = 'is for a local server only, whose command comes after --.';
 
 const FOR_REMOTE = 'is for a remote server only, whose URL follows its name.';
 
-const OPTIONS = {
+const UNKNOWN_IN_ADD = `A local server's command, with its own options, comes after --: bun run mcp add <name> [options] -- <command> [args…]. ${SEE_HELP}`;
+
+const ADD_OPTIONS = {
     header: { type: 'string', multiple: true },
     env: { type: 'string', multiple: true },
     cwd: { type: 'string' },
@@ -75,27 +91,37 @@ const OPTIONS = {
     disabled: { type: 'boolean' },
 } as const;
 
+const LOGIN_OPTIONS = {
+    'client-id': { type: 'string' },
+    'client-secret': { type: 'string' },
+    'redirect-uri': { type: 'string' },
+    scope: { type: 'string' },
+} as const;
+
+const LOGIN_SHAPE = `login takes a server's name, and its options: bun run mcp login <name> [options]. ${SEE_HELP}`;
+
+const REDIRECT_URI =
+    '--redirect-uri must be an http address on 127.0.0.1 or localhost, with its port, as in http://127.0.0.1:8765/callback.';
+
 const STARTUP_TIMEOUT_MS = 30_000;
 
 const TOOL_TIMEOUT_MS = 120_000;
 
 const URL_START = /^https?:\/\//;
 
-const isOption = (name: string): name is keyof typeof OPTIONS => {
-    return Object.hasOwn(OPTIONS, name);
-};
-
-// What strict parsing refuses in an option: a name it doesn't know; a value for --disabled; and
-// no value, or one taken from the next argument that starts with -, which is most often the next
-// option.
-const refusalsOf = ({ name, rawName, value, inlineValue }: OptionToken): string[] => {
-    if (!isOption(name)) {
-        return [
-            `The option ${rawName} isn't known. A local server's command, with its own options, comes after --: bun run mcp add <name> [options] -- <command> [args…]. ${SEE_HELP}`,
-        ];
+// What strict parsing refuses in an option, given its type: a name it doesn't know; a value for a
+// boolean one; and no value, or one taken from the next argument that starts with -, which is most
+// often the next option.
+const refusalsOf = (
+    type: 'string' | 'boolean' | undefined,
+    unknown: string,
+    { rawName, value, inlineValue }: OptionToken,
+): string[] => {
+    if (type === undefined) {
+        return [`The option ${rawName} isn't known. ${unknown}`];
     }
 
-    if (OPTIONS[name].type === 'boolean') {
+    if (type === 'boolean') {
         return value === undefined ? [] : [`The option ${rawName} takes no value. ${SEE_HELP}`];
     }
 
@@ -109,12 +135,16 @@ const refusalsOf = ({ name, rawName, value, inlineValue }: OptionToken): string[
 
 // Strict parsing stops at the first argument it can't read, and names it only in its error's text,
 // so a lenient reading of the same tokens finds that argument, to name it.
-const parse = (args: readonly string[]) => {
+const parse = <T extends ParseArgsOptionsConfig>(
+    args: readonly string[],
+    options: T,
+    unknown: string,
+) => {
     try {
         return ok(
             parseArgs({
                 args,
-                options: OPTIONS,
+                options,
                 strict: true,
                 allowPositionals: true,
                 tokens: true,
@@ -123,13 +153,17 @@ const parse = (args: readonly string[]) => {
     } catch {
         const { tokens } = parseArgs({
             args,
-            options: OPTIONS,
+            options,
             strict: false,
             allowPositionals: true,
             tokens: true,
         });
+        // Own options only: `constructor` is no option.
+        const typeOf = (name: string): 'string' | 'boolean' | undefined => {
+            return Object.entries(options).find(([option]) => option === name)?.[1].type;
+        };
         const refusals = tokens.flatMap((token) => {
-            return token.kind === 'option' ? refusalsOf(token) : [];
+            return token.kind === 'option' ? refusalsOf(typeOf(token.name), unknown, token) : [];
         });
 
         return err(refusals.slice(0, 1));
@@ -281,7 +315,7 @@ const entryOf = (target: Target, flags: Flags): object => {
 };
 
 const readAdd = (args: readonly string[]): Result<Command, string[]> => {
-    const parsed = parse(args);
+    const parsed = parse(args, ADD_OPTIONS, UNKNOWN_IN_ADD);
 
     if (!parsed.ok) {
         return parsed;
@@ -333,6 +367,66 @@ const readAdd = (args: readonly string[]): Result<Command, string[]> => {
         : err(problems);
 };
 
+// A secret on the command line is a reference alone, as everywhere else: a literal one would be in
+// the shell's history.
+const clientSecretOf = (text: string | undefined): Read<Template | undefined> => {
+    if (text === undefined) {
+        return { value: undefined, problems: [] };
+    }
+
+    const { template, problems } = parseTemplate(text);
+    const literal = template.some((part) => typeof part === 'string') || !hasReference(template);
+
+    return {
+        value: template,
+        problems:
+            problems.length > 0
+                ? problems.map((problem) => `--client-secret holds ${problem}.`)
+                : literal
+                  ? [`--client-secret holds a literal secret. ${ADVICE}`]
+                  : [],
+    };
+};
+
+const readLogin = (args: readonly string[]): Result<Command, string[]> => {
+    const parsed = parse(args, LOGIN_OPTIONS, SEE_HELP);
+
+    if (!parsed.ok) {
+        return parsed;
+    }
+
+    const { values, positionals } = parsed.value;
+    const [name, ...extra] = positionals;
+    const clientSecret = clientSecretOf(values['client-secret']);
+    const redirect = values['redirect-uri'];
+    // Without --redirect-uri, String() gives undefined's name, which is no URI.
+    const redirectUri = loopbackUri(String(redirect));
+    const problems = [
+        ...(name === undefined || extra.length > 0 ? [LOGIN_SHAPE] : []),
+        ...(values['client-id'] === undefined && values['client-secret'] !== undefined
+            ? [
+                  '--client-secret needs --client-id: it is the secret of the client that --client-id names.',
+              ]
+            : []),
+        ...clientSecret.problems,
+        ...(redirect !== undefined && redirectUri === undefined ? [REDIRECT_URI] : []),
+    ];
+
+    // Without a name, the shape is a problem.
+    return problems.length > 0
+        ? err(problems)
+        : ok({
+              kind: 'login',
+              name: String(name),
+              login: {
+                  clientId: values['client-id'],
+                  clientSecret: clientSecret.value,
+                  redirectUri,
+                  scope: values.scope,
+              },
+          });
+};
+
 /** The subcommand and what it needs, or every problem with them. */
 export const readCommand = (args: readonly string[]): Result<Command, string[]> => {
     const [subcommand, first, ...rest] = args;
@@ -340,6 +434,8 @@ export const readCommand = (args: readonly string[]): Result<Command, string[]> 
     switch (subcommand) {
         case 'add':
             return readAdd(args.slice(1));
+        case 'login':
+            return readLogin(args.slice(1));
         case 'list':
             return first === undefined
                 ? ok({ kind: 'list' })
@@ -348,6 +444,7 @@ export const readCommand = (args: readonly string[]): Result<Command, string[]> 
         case 'remove':
         case 'disable':
         case 'enable':
+        case 'logout':
             return first === undefined || rest.length > 0
                 ? err([
                       `${subcommand} takes a server's name: bun run mcp ${subcommand} <name>. ${SEE_HELP}`,

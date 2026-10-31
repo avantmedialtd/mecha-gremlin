@@ -100,7 +100,14 @@ const run = async (args: readonly string[]): Promise<number> => {
     // guard find their processes by it. Creating the shell only builds an environment.
     const runId = crypto.randomUUID().slice(0, 8);
     const shell = createShell({ workDir, runId, parentEnv: process.env });
-    const mcp = createMcpServers({ parentEnv: process.env, runId, workDir, dataDir, log });
+    const mcp = createMcpServers({
+        parentEnv: process.env,
+        runId,
+        workDir,
+        dataDir,
+        store,
+        log,
+    });
     let interrupted: HandledSignal | undefined;
     let finishing: Promise<void> | undefined;
 

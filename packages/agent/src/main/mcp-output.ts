@@ -9,6 +9,9 @@ type Fields = ReadonlyMap<string, unknown>;
 
 type Row = readonly [label: string, value: string];
 
+/** A remote server's login, as `get` shows it. */
+export type LoginState = 'yes' | 'no' | 'needs a new login';
+
 const NO_SERVERS =
     'There are no MCP servers. Add one with bun run mcp add <name> <url>, or bun run mcp add <name> -- <command> [args…].';
 
@@ -31,6 +34,25 @@ export const addedLine = (name: string, transport: Transport, disabled: boolean)
     const added = `Added ${name} (${transport}).`;
 
     return disabled ? `${added} ${notStarted(name)}` : added;
+};
+
+/** What to do with the authorization URL, which the login then waits on. */
+export const authorizeLines = (name: string, url: string): string[] => {
+    return [
+        `Open this address in a browser, and sign in to ${name}:`,
+        '',
+        url,
+        '',
+        "If the browser can't reach this machine, as over SSH, paste here the address it ends on, and press Enter. The login waits 5 minutes.",
+    ];
+};
+
+export const loggedInLine = (name: string, tools: number): string => {
+    return `Logged in to ${name}: ${tools} ${tools === 1 ? 'tool' : 'tools'}.`;
+};
+
+export const loggedOutLine = (name: string, deleted: number): string => {
+    return deleted > 0 ? `Logged out of ${name}.` : `${name} has no login.`;
 };
 
 export const changedLine = (change: Change, name: string): string => {
@@ -128,8 +150,14 @@ export const listLines = (servers: readonly McpServer[]): string[] => {
     ]);
 };
 
-/** One server's settings, with references as written, and how to change them. */
-export const serverLines = ({ name, entry, disabled }: McpServer): string[] => {
+/**
+ * One server's settings, with references as written, its login when it is a remote one, and how
+ * to change them.
+ */
+export const serverLines = (
+    { name, entry, disabled }: McpServer,
+    login: LoginState | undefined,
+): string[] => {
     const fields = fieldsOf(entry);
     const rows: Row[] = [
         ['Transport', transportOfEntry(entry) ?? '-'],
@@ -146,6 +174,7 @@ export const serverLines = ({ name, entry, disabled }: McpServer): string[] => {
         ...optional('Exclude tools', toolsOf(fields, 'excludeTools')),
         ...optional('Startup timeout', timeoutOf(fields, 'startupTimeoutMs')),
         ...optional('Tool timeout', timeoutOf(fields, 'toolTimeoutMs')),
+        ...optional('Login', login),
         ['Enabled', disabled ? 'no' : 'yes'],
     ];
 

@@ -6,8 +6,8 @@ For a Streamable HTTP server with a saved login (`mcp-login`), a run SHALL use t
 - **A spent login.** A row marked `needs_login` SHALL fail the run before any network request, with an error naming the server and `bun run mcp login <name>`.
 - **Refreshing.** The run SHALL refresh the token before the server's first request when it expires within 5 minutes, and once after a 401, after which it SHALL send the request once more. A refresh SHALL:
   - take the row's lease for 30 seconds, and send the refresh request outside any transaction, cancelling it after 25 seconds;
-  - save the new tokens only while it still holds the lease, and then release it;
-  - when another run holds the lease, check every 250 ms, for up to 35 seconds, until it is released or lapses, and then use the tokens that run saved, or else try for the lease again.
+  - save the new tokens only while it still holds the lease, which saving them releases;
+  - when another run holds the lease, check every 250 ms, for up to 35 seconds: use the tokens that run saved once they appear, and try for the lease again whenever it's free. After 35 seconds, the server's use SHALL fail, as a failed refresh does.
 - **A refused refresh.** `invalid_grant` SHALL mark the row `needs_login`, and fail the server's use with an error naming `bun run mcp login <name>`. At the start, that fails the run; during the session, the call.
 - **A failed refresh.** A timeout, a server error or a network failure SHALL keep the tokens, and fail only this run's use of the server.
 - **No flow of its own.** In a run, the SDK SHALL NOT register a client, start an authorization or refresh a token itself.

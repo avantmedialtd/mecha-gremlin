@@ -3,6 +3,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { type Store, closeStore, openStore } from '@mecha-gremlin/store/store';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import type { Logger } from '../../src/log/log.ts';
 import { type McpServers, createMcpServers } from '../../src/mcp/servers.ts';
@@ -20,6 +21,7 @@ const PROXIES = [
 const LOG: Logger = { info: () => undefined, warn: () => undefined, error: () => undefined };
 
 let folder: string;
+let store: Store;
 let server: FakeHttp | undefined;
 let mcp: McpServers | undefined;
 
@@ -27,6 +29,13 @@ const CONSOLE = ['debug', 'info', 'warn', 'error', 'log'] as const;
 
 beforeEach(async () => {
     folder = await mkdtemp(join(tmpdir(), 'mcp-slow-'));
+    const opened = await openStore(folder);
+
+    if (!opened.ok) {
+        throw new Error(opened.error);
+    }
+
+    store = opened.value.store;
 
     for (const method of CONSOLE) {
         vi.spyOn(console, method);
@@ -43,6 +52,7 @@ afterEach(async () => {
     vi.useRealTimers();
     await mcp?.close();
     await server?.close();
+    await closeStore(store);
     await rm(folder, { recursive: true, force: true });
 
     const written = CONSOLE.flatMap((method) => vi.mocked(console[method]).mock.calls);
@@ -77,6 +87,7 @@ const connect = (url: string, entry: Readonly<Record<string, unknown>>) => {
         runId: 'slow0000',
         workDir: folder,
         dataDir: folder,
+        store,
         log: LOG,
     });
 

@@ -2,9 +2,12 @@ import type { McpServer } from '@mecha-gremlin/store/mcp-server';
 import { describe, expect, test } from 'vitest';
 import {
     addedLine,
+    authorizeLines,
     changedLine,
     errorLine,
     listLines,
+    loggedInLine,
+    loggedOutLine,
     serverLines,
     warningLine,
 } from '../../src/main/mcp-output.ts';
@@ -118,7 +121,7 @@ describe('The table of servers', () => {
 });
 
 describe("One server's settings", () => {
-    test('a remote server, with references as written', () => {
+    test('a remote server, with references as written, and its login', () => {
         expect(
             serverLines(
                 server('docs', {
@@ -127,6 +130,7 @@ describe("One server's settings", () => {
                     startupTimeoutMs: 30000,
                     toolTimeoutMs: 300000,
                 }),
+                'no',
             ),
         ).toEqual([
             'docs',
@@ -136,9 +140,23 @@ describe("One server's settings", () => {
             '  Header           X-Team: docs',
             '  Startup timeout  30s',
             '  Tool timeout     5m',
+            '  Login            no',
             '  Enabled          yes',
             'To change it, remove it with bun run mcp remove docs, then add it again.',
         ]);
+    });
+
+    test.each(['yes', 'needs a new login'] as const)('a login that reads %s', (login) => {
+        expect(serverLines(server('docs', { url: 'https://docs.example.com/mcp' }), login)).toEqual(
+            [
+                'docs',
+                '  Transport  http',
+                '  URL        https://docs.example.com/mcp',
+                `  Login      ${login}`,
+                '  Enabled    yes',
+                'To change it, remove it with bun run mcp remove docs, then add it again.',
+            ],
+        );
     });
 
     test('a local server, with every setting, disabled', () => {
@@ -162,6 +180,7 @@ describe("One server's settings", () => {
                     },
                     true,
                 ),
+                undefined,
             ),
         ).toEqual([
             'files',
@@ -186,8 +205,11 @@ describe("One server's settings", () => {
             'To change it, remove it with bun run mcp remove a, then add it again.',
         ];
 
-        expect(serverLines(server('a', { note: [1, true, null] }))).toEqual(['a', ...expected]);
-        expect(serverLines(server('a', null))).toEqual(['a', ...expected]);
+        expect(serverLines(server('a', { note: [1, true, null] }), undefined)).toEqual([
+            'a',
+            ...expected,
+        ]);
+        expect(serverLines(server('a', null), undefined)).toEqual(['a', ...expected]);
         expect(
             serverLines(
                 server('a', {
@@ -201,6 +223,7 @@ describe("One server's settings", () => {
                     startupTimeoutMs: '30000',
                     toolTimeoutMs: null,
                 }),
+                undefined,
             ),
         ).toEqual(['a', ...expected]);
     });
@@ -214,6 +237,7 @@ describe("One server's settings", () => {
                     env: { A: 2 },
                     startupTimeoutMs: 1500.5,
                 }),
+                undefined,
             ),
         ).toEqual([
             'a',
@@ -224,5 +248,31 @@ describe("One server's settings", () => {
             '  Enabled          yes',
             'To change it, remove it with bun run mcp remove a, then add it again.',
         ]);
+    });
+});
+
+describe('What a login and a logout print', () => {
+    test('the authorization URL, with what to do with it', () => {
+        expect(authorizeLines('docs', 'https://auth.example.com/authorize?state=s')).toEqual([
+            'Open this address in a browser, and sign in to docs:',
+            '',
+            'https://auth.example.com/authorize?state=s',
+            '',
+            "If the browser can't reach this machine, as over SSH, paste here the address it ends on, and press Enter. The login waits 5 minutes.",
+        ]);
+    });
+
+    test.each([
+        [0, 'Logged in to docs: 0 tools.'],
+        [1, 'Logged in to docs: 1 tool.'],
+        [2, 'Logged in to docs: 2 tools.'],
+    ])('logged in, with %i tools', (tools, line) => {
+        expect(loggedInLine('docs', tools)).toBe(line);
+    });
+
+    test('logged out, or without a login', () => {
+        expect(loggedOutLine('docs', 2)).toBe('Logged out of docs.');
+        expect(loggedOutLine('docs', 1)).toBe('Logged out of docs.');
+        expect(loggedOutLine('docs', 0)).toBe('docs has no login.');
     });
 });

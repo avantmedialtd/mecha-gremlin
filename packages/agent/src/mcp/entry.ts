@@ -33,6 +33,8 @@ export type StdioEntry = Common & {
 export type HttpEntry = Common & {
     readonly transport: 'http';
     readonly url: Template;
+    /** The url as the entry writes it, which keys the server's saved logins. */
+    readonly writtenUrl: string;
     readonly headers: readonly Named[];
 };
 
@@ -275,6 +277,13 @@ export const transportOfEntry = (value: unknown): Transport | undefined => {
     const transport = transportOf(fieldsOf(value));
 
     return transport.ok ? transport.value : undefined;
+};
+
+/** The url an entry writes, if it writes one, as its saved logins are kept under. */
+export const urlOfEntry = (value: unknown): string | undefined => {
+    const url = isObject(value) ? fieldsOf(value).get('url') : undefined;
+
+    return typeof url === 'string' ? url : undefined;
 };
 
 const otherTransportFields = (transport: Transport, fields: Fields): string[] => {
@@ -709,7 +718,13 @@ const httpOf = (fields: Fields): Specific<Omit<HttpEntry, keyof Common>> => {
     const headers = headersOf(fields);
 
     return {
-        entry: { transport: 'http', url: url.value, headers: headers.value },
+        // An entry whose url isn't a string has a problem, so its writtenUrl is never read.
+        entry: {
+            transport: 'http',
+            url: url.value,
+            writtenUrl: String(fields.get('url')),
+            headers: headers.value,
+        },
         problems: [
             ...url.problems,
             ...headers.problems,

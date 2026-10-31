@@ -97,6 +97,8 @@ export type FakeServer = {
     readonly messages?: (n: number) => Response;
     /** Origins of MCP servers, each with the base of the real server that answers for it. */
     readonly mcp?: Readonly<Record<string, string>>;
+    /** Origins whose requests reach the real fetch as they are, such as an authorization server's. */
+    readonly origins?: readonly string[];
 };
 
 export type RecordedRequest = {
@@ -111,6 +113,10 @@ export const fakeFetch = (server: FakeServer = {}) => {
     const fetch: Fetch = async (input, init) => {
         const url = input instanceof Request ? input.url : String(input);
         const route = Object.entries(server.mcp ?? {}).find(([origin]) => url.startsWith(origin));
+
+        if (server.origins?.some((origin) => url.startsWith(origin)) === true) {
+            return realFetch(input, init);
+        }
 
         if (route !== undefined) {
             const [origin, target] = route;

@@ -25,6 +25,8 @@ export type StdioConnection = {
 export type HttpConnection = {
     readonly transport: 'http';
     readonly url: string;
+    /** The url as the entry writes it, references unresolved: its saved logins' key. */
+    readonly writtenUrl: string;
     readonly headers: Readonly<Record<string, string>>;
 };
 
@@ -165,7 +167,11 @@ const stdioConnection = (
 };
 
 const httpConnection = (
-    entry: { readonly url: Template; readonly headers: readonly (readonly [string, Template])[] },
+    entry: {
+        readonly url: Template;
+        readonly writtenUrl: string;
+        readonly headers: readonly (readonly [string, Template])[];
+    },
     resolver: Resolver,
 ): Result<HttpConnection, string[]> => {
     const url = resolver.text(entry.url);
@@ -184,7 +190,12 @@ const httpConnection = (
 
     return problems.length > 0
         ? err(problems)
-        : ok({ transport: 'http', url, headers: Object.fromEntries(headers) });
+        : ok({
+              transport: 'http',
+              url,
+              writtenUrl: entry.writtenUrl,
+              headers: Object.fromEntries(headers),
+          });
 };
 
 /**

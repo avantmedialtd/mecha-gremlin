@@ -6,6 +6,7 @@ import {
     prefixOf,
     queryOf,
     transportOfEntry,
+    urlOfEntry,
 } from '../../src/mcp/entry.ts';
 
 const ADVICE =
@@ -104,6 +105,7 @@ describe('The transports and their fields', () => {
         expect(checked(http({ headers: { 'X-Team': 'docs' } })).entry).toEqual({
             transport: 'http',
             url: ['https://docs.example.com/mcp'],
+            writtenUrl: 'https://docs.example.com/mcp',
             headers: [['X-Team', ['docs']]],
             includeTools: undefined,
             excludeTools: [],
@@ -808,6 +810,18 @@ describe('What each check leaves alone', () => {
         expect(transportOfEntry(stdio())).toBe('stdio');
         expect(transportOfEntry(null)).toBeUndefined();
         expect(transportOfEntry([])).toBeUndefined();
+    });
+
+    test("the url an entry writes, references and $$ as written, which keys a server's logins", () => {
+        const url = 'https://docs.example.com/mcp?key=${env:KEY}&cost=$$5';
+
+        expect(checked(http({ url })).entry).toMatchObject({ writtenUrl: url });
+        expect(urlOfEntry(http({ url }))).toBe(url);
+        expect(urlOfEntry(stdio())).toBeUndefined();
+        expect(urlOfEntry({ url: 5 })).toBeUndefined();
+        expect(urlOfEntry(null)).toBeUndefined();
+        expect(urlOfEntry(['https://docs.example.com/mcp'])).toBeUndefined();
+        expect(urlOfEntry('https://docs.example.com/mcp')).toBeUndefined();
     });
 
     test('defaults: no args, no env, no headers, and no warnings', () => {

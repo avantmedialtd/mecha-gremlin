@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { type ToolOutcome, toolJsonSchema } from '@mecha-gremlin/core/tools';
+import { type Store, closeStore, openStore } from '@mecha-gremlin/store/store';
 import { InMemoryTransport } from '@modelcontextprotocol/client';
 import { McpServer } from '@modelcontextprotocol/server';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
@@ -50,6 +51,7 @@ type LogRecord = {
 let runId: string;
 let workDir: string;
 let dataDir: string;
+let store: Store;
 let records: LogRecord[];
 const started: McpServers[] = [];
 const cleanups: (() => Promise<void>)[] = [];
@@ -66,6 +68,13 @@ beforeEach(async () => {
     runId = freshRunId();
     workDir = await realpath(await mkdtemp(join(tmpdir(), 'mcp-work-')));
     dataDir = await realpath(await mkdtemp(join(tmpdir(), 'mcp-data-')));
+    const opened = await openStore(dataDir);
+
+    if (!opened.ok) {
+        throw new Error(opened.error);
+    }
+
+    store = opened.value.store;
     records = [];
 
     // Nothing but the agent's logger may write; this one records instead.
@@ -90,6 +99,7 @@ afterEach(async () => {
     );
     await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
     stopLeftovers();
+    await closeStore(store);
     await rm(workDir, { recursive: true, force: true });
     await rm(dataDir, { recursive: true, force: true });
 }, 20_000);
@@ -106,6 +116,7 @@ const servers = (env: Readonly<Record<string, string>> = {}): McpServers => {
         runId,
         workDir,
         dataDir,
+        store,
         log: LOG,
         limits: LIMITS,
     });
@@ -731,13 +742,13 @@ describe('Reach Streamable HTTP servers with their headers', { timeout: 20_000 }
         ]);
     });
 
-    test('a server that wants a login', async () => {
+    test('a server that wants a login, and has none', async () => {
         const server = await httpServer({
             answer: () => new Response('who are you?', { status: 401 }),
         });
 
         expect(await problemsOf(servers(), [httpRow('docs', server.url)])).toEqual([
-            "The MCP server docs couldn't start: it needs a login, which isn't supported yet.\nTo run without it: bun run mcp disable docs.",
+            "The MCP server docs couldn't start: it needs a login: bun run mcp login docs.\nTo run without it: bun run mcp disable docs.",
         ]);
     });
 
