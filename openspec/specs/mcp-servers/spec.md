@@ -1,7 +1,7 @@
 # mcp-servers Specification
 
 ## Purpose
-The `mcp` command, `bun run mcp` or `bun run mcp:node`, which adds MCP servers from flags, and lists, shows, removes, disables and enables them in the store, printing plain text, and explains itself with `help`; and the checks a server's settings must pass, kept as an entry in the `mcpServers` format: its fields, the server's name, references to secrets, headers, URLs, timeouts and pinning.
+The `mcp` command, `bun run mcp` or `bun run mcp:node`, which adds MCP servers from flags, and lists, shows, removes, disables and enables them in the store, logs in to them and out (`mcp-login`), printing plain text, and explains itself with `help`; and the checks a server's settings must pass, kept as an entry in the `mcpServers` format: its fields, the server's name, references to secrets, headers, URLs, timeouts and pinning.
 ## Requirements
 ### Requirement: Name each server so its tools can be told apart
 A server's name SHALL match `^[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*$`, and SHALL be 1–24 characters long. Its prefix, which its tools' names take (`mcp-client`), SHALL be the name lowercased, with `-` turned to `_`. `add` SHALL refuse a name already in use, and a name whose prefix another server has, naming that server.
@@ -138,9 +138,10 @@ A server's name SHALL match `^[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*$`, and SHALL be 
 - `list`;
 - `get <name>`;
 - `remove <name>`, `disable <name>` and `enable <name>`;
+- `login <name> [options]` and `logout <name>` (`mcp-login`);
 - `help`, `--help` or `-h`.
 
-The servers SHALL be kept in the store (`store`) in `DATA_DIR`, which SHALL be the only setting the command reads, checked as the agent checks it. The command SHALL make no network request, and SHALL resolve no reference.
+The servers SHALL be kept in the store (`store`) in `DATA_DIR`, which SHALL be the only setting the command reads, checked as the agent checks it. The command SHALL make no network request and resolve no reference, except `login`, which reaches the server and its authorization server, and resolves the server's references as a run does (`mcp-login`).
 
 **Output.** The command SHALL write plain text for people, not log records:
 - its results to stdout;
@@ -157,13 +158,13 @@ The errors for an unknown subcommand, an unknown option and a wrong number of ar
 **The subcommands** SHALL do this:
 - `add` SHALL check the name and the server's settings, store the server, and print `Added <name> (<transport>).`; with `--disabled`, it SHALL also say that runs won't start the server until `bun run mcp enable <name>`.
 - `list` SHALL print a table with a header row, `NAME`, `TRANSPORT`, `TARGET` and `ENABLED`, and one row per server, in name order: its transport, `http` or `stdio`; its URL, or its command and arguments; and `yes` or `no`. With no servers, it SHALL print one line saying there are none and how to add one.
-- `get` SHALL print the server's name, and then one labelled line per setting, with references as written: its transport; its URL and each header, or its command and arguments, each variable and its working directory; its filters; both timeouts, in the largest of `h`, `m`, `s` and `ms` that divides them exactly; and whether it's enabled. It SHALL end with how to change it: `remove`, then `add`.
-- `remove` SHALL delete the server, and print `Removed <name>.`
+- `get` SHALL print the server's name, and then one labelled line per setting, with references as written: its transport; its URL and each header, or its command and arguments, each variable and its working directory; its filters; both timeouts, in the largest of `h`, `m`, `s` and `ms` that divides them exactly; for a Streamable HTTP server, its login: `yes`, `no` or `needs a new login`; and whether it's enabled. It SHALL end with how to change it: `remove`, then `add`.
+- `remove` SHALL delete the server and its saved logins, and print `Removed <name>.`
 - `disable` and `enable` SHALL set the server's flag, and print `Disabled <name>.` or `Enabled <name>.`, the first saying that runs won't start it.
 
 **Help.** `help`, `--help` and `-h`, whatever follows them, and no arguments at all, SHALL print one usage text to stdout, needing no setting and opening no store. The text SHALL give:
-- the subcommands, with both forms of `add`;
-- each option of `add`, with the default timeouts and how a time is written;
+- the subcommands, with both forms of `add`, and `login` and `logout`;
+- each option of `add`, with the default timeouts and how a time is written, and each option of `login`;
 - the rule for a name;
 - references in place of secrets, in single quotes, with an example;
 - `DATA_DIR`;
@@ -226,7 +227,7 @@ A request for help SHALL exit with 0, and no arguments SHALL exit with 1.
 
 #### Scenario: Help
 - **WHEN** `bun run mcp help` runs with no `DATA_DIR` set
-- **THEN** it exits with 0, and its output names both forms of `add`, `list`, `get`, `remove`, `disable`, `enable`, `--header`, `--env`, `--cwd`, `--include-tool`, `--exclude-tool`, `--startup-timeout`, `--tool-timeout`, `--disabled`, `30s`, `2m`, `'Authorization: Bearer ${GITHUB_PAT}'`, `DATA_DIR`, `mcp:node` and the README
+- **THEN** it exits with 0, and its output names both forms of `add`, `list`, `get`, `remove`, `disable`, `enable`, `--header`, `--env`, `--cwd`, `--include-tool`, `--exclude-tool`, `--startup-timeout`, `--tool-timeout`, `--disabled`, `login`, `logout`, `--client-id`, `30s`, `2m`, `'Authorization: Bearer ${GITHUB_PAT}'`, `DATA_DIR`, `mcp:node` and the README
 
 #### Scenario: Help, however it's asked for
 - **WHEN** `--help` runs, then `-h`, then `help add`
@@ -235,6 +236,10 @@ A request for help SHALL exit with 0, and no arguments SHALL exit with 1.
 #### Scenario: No arguments
 - **WHEN** `bun run mcp` runs with no arguments
 - **THEN** it prints the same text as `help`, and exits with 1
+
+#### Scenario: Showing a login
+- **WHEN** `get docs` runs before `docs` is logged in, after it's logged in, and after its refresh was refused
+- **THEN** its `Login` line reads `no`, then `yes`, then `needs a new login`
 
 ### Requirement: Describe a server with flags
 `add` SHALL take a server's name, and then either a URL, for a Streamable HTTP server, or `--` followed by a command and its arguments, for a stdio server.
