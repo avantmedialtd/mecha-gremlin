@@ -18,6 +18,10 @@ const LIMITS: CloseLimits = {
     killWaitMs: 300,
 };
 
+// For a server meant to leave by itself: on a loaded machine it can take longer than 300 ms to
+// start or to write, and a close moves on as soon as it has left.
+const PATIENT: CloseLimits = { ...LIMITS, exitWaitMs: 10_000 };
+
 const PAGES = JSON.stringify([
     { tools: [{ name: 'echo', inputSchema: { type: 'object', properties: {} } }] },
 ]);
@@ -126,7 +130,7 @@ describe('The stdio transport', { timeout: 15_000 }, () => {
 
     test('end-of-file is enough: no signal', async () => {
         const kill = vi.spyOn(process, 'kill');
-        const { transport, client } = await connected([FAKE]);
+        const { transport, client } = await connected([FAKE], {}, PATIENT);
         const { server } = await pids(client);
 
         await transport.close();
@@ -310,7 +314,7 @@ describe('The stdio transport', { timeout: 15_000 }, () => {
     });
 
     test("a process outside the server's groups that holds its stdout doesn't hold the close", async () => {
-        const { transport, client } = await connected([FAKE, 'orphan']);
+        const { transport, client } = await connected([FAKE, 'orphan'], {}, PATIENT);
         const { server } = await pids(client);
 
         await transport.close();
@@ -346,7 +350,7 @@ describe('The stdio transport', { timeout: 15_000 }, () => {
     });
 
     test('a close while the server starts waits for it, and stops it', async () => {
-        const transport = transportFor([FAKE]);
+        const transport = transportFor([FAKE], {}, PATIENT);
 
         const starting = transport.start();
         await transport.close();
@@ -498,9 +502,11 @@ describe("The server's stderr", { timeout: 15_000 }, () => {
 
     test('a tail that begins at the start of a line keeps it', async () => {
         const line = `${'y'.repeat(127)}\n`;
-        const transport = transportFor([FAKE, 'exit'], {
-            FAKE_STDERR: `${'x'.repeat(1023)}\n${line.repeat(64)}`,
-        });
+        const transport = transportFor(
+            [FAKE, 'exit'],
+            { FAKE_STDERR: `${'x'.repeat(1023)}\n${line.repeat(64)}` },
+            PATIENT,
+        );
 
         await transport.start();
         await transport.close();
@@ -533,7 +539,7 @@ describe("The server's stderr", { timeout: 15_000 }, () => {
 
     test('a stderr of exactly 8 KiB is kept whole', async () => {
         const text = `${'a'.repeat(8 * 1024 - 1)}\n`;
-        const transport = transportFor([FAKE, 'exit'], { FAKE_STDERR: text });
+        const transport = transportFor([FAKE, 'exit'], { FAKE_STDERR: text }, PATIENT);
 
         await transport.start();
         await transport.close();
@@ -542,7 +548,7 @@ describe("The server's stderr", { timeout: 15_000 }, () => {
     });
 
     test('a short stderr, kept whole', async () => {
-        const transport = transportFor([FAKE, 'exit'], { FAKE_STDERR: 'bad config\n' });
+        const transport = transportFor([FAKE, 'exit'], { FAKE_STDERR: 'bad config\n' }, PATIENT);
 
         await transport.start();
         await transport.close();
