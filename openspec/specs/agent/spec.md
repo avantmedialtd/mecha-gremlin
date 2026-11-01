@@ -5,8 +5,17 @@
 The agent's entry point, which calls the configured model through its provider (LM Studio, an OpenAI-compatible Responses service or Claude's Messages API), has it carry out a task through the agent loop with a shell, `read`, the file tools `FILE_TOOLS` chooses, skills and its MCP servers' tools, and logs the answer, with its configuration, the store it opens in the data folder, its failure behaviour, and how it closes the MCP servers, stops the session's processes and closes the store. It runs on Bun, with `bun run agent`, or on Node, with `bun run agent:node`.
 ## Requirements
 ### Requirement: Carry out a task through the agent loop, and log the answer
-Running the agent, `bun run agent [task…]` from the repository root, SHALL:
-1. require a nonempty task from the arguments, joined with spaces; a missing or whitespace-only task SHALL fail with an actionable error and SHALL NOT start the example browsing task or make a network request;
+Running the agent from the repository root, as `bun run agent <task file>` or `bun run agent --prompt <task>`, SHALL:
+1. take the task from exactly one of:
+   - a task file, given as the one positional argument: the file's text, decoded as UTF-8, with leading and trailing whitespace trimmed and nothing else changed, frontmatter included, whatever its extension. A relative path SHALL resolve against the directory the agent was started in;
+   - `--prompt <task>`, or `-p <task>`: that one argument, trimmed.
+
+   The agent SHALL fail with an actionable error, and SHALL NOT start the example browsing task or make a network request:
+   - when it gets no task, a task file and `--prompt` together, more than one positional argument, `--prompt` more than once, an unknown option, or a `--prompt` value of only whitespace;
+   - when the task file can't be read, has a NUL byte in its first 8 KiB, or holds only whitespace;
+   - when the task file is one the file tools refuse: a `.env` file, by its name as given or its real path, or a file whose real path is inside the data folder.
+
+   An error about how the task was given SHALL name both ways to give it. One for a task file that doesn't exist SHALL give the absolute path the agent looked at, and name `--prompt`. These errors SHALL be reported together with the configuration's, before the store opens;
 2. validate the explicitly configured settings;
 3. load the skills `SKILLS_PATH` lists (`skills`);
 4. open the store in `DATA_DIR` (`store`) before any network request. When it can't be opened, the agent SHALL log the error and exit with code 1, having made no network request;
@@ -22,12 +31,40 @@ Running the agent, `bun run agent [task…]` from the repository root, SHALL:
 Responses providers SHALL send the instructions as a developer item to the configured Responses endpoint. Anthropic SHALL send the same instructions as system input to its configured Messages endpoint. Every request SHALL name the configured model and effort in the selected provider's format.
 
 #### Scenario: No task
-- **WHEN** the agent runs with no task arguments or only whitespace
-- **THEN** it exits with code 1, reports that a task is required, makes no network call and does not launch the example browser task
+- **WHEN** the agent runs with no arguments, or with only `-p` and a value of whitespace
+- **THEN** it exits with code 1, reports that a task is required, naming a task file and `--prompt`, makes no network call and does not launch the example browser task
 
 #### Scenario: Task from the arguments
-- **WHEN** the agent runs with the arguments `Which`, `runtime` and `does README.md describe?`
+- **WHEN** the agent runs with the arguments `-p` and `Which runtime does README.md describe?`, or with `--prompt` and the same text
 - **THEN** its first request's user input is "Which runtime does README.md describe?"
+
+#### Scenario: Task from a file
+- **WHEN** the agent runs with the argument `task.md`, a file in the directory it was started in that holds "\n  Which runtime does README.md describe?\n\n"
+- **THEN** its first request's user input is "Which runtime does README.md describe?"
+
+#### Scenario: Frontmatter is part of the task
+- **WHEN** the task file holds "---\ntags: [work]\n---\nSay hi\n"
+- **THEN** the first request's user input is "---\ntags: [work]\n---\nSay hi"
+
+#### Scenario: A task file that doesn't exist
+- **WHEN** the agent runs with the argument `Say hi`, and the directory it was started in holds no file of that name
+- **THEN** it exits with code 1, the error gives the absolute path of `Say hi` in that directory and names `--prompt`, and no network call is made
+
+#### Scenario: A task file that isn't text
+- **WHEN** the task file has a NUL byte in its first 8 KiB, or holds only whitespace
+- **THEN** it exits with code 1, an error names the file and why it was refused, and no network call is made
+
+#### Scenario: A task file the file tools refuse
+- **WHEN** the task file is `.env`, a link to `.env`, or a file inside `DATA_DIR`
+- **THEN** it exits with code 1, an error names the file and why it was refused, and no network call is made
+
+#### Scenario: One way to give the task
+- **WHEN** the agent runs with a task file and `-p`, with two positional arguments, with `-p` twice, or with the option `--verbose`
+- **THEN** it exits with code 1, an error names both ways to give the task, and no network call is made
+
+#### Scenario: The task's problems come with the configuration's
+- **WHEN** `WORK_DIR` doesn't exist, and neither does the task file
+- **THEN** the startup errors name both problems, and no network call is made
 
 #### Scenario: The tools offered
 - **WHEN** `SKILLS_PATH` names a root holding the skill `pdf` and `FILE_TOOLS` is `write-edit`
@@ -75,7 +112,7 @@ The agent SHALL log, through the structured logger:
 - the `skill not loaded` and `skill warning` records that loading skills produces (`skills`);
 - when opening the store applied migrations, an `info` record `migrated` with `names`, the migrations' names in the order they ran, logged before `asking`;
 - for each MCP server the run connected to, in the servers' name order, its `warn` records and its `info` record `mcp server` (`mcp-client`), logged before `asking`;
-- before the first model call, an `info` record `asking` with `model`, `baseUrl`, `run` (the session's run ID), `workDir` (the working directory's real path), `dataDir` (the data folder's real path) and `task`;
+- before the first model call, an `info` record `asking` with `model`, `baseUrl`, `run` (the session's run ID), `workDir` (the working directory's real path), `dataDir` (the data folder's real path), `task` (the task's text, as sent) and, when the task came from a file, `taskFile` (that file's absolute path);
 - for every attempted model call, including an incomplete or failed call, an `info` record `model call` with `step`, `seconds` rounded to a tenth, and the selected provider's complete typed reported statistics as `providerStats`, including available usage, diagnostics and documented rate-limit headers. An unavailable statistic SHALL not be invented; partial usage SHALL be identified as partial. Both pretty and JSON output SHALL show the complete `providerStats` fields. Any common token summary SHALL be additional and SHALL use the correct provider-specific accounting;
 - then, for each of the step's tool calls:
   - an `info` record `tool call` with `tool` and `arguments`. Arguments are logged as JSON when they parse, and as the model sent them otherwise;
@@ -96,8 +133,12 @@ Native replay data, API keys and authorization headers SHALL NOT be logged as st
 - **THEN** a `model call` record gives the step, elapsed time and partial reported stats before the final error record
 
 #### Scenario: The asking record
-- **WHEN** the run ID is a fresh random ID, `WORK_DIR` and `DATA_DIR` name directories, and the task is "Say hi"
-- **THEN** the `asking` record's `run` is that ID, its `workDir` and `dataDir` are those directories' real paths, and its `task` is "Say hi"
+- **WHEN** the run ID is a fresh random ID, `WORK_DIR` and `DATA_DIR` name directories, and the task is "Say hi", given with `-p`
+- **THEN** the `asking` record's `run` is that ID, its `workDir` and `dataDir` are those directories' real paths, its `task` is "Say hi", and it has no `taskFile`
+
+#### Scenario: The asking record of a task file
+- **WHEN** the task file `task.md`, in the directory the agent was started in, holds "Say hi\n"
+- **THEN** the `asking` record's `task` is "Say hi", and its `taskFile` is that file's absolute path
 
 #### Scenario: The skills record
 - **WHEN** the skills `pdf` and `browser` are loaded
