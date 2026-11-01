@@ -3,7 +3,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, test } from 'vitest';
 import { loadConfig, loadLogFormat } from '../../src/config/config.ts';
-import { parseArgs } from '../../src/main/args.ts';
 import { pickModel } from '../../src/model/lmstudio.ts';
 
 // A data folder of its own, outside the working directory, which is the current one.
@@ -147,12 +146,6 @@ describe('explicit configuration', () => {
             ok: false,
             error: [expect.stringContaining('MAX_TURNS')],
         });
-    });
-
-    test('requires an actual task', () => {
-        expect(parseArgs([])).toMatchObject({ ok: false, error: expect.stringContaining('task') });
-        expect(parseArgs([' ', '  '])).toMatchObject({ ok: false });
-        expect(parseArgs(['What', 'runs?'])).toEqual({ ok: true, value: 'What runs?' });
     });
 
     test('never selects an unnamed LM Studio model', () => {

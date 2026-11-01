@@ -74,7 +74,7 @@ jobs:
                   DATA_DIR: ${{ runner.temp }}
               run: |
                   status=0
-                  output=$(bun run agent:node 'Check startup' 2>&1) || status=$?
+                  output=$(bun run agent:node -p 'Check startup' 2>&1) || status=$?
                   echo "$output"
 
                   if [[ $status -ne 1 || $output != *"Can't reach LM Studio"* ]]; then

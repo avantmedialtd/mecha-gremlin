@@ -47,7 +47,14 @@ type Page =
     | { readonly kind: 'long'; readonly bytes: Uint8Array; readonly follows: boolean }
     | { readonly kind: 'past'; readonly lines: number };
 
+export const isBinary = (bytes: Uint8Array): boolean => {
+    return bytes.subarray(0, BINARY_PROBE).includes(0);
+};
+
 const readHead = async (file: string): Promise<Uint8Array> => {
+    // isBinary looks at no more than this, so reading more could change only the time it takes: the
+    // end keeps a large file from being read whole.
+    // Stryker disable next-line ArithmeticOperator,ObjectLiteral
     const chunks = await Array.fromAsync(createReadStream(file, { end: BINARY_PROBE - 1 }));
 
     return Buffer.concat(chunks);
@@ -207,7 +214,7 @@ const readLines = async (
             return err(`${name} is a directory.`);
         }
 
-        if ((await readHead(real)).includes(0)) {
+        if (isBinary(await readHead(real))) {
             return err(`${name} is a binary file.`);
         }
 

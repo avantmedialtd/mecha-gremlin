@@ -13,7 +13,7 @@ import { readTool } from '../tools/read.ts';
 import { createShell } from '../tools/shell.ts';
 import type { ToolHandler } from '../tools/tool-handler.ts';
 import { writeTool } from '../tools/write.ts';
-import { parseArgs } from './args.ts';
+import { readTask } from './args.ts';
 import { failure } from './failure.ts';
 import { modelCallFields, parsed } from './fields.ts';
 
@@ -50,13 +50,12 @@ const run = async (args: readonly string[]): Promise<number> => {
     };
 
     const loaded = loadConfig(process.env);
-    const parsedTask = parseArgs(args);
+    // Read whatever the configuration's problems, to report its own with them. Without a
+    // configuration there's no data folder to refuse a task file in, but the run fails anyway.
+    const task = await readTask(args, loaded.ok ? loaded.value.dataDir : undefined);
 
-    if (!loaded.ok || !parsedTask.ok) {
-        const problems = [
-            ...(loaded.ok ? [] : loaded.error),
-            ...(parsedTask.ok ? [] : [parsedTask.error]),
-        ];
+    if (!loaded.ok || !task.ok) {
+        const problems = [...(loaded.ok ? [] : loaded.error), ...(task.ok ? [] : [task.error])];
 
         for (const problem of problems) {
             log.error(problem);
@@ -67,7 +66,6 @@ const run = async (args: readonly string[]): Promise<number> => {
 
     const config = loaded.value;
     const { workDir, dataDir } = config;
-    const task = parsedTask.value;
     const { skills, notLoaded, warnings } = await loadSkills(config.skillsPath, process.cwd());
 
     for (const { path, reason } of notLoaded) {
@@ -193,7 +191,7 @@ const run = async (args: readonly string[]): Promise<number> => {
             ],
             history: [
                 { kind: 'instruction', text: developer },
-                { kind: 'user', text: task },
+                { kind: 'user', text: task.value.text },
             ],
             maxSteps: config.maxSteps,
         });
@@ -210,7 +208,8 @@ const run = async (args: readonly string[]): Promise<number> => {
             run: runId,
             workDir,
             dataDir,
-            task,
+            task: task.value.text,
+            taskFile: task.value.file,
         });
 
         for await (const step of session.steps) {

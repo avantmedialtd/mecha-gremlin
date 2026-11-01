@@ -13,7 +13,7 @@ A self-hosted, scheduled agent runner, in early development. The design and its 
 | [`packages/agent`](packages/agent) | `@mecha-gremlin/agent`: the agent. It carries out a task in an agent loop, with a shell, file tools, skills and MCP servers' tools, and opens the store in its data folder. It runs on Bun or Node. |
 
 Inside `packages/agent/src`, the code is grouped by concern:
-- `main`: the entry points, `main.ts` for a run and `mcp.ts` for the `mcp` command, and their helpers: a run's arguments, log fields and failure messages, and the command's arguments, times, output and help text, in `mcp-args.ts`, `mcp-time.ts`, `mcp-output.ts` and `mcp-help.ts`;
+- `main`: the entry points, `main.ts` for a run and `mcp.ts` for the `mcp` command, and their helpers: a run's arguments and task file, log fields and failure messages; the command's arguments, times, output and help text, in `mcp-args.ts`, `mcp-time.ts`, `mcp-output.ts` and `mcp-help.ts`; and the strict parsing of options that both use, which names the option it refuses, in `options.ts`;
 - `config`;
 - `model`: model choice, LM Studio's model list, and the Responses and Anthropic Messages adapters;
 - `session`: the agent loop, as a session that yields each step's result;
@@ -47,15 +47,20 @@ bun install
 Then:
 
 ```sh
-WORK_DIR=. bun run agent 'Which runtime does README.md describe?'       # a task of your own, quoted
-WORK_DIR=. bun run agent:node 'Which runtime does README.md describe?'  # the same, on Node
+WORK_DIR=. bun run agent task.md                                           # the task in a file
+WORK_DIR=. bun run agent -p 'Which runtime does README.md describe?'       # a short task, inline
+WORK_DIR=. bun run agent:node -p 'Which runtime does README.md describe?'  # the same, on Node
 ```
 
-These ask about this repository's README, so `WORK_DIR=.` points them at it; a setting on the command line overrides `.env`.
+`task.md` stands for a file of yours that holds the task, such as a Markdown note. The other two ask about this repository's README, so `WORK_DIR=.` points them at it; a setting on the command line overrides `.env`.
 
-The command is `bun run agent <task…>` on Bun, or `bun run agent:node <task…>` on Node, with the same arguments and settings. The arguments, joined with spaces, are the task. Missing or blank tasks fail before any network request.
+The command is `bun run agent <file>`, or `bun run agent --prompt <task>`, on Bun, and `bun run agent:node` with the same arguments and settings on Node. It takes the task from one of:
+- **a task file,** its one argument: the file's text, trimmed and otherwise as written, frontmatter included, whatever its extension. A relative path starts from the directory the agent starts in, which under `bun run` is the repository's root, wherever you type the command, as `WORK_DIR` does. An absolute path always works;
+- **`--prompt <task>`, or `-p <task>`:** the task inline, as one argument, trimmed.
 
-**Quote the task,** in single quotes unless it holds one. The shell reads `?`, `*`, `&`, `;`, `!` and `$` itself: in zsh, macOS's default shell, an unquoted `?` stops the command with "no matches found" before Bun runs.
+A run fails before any network request, and says why along with any problem in the settings, when it gets no task, a task file and `--prompt` together, more than one task file, `--prompt` twice, or an option it doesn't know; the error names both ways to give the task. A task file fails too when it can't be read, is blank, or is binary, with a NUL byte in its first 8 KiB, as `read` tests. So does one the file tools refuse, a `.env` file, by its name or through a link, or a file in the data folder, so that a slip of the shell's completion can't send your secrets to the provider, nor print them in the log.
+
+**Quote `-p`'s value,** in single quotes unless it holds one. Unquoted, the shell splits it into words, and `-p` takes only the first of them, leaving the rest as task files. The shell also reads `?`, `*`, `&`, `;`, `!` and `$` itself: in zsh, macOS's default shell, an unquoted `?` stops the command with "no matches found" before Bun runs. A task file needs no quoting, whatever it holds.
 
 The model carries out the task with its tools, offered in this order: `read`; `write` and `edit`, or `apply_patch` in their place when `FILE_TOOLS` is `apply-patch`; `shell`; `activate_skill` when skills are loaded; and then the tools of the MCP servers you have added, sorted by name (see [MCP servers](#mcp-servers)). The loop runs until it answers, for at most the configured `MAX_STEPS`. A question about a file usually takes two steps: one to read it and one to answer. A browsing task takes many more, about two for each page action. On a local 27B model, a model call took from 15 seconds to about 2 minutes in testing, growing with the size of what the model reads.
 
@@ -63,7 +68,7 @@ Everything is logged to stdout as structured records, one per line:
 - the skills loaded, and any that couldn't be;
 - the migrations applied to the database, when there are any;
 - each MCP server the run connected to, in name order: the tools it offers, their definitions' size and a hash of its tool list, after any tools it dropped;
-- the task, with the run's ID, the working directory and the data folder;
+- the task, with its file's absolute path when it came from one, the run's ID, the working directory and the data folder;
 - each model call's provider-specific statistics, including reported usage, cache counts and rate-limit headers, even when a call fails;
 - each tool call and its result;
 - the answer;
@@ -215,7 +220,7 @@ bun run mcp login docs
 
 **Running with servers.**
 
-- **Check a new server** with a short run, such as `bun run agent 'Say hi'`, and look at its `mcp server` record: the tools it offers, their definitions' size in bytes, and a hash of its tool list, which changes when the list does.
+- **Check a new server** with a short run, such as `bun run agent -p 'Say hi'`, and look at its `mcp server` record: the tools it offers, their definitions' size in bytes, and a hash of its tool list, which changes when the list does.
 - **A server that fails, fails every run**, before the first model call, with its error and the last lines of its stderr, until it's fixed or disabled with `bun run mcp disable <name>`.
 - **Where stdio servers run.** A server runs in its `cwd`, or else in a directory made for the run in the OS's temporary directory, holding only an empty `node_modules`, so that npm reads no `.npmrc` above it: not one the file tools wrote into the working directory. It can't keep out one a shell command writes to `~/.npmrc`. When the run ends, each server gets end-of-file, then SIGTERM, then SIGKILL, with the process groups its children lead, such as a browser's.
 - **Untrusted text.** Tool descriptions and results reach the model as text the server wrote, which may try to steer it. Add servers you trust, and offer only the tools you need with `--include-tool`.
@@ -231,7 +236,7 @@ For example, to browse with Microsoft's playwright-cli skill, which ships with t
 npm install -g @playwright/cli
 mkdir -p ~/gremlin-work
 WORK_DIR=~/gremlin-work SKILLS_PATH=$(npm root -g)/@playwright/cli/skills \
-    bun run agent 'Use the playwright-cli skill to find the title of https://example.com'
+    bun run agent -p 'Use the playwright-cli skill to find the title of https://example.com'
 ```
 
 ### Set up for browsing
@@ -337,7 +342,7 @@ bun run mutation       # Stryker mutation testing on Bun, which fails below 100%
 - **Every mutant must be caught.**
   - Stryker fails below a 100% mutation score, so a new branch or message needs a test that would notice it changing.
   - A mutant that behaves exactly like the original code, or sits in code that can't run, is usually better removed by simplifying the code.
-  - Where the code can't reasonably change, a `// Stryker disable next-line` comment turns the mutant off, with the reason on the line above. There are nine: `main.ts`' final `throw`; the `yaml` package's log level, where `''` behaves exactly like `'error'`; two for the sweep's `ps`: its process group, since it lists the same processes from any group, and its working directory, since `''` means the current one, which works the same while it exists; the check that narrows an MCP tool's input schema to an object, which `isSpecType.Tool` has already made; the sort of MCP servers and tools by name, where `<=` sorts as `<` does, since no two names are equal; the empty fallback for a stdio MCP server's working directory, never used, since the run's directory is made before such a server starts; the readers a stdio server's close waits for, which have ended by then, since cancelling a reader settles its read at once; and the login's closing of its listener's connections, which only Node's `close()` needs, since Bun's ends them itself and mutation testing runs on Bun.
+  - Where the code can't reasonably change, a `// Stryker disable next-line` comment turns the mutant off, with the reason on the line above. There are ten: `main.ts`' final `throw`; the `yaml` package's log level, where `''` behaves exactly like `'error'`; two for the sweep's `ps`: its process group, since it lists the same processes from any group, and its working directory, since `''` means the current one, which works the same while it exists; the check that narrows an MCP tool's input schema to an object, which `isSpecType.Tool` has already made; the sort of MCP servers and tools by name, where `<=` sorts as `<` does, since no two names are equal; the empty fallback for a stdio MCP server's working directory, never used, since the run's directory is made before such a server starts; the readers a stdio server's close waits for, which have ended by then, since cancelling a reader settles its read at once; how much of a file `read` reads for its binary test, since the test looks at the first 8 KiB alone, and reading more would only take longer; and the login's closing of its listener's connections, which only Node's `close()` needs, since Bun's ends them itself and mutation testing runs on Bun.
 - **Tests fake the app's globals.** The app reads the environment, `fetch`, the clock and `console` directly, with nothing injected. Tests fake them with `vi.stubEnv`, `vi.stubGlobal` and `vi.spyOn`, and Vitest undoes every fake after each test. Importing `main.ts` runs it, so its tests import it only after faking, and never statically.
 - **Tests start real processes, and a guard checks every signal they send.** The shell's and the sweep's tests run real commands, on Bun and on Node, and assert outcomes and signals, never elapsed time. [`test/signal-guard.ts`](test/signal-guard.ts), a Vitest setup file that Stryker never mutates, wraps `process.kill`. It refuses, and fails the test for, a signal that could reach pid 0, -1 or 1, the test process or its parent, or a process the test file can't vouch for: one it started, one carrying a run ID it registered, or a descendant of either. So even a mutant that widens the sweep's match can't reach your own processes. Processes a test leaves carry a fresh random run ID, and end on their own after 30 seconds at most.
 

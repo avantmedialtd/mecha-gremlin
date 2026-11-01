@@ -2,13 +2,13 @@
 // flags, as `claude mcp add` takes them, and for `login` the client to log in with. `add` turns
 // the flags into the `mcpServers` entry that it stored before there were flags, and checks that
 // entry as before.
-import { type ParseArgsOptionsConfig, parseArgs } from 'node:util';
 import { type Result, err, ok } from '@mecha-gremlin/core/result';
 import { type CheckedEntry, checkEntry, checkName } from '../mcp/entry.ts';
 import { loopbackUri } from '../mcp/redirect.ts';
 import { type Template, hasReference, parseTemplate } from '../mcp/references.ts';
 import { ADVICE } from '../mcp/secrets.ts';
 import { readTime } from './mcp-time.ts';
+import { parse } from './options.ts';
 
 export type Change = 'remove' | 'disable' | 'enable';
 
@@ -53,13 +53,6 @@ type Flags = {
     readonly startupTimeoutMs: number;
     readonly toolTimeoutMs: number;
     readonly disabled: boolean | undefined;
-};
-
-type OptionToken = {
-    readonly name: string;
-    readonly rawName: string;
-    readonly value?: string;
-    readonly inlineValue?: boolean;
 };
 
 const SEE_HELP = 'bun run mcp help explains the command.';
@@ -108,67 +101,6 @@ const STARTUP_TIMEOUT_MS = 30_000;
 const TOOL_TIMEOUT_MS = 120_000;
 
 const URL_START = /^https?:\/\//;
-
-// What strict parsing refuses in an option, given its type: a name it doesn't know; a value for a
-// boolean one; and no value, or one taken from the next argument that starts with -, which is most
-// often the next option.
-const refusalsOf = (
-    type: 'string' | 'boolean' | undefined,
-    unknown: string,
-    { rawName, value, inlineValue }: OptionToken,
-): string[] => {
-    if (type === undefined) {
-        return [`The option ${rawName} isn't known. ${unknown}`];
-    }
-
-    if (type === 'boolean') {
-        return value === undefined ? [] : [`The option ${rawName} takes no value. ${SEE_HELP}`];
-    }
-
-    return value === undefined ||
-        (inlineValue === false && value.length > 1 && value.startsWith('-'))
-        ? [
-              `The option ${rawName} needs a value; one that starts with - is given as ${rawName}=<value>. ${SEE_HELP}`,
-          ]
-        : [];
-};
-
-// Strict parsing stops at the first argument it can't read, and names it only in its error's text,
-// so a lenient reading of the same tokens finds that argument, to name it.
-const parse = <T extends ParseArgsOptionsConfig>(
-    args: readonly string[],
-    options: T,
-    unknown: string,
-) => {
-    try {
-        return ok(
-            parseArgs({
-                args,
-                options,
-                strict: true,
-                allowPositionals: true,
-                tokens: true,
-            }),
-        );
-    } catch {
-        const { tokens } = parseArgs({
-            args,
-            options,
-            strict: false,
-            allowPositionals: true,
-            tokens: true,
-        });
-        // Own options only: `constructor` is no option.
-        const typeOf = (name: string): 'string' | 'boolean' | undefined => {
-            return Object.entries(options).find(([option]) => option === name)?.[1].type;
-        };
-        const refusals = tokens.flatMap((token) => {
-            return token.kind === 'option' ? refusalsOf(typeOf(token.name), unknown, token) : [];
-        });
-
-        return err(refusals.slice(0, 1));
-    }
-};
 
 // The command is undefined when there's no --, and empty when nothing follows it.
 const targetOf = (
@@ -315,10 +247,10 @@ const entryOf = (target: Target, flags: Flags): object => {
 };
 
 const readAdd = (args: readonly string[]): Result<Command, string[]> => {
-    const parsed = parse(args, ADD_OPTIONS, UNKNOWN_IN_ADD);
+    const parsed = parse(args, ADD_OPTIONS, { unknown: UNKNOWN_IN_ADD, value: SEE_HELP });
 
     if (!parsed.ok) {
-        return parsed;
+        return err([parsed.error]);
     }
 
     const { values, positionals, tokens } = parsed.value;
@@ -389,10 +321,10 @@ const clientSecretOf = (text: string | undefined): Read<Template | undefined> =>
 };
 
 const readLogin = (args: readonly string[]): Result<Command, string[]> => {
-    const parsed = parse(args, LOGIN_OPTIONS, SEE_HELP);
+    const parsed = parse(args, LOGIN_OPTIONS, { unknown: SEE_HELP, value: SEE_HELP });
 
     if (!parsed.ok) {
-        return parsed;
+        return err([parsed.error]);
     }
 
     const { values, positionals } = parsed.value;

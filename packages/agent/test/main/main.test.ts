@@ -39,6 +39,13 @@ import { startHttpServer } from '../mcp/http-server.ts';
 // The test helper supplies a task explicitly; the application no longer supplies one.
 const TEST_TASK = 'Carry out the test task.';
 
+const USAGE =
+    "Give the task as a file, as in bun run agent task.md, or inline after --prompt or -p, as in bun run agent -p 'Say hi'.";
+
+const envFileRefusal = (path: string): string => {
+    return `The task file ${JSON.stringify(path)} is an environment file. The agent doesn't take its task from those: they hold secrets.`;
+};
+
 /** Each test sets or clears all of these, so settings in your shell can't leak in. */
 const SETTINGS = [
     'LOG_FORMAT',
@@ -165,7 +172,7 @@ const modelCallsOf = (requests: readonly RecordedRequest[]): RecordedRequest[] =
 const startAgent = (
     env: Settings = {},
     server: FakeServer = {},
-    args: readonly string[] = [TEST_TASK],
+    args: readonly string[] = ['-p', TEST_TASK],
 ) => {
     const settings: Settings = {
         LOG_FORMAT: 'json',
@@ -225,7 +232,7 @@ const startAgent = (
 const runAgent = async (
     env: Settings = {},
     server: FakeServer = {},
-    args: readonly string[] = [TEST_TASK],
+    args: readonly string[] = ['-p', TEST_TASK],
 ) => {
     const started = startAgent(env, server, args);
     await started.done;
@@ -320,28 +327,136 @@ const heldModelCall = () => {
 };
 
 describe('Carry out a task through the agent loop, and log the answer', { timeout: 15_000 }, () => {
-    test.each([[[]], [[' ', '  ']]])(
-        'a missing or blank task fails without a request',
-        async (args) => {
-            const { code, requests, records } = await runAgent({}, {}, args);
+    test.each([[[]], [['-p', ' \n ']]])('no task, or a blank one: %j', async (args) => {
+        const { code, requests, records } = await runAgent({}, {}, args);
 
-            expect(code).toBe(1);
-            expect(errors(records)).toEqual([expect.stringContaining('task is required')]);
-            expect(requests).toHaveLength(0);
-        },
-    );
+        expect(code).toBe(1);
+        expect(errors(records)).toEqual([`A task is required. ${USAGE}`]);
+        expect(requests).toHaveLength(0);
+    });
 
-    test('a task from the arguments', async () => {
+    test.each(['-p', '--prompt'])('a task from the arguments, after %s', async (option) => {
         const { modelCall } = await runAgent({}, {}, [
-            'Which',
-            'runtime',
-            'does README.md describe?',
+            option,
+            'Which runtime does README.md describe?',
         ]);
 
         expect(modelCall?.body?.input).toContainEqual({
             role: 'user',
             content: 'Which runtime does README.md describe?',
         });
+    });
+
+    test.each([
+        [
+            'its text, trimmed',
+            '\n  Which runtime does README.md describe?\n\n',
+            'Which runtime does README.md describe?',
+        ],
+        [
+            'its frontmatter included',
+            '---\ntags: [work]\n---\nSay hi\n',
+            '---\ntags: [work]\n---\nSay hi',
+        ],
+    ])('a task from a file in the current directory: %s', async (_what, text, task) => {
+        await writeFile(join(cwd, 'task.md'), text);
+
+        const { modelCall } = await runAgent({}, {}, ['task.md']);
+
+        expect(modelCall?.body?.input).toContainEqual({ role: 'user', content: task });
+    });
+
+    test("a task file that doesn't exist: no request, and the store stays closed", async () => {
+        const data = await mkdtemp(join(tmpdir(), 'agent-data-'));
+
+        try {
+            const { code, records, requests } = await runAgent({ DATA_DIR: data }, {}, ['Say hi']);
+
+            expect(code).toBe(1);
+            expect(errors(records)).toEqual([
+                `No task file at ${JSON.stringify(join(cwd, 'Say hi'))}. ${USAGE}`,
+            ]);
+            expect(requests).toHaveLength(0);
+            expect(existsSync(join(data, 'db.sqlite'))).toBe(false);
+        } finally {
+            await rm(data, { recursive: true, force: true });
+        }
+    });
+
+    test.each([
+        ['logo.png', new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x0d]), 'is a binary file.'],
+        ['blank.md', ' \n\t\n', 'is blank.'],
+    ])("a task file that isn't text: %s", async (name, content, why) => {
+        await writeFile(join(cwd, name), content);
+
+        const { code, records, requests } = await runAgent({}, {}, [name]);
+
+        expect(code).toBe(1);
+        expect(errors(records)).toEqual([
+            `The task file ${JSON.stringify(join(cwd, name))} ${why}`,
+        ]);
+        expect(requests).toHaveLength(0);
+    });
+
+    test('task files the file tools refuse: .env, a link to it, and a file in DATA_DIR', async () => {
+        const folder = await mkdtemp(join(tmpdir(), 'agent-task-'));
+        await writeFile(join(folder, '.env'), 'MODEL_API_KEY=sk-live-secret');
+        await symlink(join(folder, '.env'), join(folder, 'innocent.md'));
+
+        try {
+            const runs = [
+                await runAgent({}, {}, [join(folder, '.env')]),
+                await runAgent({}, {}, [join(folder, 'innocent.md')]),
+                await runAgent({}, {}, [join(dataDir, 'db.sqlite')]),
+            ];
+
+            expect(runs.map((run) => run.code)).toEqual([1, 1, 1]);
+            expect(runs.map((run) => errors(run.records))).toEqual([
+                [envFileRefusal(join(folder, '.env'))],
+                [envFileRefusal(join(folder, 'innocent.md'))],
+                [
+                    `The task file ${JSON.stringify(join(dataDir, 'db.sqlite'))} is inside the data folder. The agent doesn't take its task from there: it holds the agent's database.`,
+                ],
+            ]);
+            expect(runs.flatMap((run) => run.requests)).toEqual([]);
+            expect(runs.map((run) => run.output).join('')).not.toContain('sk-live-secret');
+        } finally {
+            await rm(folder, { recursive: true, force: true });
+        }
+    });
+
+    test.each([
+        [
+            'a task file and -p',
+            ['task.md', '-p', 'Say hi'],
+            `A task file, "task.md", and --prompt were both given. ${USAGE}`,
+        ],
+        [
+            'two positional arguments',
+            ['Say', 'hi'],
+            `A run takes one task file, and was given 2. A task given inline is one argument after -p, quoted. ${USAGE}`,
+        ],
+        ['-p twice', ['-p', 'Say', '-p', 'hi'], `--prompt can be given only once. ${USAGE}`],
+        ['--verbose', ['-p', 'Say hi', '--verbose'], `The option --verbose isn't known. ${USAGE}`],
+    ])('one way to give the task: %s', async (_case, args, error) => {
+        const { code, records, requests } = await runAgent({}, {}, args);
+
+        expect(code).toBe(1);
+        expect(errors(records)).toEqual([error]);
+        expect(requests).toHaveLength(0);
+    });
+
+    test("the task's problems are reported with the configuration's", async () => {
+        const { code, records, requests } = await runAgent({ WORK_DIR: 'missing' }, {}, [
+            'missing.md',
+        ]);
+
+        expect(code).toBe(1);
+        expect(errors(records)).toEqual([
+            `WORK_DIR must name an existing directory; ${join(cwd, 'missing')} isn't one.`,
+            `No task file at ${JSON.stringify(join(cwd, 'missing.md'))}. ${USAGE}`,
+        ]);
+        expect(requests).toHaveLength(0);
     });
 
     test('without skills: read, write, edit and shell, and a developer item that mentions no skills', async () => {
@@ -915,8 +1030,8 @@ describe('Log each model call and tool call', () => {
 
         try {
             const { records, runId } = await runAgent({ WORK_DIR: work, DATA_DIR: data }, {}, [
-                'Say',
-                'hi',
+                '-p',
+                'Say hi',
             ]);
 
             expect(runId).toMatch(/^[0-9a-f]{8}$/);
@@ -935,6 +1050,17 @@ describe('Log each model call and tool call', () => {
             await rm(work, { recursive: true, force: true });
             await rm(data, { recursive: true, force: true });
         }
+    });
+
+    test('the asking record of a task file: its text, and its absolute path', async () => {
+        await writeFile(join(cwd, 'task.md'), 'Say hi\n');
+
+        const { records } = await runAgent({}, {}, ['task.md']);
+
+        expect(find(records, 'asking')).toMatchObject({
+            task: 'Say hi',
+            taskFile: join(cwd, 'task.md'),
+        });
     });
 
     test('the migrated record, logged before asking, on the first run only', async () => {

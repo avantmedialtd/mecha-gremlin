@@ -28,12 +28,13 @@
 
 - **One positional argument or `--prompt`, through `parseArgs`.** The options are `{ prompt: { type: 'string', short: 'p' } }`, parsed strictly, with positionals allowed and tokens on.
   - **What fails:** no task; a file and `--prompt` together; two positionals; `--prompt` twice, counted from the tokens because the values keep only the last; and a blank `--prompt`.
-  - **The errors** end with one usage sentence that shows both forms. The one for two positionals also says to quote the task after `-p`, since `-p Say hi` is a value and a file.
+  - **The errors** end with one usage sentence that shows both forms. The one for two positionals also says to quote the task after `-p`, since an unquoted task arrives as several words. `-p Say hi` arrives as a value and a file, and its error names both.
   - **Turned down:**
     - joining the words after `--prompt`, as the arguments are joined today, which would make `-p Say hi` ambiguous;
     - an `--inline` switch that changes what the positionals mean;
     - a hand-written loop, beside a command that already uses `parseArgs`.
-- **The strict-then-lenient parse is shared.** `parse` and `refusalsOf` move from `mcp-args.ts` to a module of their own in `main/`, which both commands import.
+- **The option parse is shared.** `parse` and `refusalsOf` move from `mcp-args.ts` to a module of their own in `main/`, `options.ts`, which both commands import.
+  - **The order:** a lenient reading finds the first option to refuse, and only when there is none does the strict parse run. That parse then can't fail, and it gives the values their types. `mcp-args.ts` parsed strictly first and read leniently on failure. Reversing the order gives one error string, without a fallback that could never run and that no test could reach.
   - **The hints:** each command passes the sentences that end its refusals, one for an unknown option and one for a value. These are `UNKNOWN_IN_ADD` or `SEE_HELP` for the `mcp` command, and the usage sentence for the agent.
   - **A value that starts with `-`** is suggested as `--<name>=<value>`, by the long name, since `-p=<value>` gives `=<value>`. The `mcp` command's options are all long, so its messages don't change.
   - **Turned down:** a copy in `args.ts`, which would drift from the original.
@@ -46,7 +47,7 @@
   - **Without a valid `DATA_DIR`,** the data-folder check is skipped. The run fails on that setting anyway, and the task's other problems are still reported with it.
   - **Turned down:** no refusal, on the grounds that the user chose the file. A slip would send secrets away and log them.
 - **Read once, then probe and trim.**
-  - **The read:** the whole file is read into memory and checked for a NUL byte in its first 8 KiB, then decoded as UTF-8 and trimmed. One read can't see a file change between a probe and a read, and it works for a pipe, such as `/dev/stdin`, which can't be read twice.
+  - **The read:** the whole file is read into memory and checked for a NUL byte in its first 8 KiB, then decoded as UTF-8 and trimmed. One read can't see a file change between a probe and a read, and it reads a pipe, which can't be read twice. On Node, `/dev/stdin` resolves to `/dev/fd/0` and is read. On Bun 1.4.4, `realpath` fails on it with `EBADF` when stdin is a pipe, so the run stops, giving that reason. Reading stdin waits for `-`.
   - **The probe** becomes an export of `tools/read.ts` that takes the bytes, so `read` and the task file apply one rule.
   - **The trim** removes leading and trailing whitespace, a byte-order mark among it, which `trim` counts as whitespace. Frontmatter, line endings and inner whitespace stay as written (D40). A file that is blank once trimmed fails, as a blank `--prompt` does.
   - **The errors:** a missing file is "no task file" at its absolute path, with `-p` named. Other failures, such as a directory, give the path and the system's reason, as `reasonOf` words it.
@@ -71,4 +72,4 @@
 - **[Every inline habit breaks]** → The not-found error names `-p`, and the README shows both forms.
 - **[A path typed relative to a subdirectory resolves from the repository's root under `bun run`]** → The not-found error gives the absolute path it tried, which shows why. Absolute paths always work.
 - **[A large file is sent whole, unlike an argument, which the system caps]** → No cap until Q25 settles how each provider treats an oversized first request.
-- **[A FIFO with no writer, given as the task file, waits]** → Accepted. Pipes are read like any other file, which is also what makes `/dev/stdin` work.
+- **[A FIFO with no writer, given as the task file, waits]** → Accepted: a pipe is read like any other file. `/dev/stdin` works on Node only, as the read's decision says.
