@@ -107,7 +107,7 @@ An authorization server that offers no dynamic registration, when no client is g
 - **The paste.** While it listens, the login SHALL read stdin. A line holding a URL with the redirect's parameters SHALL be taken as the redirect, as if the browser had reached the listener.
 - **Checks:**
   - a redirect whose `state` doesn't match SHALL fail the login, with no code exchanged;
-  - a redirect with an `error` parameter SHALL fail it, naming the error;
+  - a redirect with an `error` parameter SHALL fail it, naming the error, and its `error_description` when it has one. Either SHALL be printed only when it holds nothing but the characters RFC 6749 allows it, so that no control sequence reaches the terminal: an error code in other characters SHALL be named as one, and a description in other characters, or an empty one, SHALL be left out;
   - the redirect's parameters SHALL go to the SDK, which checks `iss`.
 - **Time.** The login SHALL wait up to 5 minutes for the redirect, and then fail, saying so.
 - **The browser** SHALL get a short page saying the tab can be closed. The listener SHALL close once it has the redirect, or the login has failed.
@@ -127,6 +127,14 @@ An authorization server that offers no dynamic registration, when no client is g
 #### Scenario: A refusal
 - **WHEN** the redirect holds `error=access_denied`
 - **THEN** the login fails, with an error naming `access_denied`
+
+#### Scenario: A refusal with a description
+- **WHEN** the redirect holds `error=access_denied` and `error_description=The user has not been granted access to the requested resource`
+- **THEN** the login fails, with an error naming `access_denied` and that description
+
+#### Scenario: A description in other characters
+- **WHEN** the redirect holds `error=access_denied` and an `error_description` with a control character in it
+- **THEN** the login fails, with an error naming `access_denied`, and no part of the description
 
 #### Scenario: Too long
 - **WHEN** no redirect comes within 5 minutes
