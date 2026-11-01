@@ -29,6 +29,7 @@
 > - **2026-10-31, evening:** the change `add-mcp-login` carries out D31, D32 and D38. `bun run mcp login <name>` sends a Streamable HTTP server an initialize without a token and discovers its authorization server where the 401's `WWW-Authenticate` points, else at the well-known URLs (R17.4); it takes a client given with `--client-id`, else the one saved for its issuer, else registers one, and prints the URL to open. It takes the redirect on 127.0.0.1, on the port the saved client registered while that is free, or a pasted address, checks `state`, has the SDK exchange the code, which checks `iss`, saves the row, and lists the server's tools with the new token. `logout` and `remove` delete a server's logins, and `get` shows them. A run sends the saved token through the SDK's minimal `AuthProvider`, refreshes it ahead of expiry and after a 401 under the credential's lease, marks the row on `invalid_grant`, and redacts the tokens. The login exchanges the code through the SDK's `fetchToken()`, not `auth()`, which on a refused code warns on the console and sends the code again.
 > - **2026-11-01:** the first real login, to an authorization server without dynamic registration that matches redirect URIs exactly, port included, showed two gaps. Its refusal named neither where to register a client nor the redirect URI to register; and a client given with `--client-id` was saved without the redirect URI it was used with, so a later login with no options, the one a spent login's error asks for, would have sent a port the system picked, which such a server refuses. The change `remember-login-redirect` has the refusal name the authorization server's issuer, the redirect URI to register and the command that logs in with it, and saves a configured client with its redirect URI, which a later login uses again. Where no client could be registered for another port, the login keeps to that one, and fails when it's taken.
 > - **2026-11-01, later:** when an authorization server refused a login at the redirect, the login named the error code alone, and dropped the `error_description` that says why. The change `show-login-error-description` names the description too, in parentheses after the code. Like the code, it is printed only when it holds nothing but the characters RFC 6749 allows it: a description in other characters, or an empty one, is left out, so that no control sequence reaches the terminal.
+> - **2026-11-01, evening:** R19 records how a task reaches a run through the shell and `bun run`: a file's text arrives intact as one quoted argument, within the system's limit on arguments, and `bun run` starts a script in its package's root, wherever the command was typed. C19 proposes taking the task from a file by default, and D39 and D40 are decided: `--prompt`, or `-p`, gives the task inline instead, and a task file's frontmatter is part of the task. Q25 asks what each provider does with a first request larger than the model's context.
 
 ---
 
@@ -102,7 +103,7 @@ Everything private (secrets, client specifics, my own skills and task definition
 7. **Compaction.** Never compact the system prompt or original task. Only compress the conversational middle. Build the seam now, but don't build a sophisticated summariser until real runs show context growth is a problem.
 8. **Prompt caching.** Keep the stable prefix (system prompt, tool schemas) pinned and byte-identical at the front. Compaction only touches the middle, so the two don't fight. Caching behaviour differs between OpenAI and LM Studio, so don't assume one uniform feature.
 
-▸ **1. Scheduler.** Proposal: an in-process tick driven by the database (4.8, D6). Where task definitions live: C6, D5.
+▸ **1. Scheduler.** Proposal: an in-process tick driven by the database (4.8, D6). Where task definitions live: C6, D5. Until they exist, a run takes its task from a file, or inline with `--prompt` (C19).
 
 ▸ **2. Agent loop.** Draft in 4.5. Budgets and a context-fill check beyond the iteration cap: C8. Narration handling: C9, using LM Studio's own markers (R5.2). What a turn is, and how other agent loops count and stop: R15. Naming the loop's unit a step: C13.
 
@@ -1403,6 +1404,16 @@ Researched on 2026-10-29 for the design in 4.12: how clients configure MCP serve
   - **The stderr tail is complete only after `close()`,** and strict capabilities or a capability check keep the SDK's `console.debug` off stdout.
 - **Sources:** modelcontextprotocol.io/specification/2026-07-28/basic/transports/stdio (its `stderr` rules, Shutdown and Unexpected Termination) and /basic/transports, and modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle and /basic/transports; `@modelcontextprotocol/client@2.4.0`: the sources in its source maps (`src/client/{client,stdio,versionNegotiation,probeClassifier,middleware,auth,authExtensions}.ts`, `core-internal/src/shared/{stdio,transport,protocol}.ts` and `core-internal/src/util/standardSchema.ts`), `dist/src-CeKsbNLO.mjs` and `dist/client-BTIWJvaF.d.mts`; `@playwright/mcp@0.0.83` `README.md` and `playwright-core@1.64.0-alpha-1790635538000` `lib/coreBundle.js`; `bun-types@1.4.4` `bun.d.ts` and `s3.d.ts`; the `oven/bun:1.4.4` and `node:26.13.0-slim` Docker images, and BusyBox `ps` on Alpine; this repository's `packages/process/src/spawn.ts`, `packages/process/test/spawn.test.ts`, `test/signal-guard.ts`, `openspec/specs/process-spawning/spec.md` and `packages/agent/src/exec/{env,run,sweep}.ts`; a spike on Bun 1.4.4 and Node 26.12.1, macOS arm64, and Linux arm64 in Docker.
 
+## R19. How a run takes its task
+
+Measured on 2026-11-01 on Bun 1.4.4, macOS arm64, for C19: what reaches the agent when a task goes through the shell and `bun run`, and where `bun run` starts a script. **[H]** unless marked.
+
+- **A file's text arrives intact as one quoted argument.** `bun run <script> "$(cat task.md)"` gave the script one argument equal to the file, with its quotes, `$HOME`, backticks, `$(…)`, `!` and `*`, less the trailing newline, which command substitution drops. Unquoted, the shell splits the text into words **[K]**, and the agent joins its arguments with single spaces, so the lines are lost.
+- **Arguments have a size limit.** `getconf ARG_MAX` gives 1 MiB on macOS, for the arguments and the environment together. Linux also limits each argument to 32 pages, 128 KiB with 4 KiB pages **[K]**.
+- **`bun run` starts a script in its package's root.** Run from a subdirectory, the script's working directory was the directory of the `package.json` that defines it, and Bun set no `INIT_CWD`. npm starts scripts there too, but sets `INIT_CWD` to the directory the command was typed in **[K]**. The agent resolves `WORK_DIR` against its working directory, so under `bun run` a relative path starts from the repository's root, wherever the command was typed.
+- **Flags and stdin pass through.** `--task 'Say hi' --help` after the script's name reached the script as those three arguments, and text piped into `bun run` reached the script's stdin whole.
+- **Sources:** a scratch package on Bun 1.4.4, macOS arm64; `getconf ARG_MAX`; `execve(2)` on Linux's per-argument limit, `MAX_ARG_STRLEN`; npm's `run-script` documentation on `INIT_CWD`; this repository's `packages/agent/src/main/args.ts` and `packages/agent/src/config/config.ts`.
+
 ---
 
 # Part 3: Where the brief stands, and challenges
@@ -1566,6 +1577,7 @@ These are **proposals, not decisions**. Each links to a decision in Part 5. "Bri
   - "What did the prompt say at 3am" gets a definite answer.
   - A future client UI can still edit the DB.
   - It mirrors SKILL.md in spirit.
+- **Since 2026-11-01:** before task definitions exist, a run takes its task from a Markdown file, frontmatter included (C19, D39, D40). Reading TASK.md's frontmatter would change only what a file that opens with a `---` block means.
 - **Decision:** D5.
 
 ### C7. TypeORM on Bun: proceed with conventions and a fallback ladder
@@ -1822,6 +1834,26 @@ These are **proposals, not decisions**. Each links to a decision in Part 5. "Bri
   - **Lifecycle:** servers connect in parallel, with a start-up timeout, before the first model call. Calls carry a timeout and the run's abort signal, and the clients close before the sweep.
   - **The SDK's console output** goes through the logger, or nowhere.
 - **Decision:** D33 for what a failed connection does, and D34 for the tools. 4.12 drafts the whole design, with D36 and D37 (R18).
+
+### C19. A run's task: a file, or `--prompt`
+- **Asked (2026-11-01):** make the agent take a Markdown file by default, with a parameter for a prompt given inline.
+- **Finding:**
+  - **Today the arguments, joined with spaces, are the task** (the `agent` spec). A long or multi-line task goes through the shell as `"$(cat task.md)"`, which arrives intact only when quoted, and only within the system's limit on arguments (R19).
+  - **The Brief's words are taken.** C6 calls a TASK.md's body "the prompt", and `gremlin run <task>` and `gremlin skill-env set <skill> [--task <name>]` take a task definition's name (4.4, 4.8). A `--task` flag that holds text would give "task" a second meaning.
+  - **Relative paths start from the repository's root** under `bun run`, as `WORK_DIR` does, wherever the command was typed (R19).
+  - **Every inline call changes:** the README's usage and examples, CI's start-up check on Node, the `agent` spec's task requirement and its CI scenario, and the run's tests.
+- **Proposal:**
+  - **`bun run agent <file>`:** the file's text, trimmed, is the task. Any text file will do: Markdown is expected, but the extension isn't checked. A blank file, or one with a NUL byte in its first 8 KiB, the test `read` uses, fails before any request.
+  - **`--prompt <text>`, or `-p <text>`,** gives the task inline, as one argument.
+  - **One way at a time.** No task, both forms, or two files fail with an error that names both forms. As a missing task is today, it is reported with the configuration's problems, before the store opens and before any request.
+  - **Frontmatter is part of the task** (D40).
+  - **The `asking` record keeps the task's text, and adds the file's path.** Until runs are stored, that record is the only copy of what was asked, and the file can change after the run: C6's "what did the prompt say at 3am".
+  - **No stdin for now.** `-` could name it later, since stdin passes through `bun run` (R19).
+- **Against:**
+  - **Every inline habit breaks.** `bun run agent 'Say hi'` looks for a file named "Say hi", though the error names `-p`.
+  - **A file has no size limit,** so a large one passed by mistake is sent whole. Whether that needs a cap depends on Q25.
+  - **Under `bun run`, a path the shell completed in a subdirectory is wrong,** since the agent starts in the repository's root. Absolute paths always work.
+- **Decision:** D39 for how a run takes its task, and D40 for frontmatter.
 
 ---
 
@@ -2571,6 +2603,8 @@ A draft for the change that gives the agent MCP servers ahead of OAuth (C16, D35
 | D36 | The working directory of stdio servers | an empty directory made for each run · `WORK_DIR` · the directory the agent was started from | **An empty directory for each run,** and `WORK_DIR` only when an entry names it. npm reads `.npmrc` from its working directory, and a `.` in `PATH` resolves there, while the model can write to `WORK_DIR` (R18.1, 4.12) | **decided 2026-10-30: an empty directory for each run,** as recommended, made outside `WORK_DIR` and `DATA_DIR`. The change `add-mcp-servers` carries it out |
 | D37 | How stdio servers are started and stopped | through `@mecha-gremlin/process`, with a new stdin pipe and the agent's own close sequence · the SDK's `StdioClientTransport` | **Through `@mecha-gremlin/process`.** The SDK's transport signals only its direct child, and Playwright's Chrome outlives a group kill unless its groups were listed first (R17.3, R18.3, 4.12) | **decided 2026-10-30: through `@mecha-gremlin/process`,** as recommended, which gains a stdin pipe. The change `add-mcp-servers` carries it out |
 | D38 | The port the login's redirect comes to | a fixed port, configurable · any free port | **A fixed port, configurable:** some servers match redirect URIs exactly, host and port included (C17) | **decided 2026-10-31: any free port.** A saved client's registered port is used again when it is free, and a client registered through DCR is registered again when it isn't; the address the browser ends on can also be pasted. The change `add-mcp-login` carries it out |
+| D39 | How a run takes its task | the arguments, joined with spaces, as now · a file by default, with `--prompt` and `-p` for the text inline · a file by default, with `--task` for the text inline · a file when the argument names one, the text otherwise | **A file by default, with `--prompt` and `-p` inline.** C6 calls a TASK.md's body the prompt, `--task <name>` already names a definition, and a guess from the argument is ambiguous whenever a task's text could name a file (C19) | **decided 2026-11-01: a file by default, with `--prompt` or `-p` for the text inline,** as recommended |
+| D40 | A task file's frontmatter | part of the task, sent verbatim · refused until TASK.md gives it meaning · parsed now, starting on TASK.md's keys (D5) | **Verbatim:** notes that keep tags in their frontmatter run as they are, and a file without frontmatter means the same to a later TASK.md reader (C19) | **decided 2026-11-01: verbatim,** as recommended |
 
 ## Open questions
 
@@ -2600,6 +2634,7 @@ A draft for the change that gives the agent MCP servers ahead of OAuth (C16, D35
 | Q22 | Is a server identified by its name alone, or by its name and URL? | pi and Codex key credentials by both, so one URL configured under two names holds two sign-ins (R17.5). |
 | Q23 | Should a stdio server that exits mid-session be restarted, as the stdio binding says a client SHOULD, or should its calls fail for the rest of the run? | 4.12 lets them fail, which keeps a run's tools fixed. A restart needs a new handshake, and the same tool list (R18.3). |
 | Q24 | Do the Docker images install procps, or do the sweep and the transport read `/proc` on Linux? | The official Bun and Node images ship no `ps`, so in them the sweep fails and the transport finds no descendants to stop (R18.3). |
+| Q25 | What does each provider do with a first request larger than the model's context: fail it, or cut it silently? | A task file has no size limit, unlike an argument (R19), and LM Studio's default context has been 8k since 0.4.16 (R5.5). A failure ends the run with an error, while a silent cut runs a task the model saw only in part. It decides whether a task file needs a cap (C19). |
 
 **Q12–Q17 (2026-10-16).** The OpenSpec change `skills-and-shell` answers each in its design (`openspec/changes/archive/2026-10-16-skills-and-shell/design.md`):
 
