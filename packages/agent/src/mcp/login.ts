@@ -77,15 +77,20 @@ type Flow = LoginRequest & {
     readonly redirect: Redirect;
 };
 
-// RFC 6749's characters for an error code, so that the terminal shows no control sequence.
+// RFC 6749's characters for an error code, and for an error description, neither of which may be
+// empty, so that the terminal shows no control sequence.
 const ERROR_CODE = /^[\x20\x21\x23-\x5b\x5d-\x7e]+$/;
 
 const reasonOf = (error: unknown): string => {
     return error instanceof Error ? error.message : String(error);
 };
 
-const refusal = (error: string): string => {
-    return ERROR_CODE.test(error) ? error : 'an error code in characters that OAuth allows in none';
+const refusal = (error: string, description: string): string => {
+    const code = ERROR_CODE.test(error)
+        ? error
+        : 'an error code in characters that OAuth allows in none';
+
+    return ERROR_CODE.test(description) ? `${code} (${description})` : code;
 };
 
 // The initialize a run sends first, with the entry's headers and no token, to the server's own URL
@@ -242,7 +247,9 @@ const authorize = async (flow: Flow): Promise<Result<number, string>> => {
     }
 
     if (error !== null) {
-        return err(`The authorization server refused the login to ${name}: ${refusal(error)}.`);
+        const reason = refusal(error, parameters.get('error_description') ?? '');
+
+        return err(`The authorization server refused the login to ${name}: ${reason}.`);
     }
 
     if (code === null) {

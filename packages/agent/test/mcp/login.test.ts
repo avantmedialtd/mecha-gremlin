@@ -912,6 +912,60 @@ describe('Take the redirect at a loopback listener or pasted', { timeout: 20_000
         });
     });
 
+    test('a refusal with a description, in parentheses after the code', async () => {
+        const guard = await guarded();
+        const login = startLogin(guard.server.url);
+        const redirect = new URL(
+            await guard.auth.authorize((await login.url()).href, { deny: true }),
+        );
+        redirect.searchParams.set(
+            'error_description',
+            'The user has not been granted access to the requested resource',
+        );
+
+        login.input.write(`${redirect.href}\n`);
+        const result = await login.done;
+
+        expect(result).toEqual({
+            ok: false,
+            error: 'The authorization server refused the login to docs: access_denied (The user has not been granted access to the requested resource).',
+        });
+    });
+
+    test('a description in other characters: no part of it is named', async () => {
+        const guard = await guarded();
+        const login = startLogin(guard.server.url);
+        const redirect = new URL(
+            await guard.auth.authorize((await login.url()).href, { deny: true }),
+        );
+        redirect.searchParams.set('error_description', 'Denied\u001b[31m in red');
+
+        login.input.write(`${redirect.href}\n`);
+        const result = await login.done;
+
+        expect(result).toEqual({
+            ok: false,
+            error: 'The authorization server refused the login to docs: access_denied.',
+        });
+    });
+
+    test('an empty description is left out', async () => {
+        const guard = await guarded();
+        const login = startLogin(guard.server.url);
+        const redirect = new URL(
+            await guard.auth.authorize((await login.url()).href, { deny: true }),
+        );
+        redirect.searchParams.set('error_description', '');
+
+        login.input.write(`${redirect.href}\n`);
+        const result = await login.done;
+
+        expect(result).toEqual({
+            ok: false,
+            error: 'The authorization server refused the login to docs: access_denied.',
+        });
+    });
+
     test('a refusal whose code holds what OAuth allows in none', async () => {
         const guard = await guarded();
         const login = startLogin(guard.server.url);
