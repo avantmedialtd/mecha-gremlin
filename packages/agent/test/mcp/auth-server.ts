@@ -25,6 +25,11 @@ export type AuthOptions = {
     readonly issParameter?: boolean;
     /** Clients registered beforehand, by ID, with their secrets. */
     readonly clients?: Readonly<Record<string, string>>;
+    /**
+     * The redirect URIs that clients registered beforehand are held to, by ID, matched exactly,
+     * port included, as some authorization servers match them.
+     */
+    readonly redirectUris?: Readonly<Record<string, readonly string[]>>;
     /** Whether a guarded server's metadata names it with a trailing /, which its issuer lacks. */
     readonly trailingSlash?: boolean;
     /** Where its token endpoint is: only its metadata says so when it isn't /token. */
@@ -79,7 +84,10 @@ export type FakeAuth = {
 
 type Client = {
     readonly secret: string | undefined;
-    /** Undefined for a client registered beforehand, which may use any loopback redirect. */
+    /**
+     * Undefined for a client registered beforehand and held to no redirect URIs, which may use any
+     * loopback redirect.
+     */
     readonly redirectUris: readonly string[] | undefined;
 };
 
@@ -141,6 +149,7 @@ export const startAuthServer = async ({
     scopes,
     issParameter = false,
     clients: given = {},
+    redirectUris = {},
     trailingSlash = false,
     tokenPath = '/token',
     metadataAt = 'well-known',
@@ -151,7 +160,10 @@ export const startAuthServer = async ({
     const registrations: Record<string, unknown>[] = [];
     const tokenRequests: Record<string, string>[] = [];
     const clients = new Map<string, Client>(
-        Object.entries(given).map(([id, secret]) => [id, { secret, redirectUris: undefined }]),
+        Object.entries(given).map(([id, secret]) => [
+            id,
+            { secret, redirectUris: redirectUris[id] },
+        ]),
     );
     const codes = new Map<string, Code>();
     const grants: GrantState[] = [];

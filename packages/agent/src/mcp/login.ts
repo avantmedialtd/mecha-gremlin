@@ -72,6 +72,8 @@ type Flow = LoginRequest & {
     readonly challengeScope: string | undefined;
     readonly issuer: string;
     readonly saved: z.infer<typeof SavedClient> | undefined;
+    /** Whether the authorization server can register a client. */
+    readonly registers: boolean;
     readonly redirect: Redirect;
 };
 
@@ -168,27 +170,31 @@ const countTools = async (
 
 const authorize = async (flow: Flow): Promise<Result<number, string>> => {
     const { store, server, connection, clientId, clientSecret, scope, show } = flow;
-    const { info, resourceMetadataUrl, challengeScope, issuer, saved, redirect } = flow;
+    const { info, resourceMetadataUrl, challengeScope, issuer, saved, registers, redirect } = flow;
     const { name, secrets } = server;
     const metadata = info.authorizationServerMetadata;
-    // A client registered dynamically lists the redirect URIs it registered, and registers again
-    // for another; one given with --client-id lists none.
+    // A saved client lists the redirect URIs it registered, through the login or ahead of time,
+    // and is of no use with another. One given with --client-id that was saved before such
+    // clients kept theirs lists none.
     const reusable =
         saved?.redirect_uris === undefined || saved.redirect_uris.includes(redirect.uri)
             ? saved
             : undefined;
+    // The SDK holds redirect URIs only for a client it registers, so this one is given the one
+    // it's used with, for a later login to listen on its port.
     const client =
         clientId === undefined
             ? reusable
-            : { client_id: clientId, client_secret: clientSecret, issuer };
+            : {
+                  client_id: clientId,
+                  client_secret: clientSecret,
+                  issuer,
+                  redirect_uris: [redirect.uri],
+              };
 
-    if (
-        client === undefined &&
-        metadata !== undefined &&
-        metadata.registration_endpoint === undefined
-    ) {
+    if (client === undefined && !registers) {
         return err(
-            `The authorization server of ${name} can't register a client, so give one registered with it: bun run mcp login ${name} --client-id <id>, with --client-secret and --redirect-uri if it has them.`,
+            `The authorization server of ${name}, ${issuer}, can't register a client. Register one with it whose redirect URI is http://127.0.0.1:<port>/callback, on a free port of your choosing, and log in with it: bun run mcp login ${name} --client-id <id> --redirect-uri http://127.0.0.1:<port>/callback, adding --client-secret '\${NAME}' if it has a secret.`,
         );
     }
 
@@ -295,7 +301,10 @@ export const logIn = async (request: LoginRequest): Promise<Result<number, strin
         return err(`The MCP server ${name} offers no OAuth login: it publishes no OAuth metadata.`);
     }
 
-    const issuer = info.authorizationServerMetadata?.issuer ?? info.authorizationServerUrl;
+    const metadata = info.authorizationServerMetadata;
+    const issuer = metadata?.issuer ?? info.authorizationServerUrl;
+    // Without metadata, the SDK registers a client at /register.
+    const registers = metadata === undefined || metadata.registration_endpoint !== undefined;
     const found = await findCredentials(store, { server: name, url: connection.writtenUrl });
 
     if (!found.ok) {
@@ -306,8 +315,14 @@ export const logIn = async (request: LoginRequest): Promise<Result<number, strin
     const saved = parsed.success ? parsed.data : undefined;
     const listened = await listenForRedirect({
         given: redirectUri,
-        // A client given with --client-id comes with the redirect URI it registered, if any.
-        registered: clientId === undefined ? saved?.redirect_uris?.[0] : undefined,
+        // A client given with --client-id comes with the redirect URI it registered, if any,
+        // unless it's the saved one.
+        registered:
+            clientId === undefined || clientId === saved?.client_id
+                ? saved?.redirect_uris?.[0]
+                : undefined,
+        // No client could be registered for another port.
+        keepRegistered: !registers,
         input,
         warn,
     });
@@ -324,6 +339,7 @@ export const logIn = async (request: LoginRequest): Promise<Result<number, strin
             challengeScope: challenge.scope,
             issuer,
             saved,
+            registers,
             redirect: listened.value,
         });
     } finally {

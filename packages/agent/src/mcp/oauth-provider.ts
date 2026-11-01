@@ -17,7 +17,7 @@ import type {
 export type LoginClient = {
     readonly client_id: string;
     readonly client_secret?: string | undefined;
-    /** The redirect URIs a client registered dynamically gave. */
+    /** The redirect URIs it registered, or for a client given with --client-id, the one used. */
     readonly redirect_uris?: readonly string[];
     readonly issuer?: string;
 };

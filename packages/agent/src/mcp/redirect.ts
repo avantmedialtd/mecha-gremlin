@@ -11,6 +11,8 @@ export type RedirectOptions = {
     readonly given: URL | undefined;
     /** The redirect URI the saved client registered, used again while its port is free. */
     readonly registered: string | undefined;
+    /** Whether the registered port is kept to when it's taken, as `--redirect-uri`'s is. */
+    readonly keepRegistered: boolean;
     /** Where a pasted address comes from: stdin. */
     readonly input: Readonly<NodeJS.ReadableStream>;
     /** Says what was wrong with a line that was pasted. */
@@ -97,12 +99,13 @@ const listenAt = async (
 };
 
 /**
- * Listens for the redirect on `--redirect-uri`'s port, else the registered one while it's free,
- * else one the system picks, and reads stdin for a pasted address.
+ * Listens for the redirect on `--redirect-uri`'s port, else the registered one while it's free or
+ * kept to, else one the system picks, and reads stdin for a pasted address.
  */
 export const listenForRedirect = async ({
     given,
     registered,
+    keepRegistered,
     input,
     warn,
 }: RedirectOptions): Promise<Result<Redirect, string>> => {
@@ -115,8 +118,9 @@ export const listenForRedirect = async ({
         take,
     );
 
-    // Only a port asked for is kept to; a registered one that is taken gives way.
-    if (!listening.ok && given === undefined) {
+    // A port asked for is kept to, and so is a registered one that must be; another registered
+    // one that is taken gives way.
+    if (!listening.ok && given === undefined && !keepRegistered) {
         listening = await listenAt(new URL(ANY_PORT), take);
     }
 

@@ -258,6 +258,27 @@ const refused = async (port: number): Promise<boolean> => {
     );
 };
 
+/**
+ * A server whose authorization server knows the client `abc`, registered ahead of time with one
+ * redirect URI, on a free port, which it matches exactly.
+ */
+const exacting = async (options: AuthOptions = {}) => {
+    const port = await freePort();
+    const redirectUri = `http://127.0.0.1:${port}/callback`;
+    const guard = await guarded({
+        clients: { abc: 'sesame' },
+        redirectUris: { abc: [redirectUri] },
+        ...options,
+    });
+
+    return { guard, port, redirectUri };
+};
+
+/** A login with `abc`, given with its secret and its redirect URI. */
+const withAbc = (redirectUri: string): Partial<LoginRequest> => {
+    return { clientId: 'abc', clientSecret: 'sesame', redirectUri: new URL(redirectUri) };
+};
+
 describe('Log in to a Streamable HTTP server with OAuth', { timeout: 20_000 }, () => {
     test('a login through the browser, and a later run with the saved token', async () => {
         const guard = await guarded();
@@ -638,6 +659,7 @@ describe('Register a client for the login', { timeout: 20_000 }, () => {
             client_id: 'abc',
             client_secret: 'sesame',
             issuer: guard.auth.issuer,
+            redirect_uris: [url.searchParams.get('redirect_uri')],
         });
     });
 
@@ -650,6 +672,17 @@ describe('Register a client for the login', { timeout: 20_000 }, () => {
         expect(again.result.ok).toBe(true);
         expect(again.url.searchParams.get('client_id')).toBe('abc');
         expect(guard.auth.registrations).toEqual([]);
+    });
+
+    test('a configured client saved without a redirect URI, as before: used again, on any port', async () => {
+        const guard = await guarded({ clients: { abc: 'sesame' }, registration: false });
+        await logInThroughBrowser(guard, { clientId: 'abc', clientSecret: 'sesame' });
+        await sql(`UPDATE credential SET client = json_remove(client, '$.redirect_uris')`);
+
+        const again = await logInThroughBrowser(guard);
+
+        expect(again.result.ok).toBe(true);
+        expect(again.url.searchParams.get('client_id')).toBe('abc');
     });
 
     test("a configured client in place of a saved one, which doesn't take its port", async () => {
@@ -669,14 +702,14 @@ describe('Register a client for the login', { timeout: 20_000 }, () => {
         );
     });
 
-    test('no dynamic registration, and no client given or saved', async () => {
+    test('no dynamic registration, and no client given or saved: where to register one, and how to log in with it', async () => {
         const { auth, server } = await guarded({ registration: false });
 
         const result = await startLogin(server.url).done;
 
         expect(result).toEqual({
             ok: false,
-            error: "The authorization server of docs can't register a client, so give one registered with it: bun run mcp login docs --client-id <id>, with --client-secret and --redirect-uri if it has them.",
+            error: `The authorization server of docs, ${auth.issuer}, can't register a client. Register one with it whose redirect URI is http://127.0.0.1:<port>/callback, on a free port of your choosing, and log in with it: bun run mcp login docs --client-id <id> --redirect-uri http://127.0.0.1:<port>/callback, adding --client-secret '\${NAME}' if it has a secret.`,
         });
         expect(auth.requests.map((request) => request.url)).not.toContain('/register');
     });
@@ -1081,6 +1114,62 @@ describe('Take the redirect at a loopback listener or pasted', { timeout: 20_000
         expect(again.result.ok).toBe(true);
         expect(guard.auth.registrations).toHaveLength(2);
     });
+
+    test('a configured client logged in again with no options: its redirect URI, on its port', async () => {
+        const { guard, redirectUri } = await exacting({ registration: false });
+        await logInThroughBrowser(guard, withAbc(redirectUri));
+
+        const again = await logInThroughBrowser(guard);
+
+        expect(again.result).toEqual({ ok: true, value: 2 });
+        expect(again.url.searchParams.get('client_id')).toBe('abc');
+        expect(again.url.searchParams.get('redirect_uri')).toBe(redirectUri);
+        expect(again.page.status).toBe(200);
+    });
+
+    test('the same client given again with --client-id: its saved redirect URI, on its port', async () => {
+        const { guard, redirectUri } = await exacting({ registration: false });
+        await logInThroughBrowser(guard, withAbc(redirectUri));
+
+        const again = await logInThroughBrowser(guard, { clientId: 'abc', clientSecret: 'sesame' });
+
+        expect(again.result).toEqual({ ok: true, value: 2 });
+        expect(again.url.searchParams.get('redirect_uri')).toBe(redirectUri);
+        expect(again.page.status).toBe(200);
+    });
+
+    test("a configured client's port taken, with no registration offered: the login fails, naming it, before any URL", async () => {
+        const { guard, port, redirectUri } = await exacting({ registration: false });
+        await logInThroughBrowser(guard, withAbc(redirectUri));
+        await occupy(port);
+        const login = startLogin(guard.server.url);
+        // A login that gave way to another port would end on this, rather than wait 5 minutes.
+        login.input.write('http://127.0.0.1/callback?code=x&state=abandoned\n');
+
+        const result = await login.done;
+
+        expect(result.ok ? '' : result.error).toMatch(
+            new RegExp(`^Can't listen for the redirect on 127\\.0\\.0\\.1:${port}: `),
+        );
+        expect(login.shown).toEqual([]);
+    });
+
+    test("a configured client's port taken, with registration offered: another port, and a client registered for it", async () => {
+        const { guard, port, redirectUri } = await exacting();
+        await logInThroughBrowser(guard, withAbc(redirectUri));
+        await occupy(port);
+
+        const again = await logInThroughBrowser(guard);
+        const [row] = await rowsOf(guard.server.url);
+
+        expect(again.result.ok).toBe(true);
+        expect(portOf(again.url.searchParams.get('redirect_uri'))).not.toBe(port);
+        expect(guard.auth.registrations).toHaveLength(1);
+        expect(row?.client).toMatchObject({
+            client_id: again.url.searchParams.get('client_id'),
+            client_name: 'mecha-gremlin',
+        });
+    });
 });
 
 describe('Save what later runs need', { timeout: 20_000 }, () => {
@@ -1129,6 +1218,21 @@ describe('Save what later runs need', { timeout: 20_000 }, () => {
             },
         ]);
         expect(await rowsOf(guard.server.url)).toEqual([]);
+    });
+
+    test("a configured client's redirect URI: the one it was used with, as its only one", async () => {
+        const { guard, redirectUri } = await exacting({ registration: false });
+
+        const { result } = await logInThroughBrowser(guard, withAbc(redirectUri));
+        const [row] = await rowsOf(guard.server.url);
+
+        expect(result.ok).toBe(true);
+        expect(row?.client).toEqual({
+            client_id: 'abc',
+            client_secret: 'sesame',
+            issuer: guard.auth.issuer,
+            redirect_uris: [redirectUri],
+        });
     });
 
     test('tokens without expires_in: no expiry', async () => {
