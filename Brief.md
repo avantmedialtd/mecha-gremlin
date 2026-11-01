@@ -31,6 +31,7 @@
 > - **2026-11-01, later:** when an authorization server refused a login at the redirect, the login named the error code alone, and dropped the `error_description` that says why. The change `show-login-error-description` names the description too, in parentheses after the code. Like the code, it is printed only when it holds nothing but the characters RFC 6749 allows it: a description in other characters, or an empty one, is left out, so that no control sequence reaches the terminal.
 > - **2026-11-01, evening:** R19 records how a task reaches a run through the shell and `bun run`: a file's text arrives intact as one quoted argument, within the system's limit on arguments, and `bun run` starts a script in its package's root, wherever the command was typed. C19 proposes taking the task from a file by default, and D39 and D40 are decided: `--prompt`, or `-p`, gives the task inline instead, and a task file's frontmatter is part of the task. Q25 asks what each provider does with a first request larger than the model's context. The change `read-task-file` proposes both decisions, and refuses a task file that the file tools would refuse.
 > - **2026-11-01, night:** the change `read-task-file` carries out D39 and D40. A run takes its task from the file its one argument names, trimmed and otherwise verbatim, frontmatter included, or inline with `--prompt` or `-p`. A task given in both ways, or in neither, fails the run before any request, reported with the configuration's problems, and so does a task file that is binary, blank, an environment file or inside the data folder. The `asking` record keeps the task's text, and names the file it came from.
+> - **2026-11-01, late night:** R20 records where the file tools' fence came from and what each of its rules stops, given the shell that every run has. C20 proposes that no file tool refuse a path for where it is, while the refusals that don't depend on where a file is stay. D41 and D42 are decided as asked: the file tools refuse nothing by path, and no setting brings the fence back, since "if we need sandboxing, we will use containers". D43 asks whether a task file still refuses `.env` files and the data folder, and Q26 whether the file tools should expand `~`.
 
 ---
 
@@ -49,6 +50,8 @@ Primary goal: solve my own problem. Secondary: the core may become an open-sourc
 - **Provider-agnostic abstraction layers** beyond what the OpenAI SDK already gives.
 
 ▸ The isolation non-goal holds, but where the boundary sits matters. If the agent's shell runs in the same container as the app's secrets and database access, the boundary encloses both (C3).
+
+▸ **2026-11-01:** the file tools follow this non-goal too. They refuse no path for where it is, and when sandboxing is needed, it is a container (C20, D41, D42).
 
 ## Settled decisions
 
@@ -1415,6 +1418,43 @@ Measured on 2026-11-01 on Bun 1.4.4, macOS arm64, for C19: what reaches the agen
 - **Flags and stdin pass through.** `--task 'Say hi' --help` after the script's name reached the script as those three arguments, and text piped into `bun run` reached the script's stdin whole.
 - **Sources:** a scratch package on Bun 1.4.4, macOS arm64; `getconf ARG_MAX`; `execve(2)` on Linux's per-argument limit, `MAX_ARG_STRLEN`; npm's `run-script` documentation on `INIT_CWD`; this repository's `packages/agent/src/main/args.ts` and `packages/agent/src/config/config.ts`.
 
+## R20. The file tools' fence: where it came from, and what it stops
+
+Researched on 2026-11-01 for C20, from this repository's code, specs and archived changes, and measured on macOS 27 with Bun 1.4.4. **[H]** unless marked.
+
+**R20.1 How the fence grew.**
+- **2026-10-13, `tool-call-loop`.** `read_file` was the model's only tool, so its confinement was a boundary: "Confining it to the working directory and refusing `.env` files limits what a model steered by a file's contents could read."
+- **2026-10-16, `skills-and-shell`.** The shell arrived, on the host (D18). Every run now offers it, whatever the settings (`main.ts`), so from then on the fence bounded the file tools alone (C12).
+- **2026-10-22, `file-write-tools`.** `write`, `edit` and `apply_patch` shared a write fence, which also kept the skill directories read-only. Its proposal said what the fence was for: "It turns the model's mistakes into clear errors; it is not a boundary."
+- **2026-10-30, `add-persistence`.** Both fences refused the data folder, which matters when it sits inside the working directory, and the configuration refused a `DATA_DIR` that is or contains `WORK_DIR`, where the file tools could have touched nothing. The tokens are stored as they come: "The file's mode and the fence protect them (D32)."
+- **2026-11-01, `read-task-file`.** A task file fails when the file tools would refuse it by its name or its place: an `.env` file, or a file in the data folder.
+
+**R20.2 What each rule stops, with a shell in every run.** The shell runs `bash -c` as the user and reaches anything the user's account can (C12).
+
+| Rule | Through the shell | What it stops otherwise |
+|---|---|---|
+| **Inside `WORK_DIR`**, as written and with links resolved, and for `read` also inside the skill directories | `cat path`, `cat > path` | mistaken paths, which mostly fail anyway (R20.3) |
+| **No `.env*` name**, on `read` | `cat .env` | secrets reaching the provider by accident, through the tool the preamble names for reading. The log keeps only a result's size |
+| **No `.env*` name**, on `write`, `edit` and `apply_patch` | `cp .env.example .env` | nothing leaks through a write. The rule also refuses `.env.example` and the like, which projects usually commit with placeholder values **[K]** |
+| **Outside the data folder** | `sqlite3 db.sqlite`, `rm` | little: its files are binary (R20.4), and nothing writes there by mistake |
+
+The tools' other refusals don't depend on where a file is: a directory; a whole replacement over 32 KiB, which could drop what the model hasn't read; a binary file; invalid UTF-8 or a file over 10 MiB, for `edit` and `apply_patch`; and a patch that doesn't apply whole.
+
+**R20.3 Mistaken paths mostly fail anyway, and the fence pushes deliberate ones into the shell.**
+- **On macOS, paths from container habits fail on their own.** The system volume is mounted sealed and read-only, and `/home` links to `/System/Volumes/Data/home`, where the automounter's `auto_home` map is mounted. `mkdir /workspace-…` failed with "Read-only file system", and `mkdir /home/…` with "Operation not supported".
+- **What the fence refuses reliably is a write the task means:** a note in the home directory, a dotfile, another repository, a scratch file in `/tmp`. A model can still make it through the shell, as `cat <<'EOF' > path`, without the 32 KiB check, and the run's log then holds the path inside a heredoc in a `shell` call's command, where a `write` call would have logged it as an argument of its own.
+- **Taking the fence off writes alone would make the tools disagree.** `write` could create `/tmp/out.txt`, and `read` would refuse it. `edit`, whose description says to read the file first, could change a file that `read` won't show.
+
+**R20.4 The data folder's files are binary.** In a database that Bun's SQLite made in WAL mode, `db.sqlite`, `db.sqlite-wal` and `db.sqlite-shm` each had a NUL byte in its first 8 KiB, which is `read`'s test for a binary file. `read` refuses them without the data-folder rule.
+
+**R20.5 No file tool expands `~`.** `path.resolve('/work', '~/notes.md')` gives `/work/~/notes.md`, so `write` with `~/notes.md` creates a directory named `~` inside the working directory, with the fence or without it. The shell expands `~`, so a model may expect the tools to.
+
+**R20.6 What leans on the fence, and what doesn't.**
+- **Leans on it:** the configuration's rule that `DATA_DIR` must not be or contain `WORK_DIR`, whose message gives the fence as its reason; the `agent` spec's "a task file the file tools refuse", and C19's "What the file tools refuse stays refused"; C12's note that the tool-loop design keeps the `.env` refusal "only until the workspace container exists"; D28's "the file tools refusing it as they refuse `.env` files"; and D32's "behind the fence".
+- **Doesn't:** the stdio servers' run directory (D36), which must lie outside `WORK_DIR` and `DATA_DIR` so that npm finds no `.npmrc` that a repository brought there or a tool wrote (R18.1); and the shell's environment, built from scratch (C12, Q15), which keeps the agent's settings and `.env`'s out of what commands inherit and print.
+
+**Sources:** this repository's `packages/agent/src/tools/{fence,read,write,edit,apply-patch}.ts`, `main/{main,args}.ts`, `config/config.ts`, `mcp/run-directory.ts` and `exec/env.ts`; the specs `read-tool`, `write-tool`, `edit-tool`, `apply-patch-tool` and `agent`; the archived changes `tool-call-loop`, `skills-and-shell`, `file-write-tools`, `add-persistence` and `read-task-file`; `mount` and `mkdir` on macOS 27; a scratch database under Bun 1.4.4.
+
 ---
 
 # Part 3: Where the brief stands, and challenges
@@ -1699,6 +1739,7 @@ These are **proposals, not decisions**. Each links to a decision in Part 5. "Bri
   - `CI=1` among C3's prompt-disabling variables;
   - cleanup at run end, since the browser daemon outlives every command (R12.2). macOS has no `/proc`, and `ps eww` shows the environment of only some processes, so a sweep by run ID needs care there;
   - LM Studio's token auth, since its API needs none by default (R5.6).
+- **Since 2026-11-01:** the file tools refuse nothing by path, the `.env` refusal included, though the workspace container doesn't exist yet. A container is the only sandbox (C20, D41).
 - **Decision:** D18.
 
 ### C13. Call one model request a step, and keep "turn" for the user's exchange
@@ -1855,7 +1896,29 @@ These are **proposals, not decisions**. Each links to a decision in Part 5. "Bri
   - **Every inline habit breaks.** `bun run agent 'Say hi'` looks for a file named "Say hi", though the error names `-p`.
   - **A file has no size limit,** so a large one passed by mistake is sent whole. Whether that needs a cap depends on Q25.
   - **Under `bun run`, a path the shell completed in a subdirectory is wrong,** since the agent starts in the repository's root. Absolute paths always work.
+- **Since 2026-11-01:** the file tools refuse nothing by path (D41), so what they refuse no longer covers `.env` files or the data folder. D43 asks whether a task file still refuses them.
 - **Decision:** D39 for how a run takes its task, and D40 for frontmatter.
+
+### C20. The file tools refuse nothing by path
+- **Brief says:** "The agent gets unrestricted file-system and shell access. Isolation is Docker: the container is the boundary, mounted volumes define what it can touch. No permission system in application code." (Non-goals)
+- **Asked (2026-11-01):** "There is no point to restricting writes while allowing arbitrary shell commands, we should unrestrict writes by default." Then: "This harness should not worry about this type of safety, if we need sandboxing, we will use containers."
+- **Finding (R20):**
+  - **The fence is a leftover.** It was a boundary for three days, while `read_file` was the model's only tool. Since the shell arrived it has bounded the file tools alone, and the write fence was built to give clear errors, not to be a boundary.
+  - **Its errors fall mostly on deliberate work.** Mistaken paths mostly fail on their own. What the fence refuses is a write the task means, which the model can still make through the shell, with fewer checks and a vaguer record.
+  - **Taking the fence off writes alone would make the tools disagree:** `write` would create files that `read` refuses.
+  - **`read`'s refusals of `.env` files and the data folder were weighed as leak guards,** for the reason C12 builds the shell's environment from scratch: to stop an accident, not a model that goes looking. The ask rules them out, and the data folder's files are binary anyway.
+- **Proposal:**
+  - **No file tool refuses a path for where it is.** `read`, `write`, `edit` and `apply_patch` drop the working-directory and skill-directory checks, the `.env*` refusal, the data-folder refusal, and the symbolic-link checks that served them. A relative path resolves against `WORK_DIR`, and an absolute path is used as it is.
+  - **The refusals that don't depend on where a file is stay** (R20.2), and so does `read`'s 32 KiB cap.
+  - **No setting brings the fence back.** With a shell in every run, a setting would only look like a sandbox. When one is needed, it is a container, as D3's workspace is.
+  - **What follows from it:** `DATA_DIR` may be or contain `WORK_DIR`, since nothing refuses the data folder any more; `read`'s description drops "absolute inside a skill's directory"; and the README says, where it described the fence, that the file tools reach whatever you can, as the shell does.
+  - **What stays:** the stdio servers' run directory outside `WORK_DIR` and `DATA_DIR`, and the shell's environment built from scratch (R20.6).
+- **Against:**
+  - **A mistaken path that happens to be writable now succeeds,** in `/tmp` or the home directory, where the fence refused it. The output names the path as given.
+  - **The file tools can do what only the shell could:** replace a real `.env` with a template, delete `db.sqlite`, change a skill's files.
+  - **It takes out code and tests** that `add-persistence` and `read-task-file` added days ago.
+  - **With paths free to leave the working directory, a model is likelier to write `~/…`,** which no tool expands (R20.5, Q26).
+- **Decision:** D41 for the file tools, D42 for a setting, and D43 for a task file.
 
 ---
 
@@ -2594,11 +2657,11 @@ A draft for the change that gives the agent MCP servers ahead of OAuth (C16, D35
 | D25 | The database | Postgres, as settled · SQLite in a data folder, for good · SQLite now and Postgres later | **SQLite for good, on a local file system** (C14). Postgres only if the run log must hold against a compromised app, or more than one host writes | **decided 2026-10-29: SQLite for good,** in a data folder on a local file system, which in Docker is a named volume. 4.4, 4.8 and 4.9 lose their Postgres-only parts, as C14's table shows |
 | D26 | The SQLite driver under TypeORM | better-sqlite3 13 · a stand-in over `node:sqlite`, through TypeORM's `driver` option | **better-sqlite3 13**: one bundled SQLite on every runtime, and TypeORM's documented path. `engines.bun` rises to `>=1.4.4`, and the stand-in is the fallback, as in C7's ladder (C15) | **decided 2026-10-29: `better-sqlite3` 13** (R17.6). `engines.bun` rises to `>=1.4.4`, a root override pins `^13` for npm, the database opens before any network connection, and the Docker image needs glibc 2.34 or musl. The stand-in stays the fallback |
 | D27 | Where persistence lives | a package, `@mecha-gremlin/store` · a `store` folder in `agent` · M1's `app` package, started now | **A package:** the agent, the login command and M1's app all use it, and it keeps TypeORM and the native addon in one place (4.2) | **decided 2026-10-29: a package, `@mecha-gremlin/store`.** The change `add-persistence` adds it |
-| D28 | `DATA_DIR` | required · optional, with no persistence when it's unset | **Required:** an existing directory, its real path used, `db.sqlite` created 0600 inside it, and the file tools refusing it as they refuse `.env` files (C14) | **decided 2026-10-29: required.** It must not be or contain `WORK_DIR`. The change `add-persistence` carries it out |
+| D28 | `DATA_DIR` | required · optional, with no persistence when it's unset | **Required:** an existing directory, its real path used, `db.sqlite` created 0600 inside it, and the file tools refusing it as they refuse `.env` files (C14) | **decided 2026-10-29: required.** It must not be or contain `WORK_DIR`. The change `add-persistence` carries it out. **2026-11-01:** the file tools no longer refuse the folder (D41), so the rule that it must not be or contain `WORK_DIR` goes too (C20) |
 | D29 | Where MCP servers are configured | a JSON file named by a setting · rows written by commands | **A file, `MCP_CONFIG`, in Claude Code's `mcpServers` format,** with secrets given only as `${NAME}` references to environment variables, and a per-server header option. The database holds only what machines write (C16, 4.12) | **decided 2026-10-30: rows in the database,** written by a command, in place of a file. The change `add-mcp-servers` carries it out, with each entry in the `mcpServers` format and secrets still given as references |
 | D30 | The login command | `bun run mcp-login <server>`, a second entry point in `agent` · a `gremlin` CLI with subcommands, now | **`mcp-login`;** `gremlin` arrives with M1's app (C17) | **decided 2026-10-30: `bun run mcp`,** one command with subcommands, a second entry point in `agent`. The change `add-mcp-servers` adds it with `add`, `list`, `remove`, `disable` and `enable`, and the OAuth change can add `login` |
 | D31 | Client registration | a configured client ID, then DCR · CIMD as well, with a published metadata document | **A configured client ID, then DCR.** CIMD once a document is published under your name (C17) | **decided 2026-10-31: a configured client ID, then DCR,** as recommended. CIMD waits for a published document. The change `add-mcp-login` carries it out |
-| D32 | Token storage | plain columns, with the file 0600 and fenced · encrypted columns, with a key from the environment | **0600 and the fence now;** encryption once backups exist (C17) | **decided 2026-10-31: plain columns,** in the 0600 file behind the fence, as recommended; encryption once backups exist. The change `add-mcp-login` carries it out |
+| D32 | Token storage | plain columns, with the file 0600 and fenced · encrypted columns, with a key from the environment | **0600 and the fence now;** encryption once backups exist (C17) | **decided 2026-10-31: plain columns,** in the 0600 file behind the fence, as recommended; encryption once backups exist. The change `add-mcp-login` carries it out. **2026-11-01:** D41 removes the fence, so until M1's workspace, which never mounts the data folder, the file's mode protects the tokens from other users only, as it always did from the shell |
 | D33 | A configured server that can't connect or needs a login | fail the run before the first model call · skip the server with a warning · a per-server `required` flag | **Fail the run,** with an error that names the fix. An entry marked `disabled` is skipped, and there is no `required` flag (C18, 4.12) | **decided 2026-10-30: fail the run,** as recommended. The change `add-mcp-servers` carries it out |
 | D34 | Which MCP tools the model sees | every tool of every server · per-server allow and deny lists | **`includeTools` and `excludeTools` from the start,** by the server's own names, with model-facing names as C18 proposes. An unmatched include fails the run, and an unmatched exclude only warns (C18, 4.12) | **decided 2026-10-30: `includeTools` and `excludeTools`,** as recommended. The change `add-mcp-servers` carries it out |
 | D35 | The order of work | persistence, then the login, then the client, as asked · persistence and the client side by side, then the login | **Side by side, then the login** (C16) | **settled 2026-10-31 by the work's order:** persistence (`add-persistence`), then the client (`add-mcp-servers`), then the login (`add-mcp-login`) |
@@ -2607,6 +2670,9 @@ A draft for the change that gives the agent MCP servers ahead of OAuth (C16, D35
 | D38 | The port the login's redirect comes to | a fixed port, configurable · any free port | **A fixed port, configurable:** some servers match redirect URIs exactly, host and port included (C17) | **decided 2026-10-31: any free port.** A saved client's registered port is used again when it is free, and a client registered through DCR is registered again when it isn't; the address the browser ends on can also be pasted. The change `add-mcp-login` carries it out |
 | D39 | How a run takes its task | the arguments, joined with spaces, as now · a file by default, with `--prompt` and `-p` for the text inline · a file by default, with `--task` for the text inline · a file when the argument names one, the text otherwise | **A file by default, with `--prompt` and `-p` inline.** C6 calls a TASK.md's body the prompt, `--task <name>` already names a definition, and a guess from the argument is ambiguous whenever a task's text could name a file (C19) | **decided 2026-11-01: a file by default, with `--prompt` or `-p` for the text inline,** as recommended. The change `read-task-file` carries it out |
 | D40 | A task file's frontmatter | part of the task, sent verbatim · refused until TASK.md gives it meaning · parsed now, starting on TASK.md's keys (D5) | **Verbatim:** notes that keep tags in their frontmatter run as they are, and a file without frontmatter means the same to a later TASK.md reader (C19) | **decided 2026-11-01: verbatim,** as recommended. The change `read-task-file` carries it out |
+| D41 | What the file tools refuse by path | as now: outside the working directory (for `read`, outside it and the skill directories), `.env*` names and the data folder · `read` alone, refusing `.env*` names and the data folder · nothing (R20) | **Nothing:** the refusals that don't depend on where a file is stay, and a container is the only sandbox (C20) | **decided 2026-11-01: nothing,** as asked: "This harness should not worry about this type of safety, if we need sandboxing, we will use containers." |
+| D42 | A setting that brings the fence back | a setting, off by default · none | **None:** with a shell in every run, the setting would only look like a sandbox (C20) | **decided 2026-11-01: none,** as asked |
+| D43 | What a task file refuses by path | `.env*` names and the data folder, as C19 proposed against a slip of the shell's completion · nothing, as with the file tools (D41) | **Nothing:** C19 tied the rule to what the file tools refuse, and the harness guards no paths (C20). A binary or blank file still fails, since neither holds a task | open |
 
 ## Open questions
 
@@ -2637,6 +2703,7 @@ A draft for the change that gives the agent MCP servers ahead of OAuth (C16, D35
 | Q23 | Should a stdio server that exits mid-session be restarted, as the stdio binding says a client SHOULD, or should its calls fail for the rest of the run? | 4.12 lets them fail, which keeps a run's tools fixed. A restart needs a new handshake, and the same tool list (R18.3). |
 | Q24 | Do the Docker images install procps, or do the sweep and the transport read `/proc` on Linux? | The official Bun and Node images ship no `ps`, so in them the sweep fails and the transport finds no descendants to stop (R18.3). |
 | Q25 | What does each provider do with a first request larger than the model's context: fail it, or cut it silently? | A task file has no size limit, unlike an argument (R19), and LM Studio's default context has been 8k since 0.4.16 (R5.5). A failure ends the run with an error, while a silent cut runs a task the model saw only in part. It decides whether a task file needs a cap (C19). |
+| Q26 | Should the file tools expand a leading `~` to the home directory? | None does: `~/notes.md` makes a directory named `~` in `WORK_DIR` (R20.5). The shell expands it, and once paths may leave the working directory (D41), a model is likelier to write one. |
 
 **Q12–Q17 (2026-10-16).** The OpenSpec change `skills-and-shell` answers each in its design (`openspec/changes/archive/2026-10-16-skills-and-shell/design.md`):
 
