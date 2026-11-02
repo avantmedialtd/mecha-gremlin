@@ -2,10 +2,10 @@
 
 ## Purpose
 
-The agent's `write` tool: creating or replacing a whole text file under the working directory, what it refuses, and what it returns.
+The agent's `write` tool: creating or replacing a whole text file, wherever its path points, what it refuses, and what it returns.
 ## Requirements
-### Requirement: Write a UTF-8 text file under the working directory
-The agent SHALL provide a `write` tool, created for a root directory. Its arguments SHALL be exactly two required strings, `path` and `content`, and no other property SHALL be allowed. A relative path SHALL resolve against the root, and an absolute path SHALL be used as it is. It SHALL write `content` to the file exactly as given, encoded as UTF-8, creating the file when it doesn't exist and replacing its contents when it does. It SHALL create missing parent directories. A replaced file SHALL keep its permissions.
+### Requirement: Write a UTF-8 text file
+The agent SHALL provide a `write` tool, created for a root directory, the working directory. Its arguments SHALL be exactly two required strings, `path` and `content`, and no other property SHALL be allowed. A relative path SHALL resolve against the root, and an absolute path SHALL be used as it is. `write` SHALL refuse no path for where it is: outside the root, through a symbolic link, inside a skill's directory or the data folder, or named like an `.env` file. It SHALL write `content` to the file exactly as given, encoded as UTF-8, creating the file when it doesn't exist and replacing its contents when it does. It SHALL create missing parent directories. A replaced file SHALL keep its permissions, and writing through a symbolic link SHALL replace its target's contents and leave the link a link.
 
 On success its output SHALL be `Created <path> (<n> lines, <b> bytes).` or `Replaced <path> (<n> lines, <b> bytes).`, where:
 - `<path>` is the argument as given;
@@ -41,63 +41,28 @@ On success its output SHALL be `Created <path> (<n> lines, <b> bytes).` or `Repl
 - **WHEN** `write` is called with `{"path":"notes.txt","content":"x","append":true}`
 - **THEN** the arguments fail validation, and no file is written
 
-### Requirement: Never write outside the working directory
-`write` SHALL refuse, before writing or creating anything, any path whose target isn't inside the root. That is:
-- a path that, resolved against the root, isn't inside the root. That covers `..`, absolute paths elsewhere, and paths inside a skill directory, which stay read-only;
-- a path whose nearest existing ancestor directory, after following symbolic links, isn't inside the root's real path;
-- an existing target that is a symbolic link whose real path isn't inside the root's real path;
-- a target that is a broken symbolic link.
+#### Scenario: Outside the root
+- **WHEN** `write` is called for `../outside/notes.txt`, and for the absolute path of a file in a directory outside the root
+- **THEN** each file is created there, with the output naming the path as given
 
-The refusal SHALL say the path is outside the working directory, the only place the `write` tool may write.
+#### Scenario: Through a symbolic link
+- **WHEN** the root holds `alias.txt`, a symbolic link to a file outside the root, and `write` is called for `alias.txt` with the content "new"
+- **THEN** the link's target holds "new", `alias.txt` is still a link, and the output is `Replaced alias.txt (1 line, 3 bytes).`
 
-#### Scenario: Parent directory
-- **WHEN** `write` is called with `{"path":"../escape.txt","content":"x"}`
-- **THEN** it fails with an error saying the path is outside the working directory, and no file is created outside the root
-
-#### Scenario: Absolute path outside the root
-- **WHEN** `write` is called for `/tmp/elsewhere.txt`, outside the root
-- **THEN** it fails with an error saying the path is outside the working directory
-
-#### Scenario: Absolute path inside the root
-- **WHEN** `write` is called with the absolute path of `notes.txt` in the root
-- **THEN** it writes `notes.txt`
+#### Scenario: Environment files and the data folder
+- **WHEN** `DATA_DIR` is the root's `data` folder, and `write` is called for `.env`, for `config/.env.local` and for `data/notes.txt`
+- **THEN** each file is written as any other file is
 
 #### Scenario: A skill's file
-- **WHEN** `write` is called with the absolute path of a file inside a loaded skill's directory, outside the root
-- **THEN** it fails with an error saying the path is outside the working directory, and the skill's file is unchanged
+- **WHEN** `write` is called with the absolute path of a file inside a loaded skill's directory
+- **THEN** the file holds the content
 
-#### Scenario: A linked directory pointing outside
-- **WHEN** the root holds `out`, a symbolic link to a directory outside the root, and `write` is called for `out/new/file.txt`
-- **THEN** it fails with an error saying the path is outside the working directory, and nothing is created outside the root
-
-#### Scenario: A link to a file outside
-- **WHEN** the root holds `link.txt`, a symbolic link to a file outside the root
-- **THEN** writing `link.txt` fails with an error saying the path is outside the working directory, and the outside file is unchanged
-
-#### Scenario: A broken link
-- **WHEN** the root holds `dangling.txt`, a symbolic link to a path that doesn't exist
-- **THEN** writing `dangling.txt` fails with an error saying the path is outside the working directory, and the link's target isn't created
-
-#### Scenario: A link inside the root
-- **WHEN** the root holds `alias.txt`, a symbolic link to `notes.txt` in the root
-- **THEN** writing `alias.txt` replaces the contents of `notes.txt`, and `alias.txt` is still a link
-
-### Requirement: Refuse secrets, directories and large files
+### Requirement: Refuse directories and large files
 `write` SHALL fail with an error naming the path and the reason, writing nothing, when:
-- the requested file name, or the real file name, begins with `.env`;
-- the path, as written or with links resolved, is inside the data folder, `DATA_DIR`, which holds the agent's database;
 - the path is an existing directory;
 - the path is an existing file larger than 32 KiB (32,768 bytes), the most one call of the `read` tool returns. The error SHALL say that the file is larger than one read returns, so replacing it whole could drop what the model hasn't read, and that the `edit` tool changes part of a file.
 
 It SHALL report every failure, unexpected I/O errors included, as a failed outcome, and SHALL NOT throw.
-
-#### Scenario: Environment files
-- **WHEN** `write` is called for `.env` or for `config/.env.local`
-- **THEN** it fails with an error saying environment files can't be written, and no such file is created or changed
-
-#### Scenario: A link to an environment file
-- **WHEN** the root holds `innocent.txt`, a symbolic link to `.env`
-- **THEN** writing `innocent.txt` fails as writing `.env` does, and `.env` is unchanged
 
 #### Scenario: Directory
 - **WHEN** `write` is called for `docs`, an existing directory
@@ -114,12 +79,4 @@ It SHALL report every failure, unexpected I/O errors included, as a failed outco
 #### Scenario: An I/O error
 - **WHEN** the parent directory isn't writable
 - **THEN** it fails with an error saying the file can't be written, giving the reason, and doesn't throw
-
-#### Scenario: The data folder
-- **WHEN** `DATA_DIR` is the working directory's `data` folder, and `write` is called for `data/db.sqlite` or for `data/new.txt`
-- **THEN** it fails with an error saying the path is inside the data folder, and no file there is created or changed
-
-#### Scenario: A link into the data folder
-- **WHEN** the root holds `out`, a symbolic link to the data folder, and `write` is called for `out/x.txt`
-- **THEN** it fails as writing inside the data folder does, and nothing is created there
 

@@ -12,17 +12,16 @@ Running the agent from the repository root, as `bun run agent <task file>` or `b
 
    The agent SHALL fail with an actionable error, and SHALL NOT start the example browsing task or make a network request:
    - when it gets no task, a task file and `--prompt` together, more than one positional argument, `--prompt` more than once, an unknown option, or a `--prompt` value of only whitespace;
-   - when the task file can't be read, has a NUL byte in its first 8 KiB, or holds only whitespace;
-   - when the task file is one the file tools refuse: a `.env` file, by its name as given or its real path, or a file whose real path is inside the data folder.
+   - when the task file can't be read, has a NUL byte in its first 8 KiB, or holds only whitespace.
 
-   An error about how the task was given SHALL name both ways to give it. One for a task file that doesn't exist SHALL give the absolute path the agent looked at, and name `--prompt`. These errors SHALL be reported together with the configuration's, before the store opens;
+   A task file SHALL NOT be refused for its name or for where it is: an `.env` file, or a file in the data folder, is a task file like any other. An error about how the task was given SHALL name both ways to give it. One for a task file that doesn't exist SHALL give the absolute path the agent looked at, and name `--prompt`. These errors SHALL be reported together with the configuration's, before the store opens;
 2. validate the explicitly configured settings;
 3. load the skills `SKILLS_PATH` lists (`skills`);
 4. open the store in `DATA_DIR` (`store`) before any network request. When it can't be opened, the agent SHALL log the error and exit with code 1, having made no network request;
 5. connect to the enabled MCP servers (`mcp-client`), with the signal handlers installed ("Stop the session's processes when the agent ends"). When that fails, the agent SHALL exit with code 1 before the first model call;
 6. choose the named model;
 7. run the provider-bound agent loop, with a step limit of `MAX_STEPS`, with:
-   - the tools `read`, rooted at the working directory with the loaded skills' directories; then the file tools `FILE_TOOLS` chooses, rooted at the working directory: `write` and `edit` for `write-edit`, or `apply_patch` for `apply-patch`; then `shell`, in the working directory; then `activate_skill` when any skill is loaded; then the MCP servers' tools (`mcp-client`);
+   - the tools `read`; then the file tools `FILE_TOOLS` chooses, `write` and `edit` for `write-edit`, or `apply_patch` for `apply-patch`, which, like `read`, resolve a relative path against the working directory; then `shell`, in the working directory; then `activate_skill` when any skill is loaded; then the MCP servers' tools (`mcp-client`);
    - starting instructions that say the model carries out tasks on this computer with a shell, `read` for reading text files and the offered file tools for writing and changing them; give the working directory's real path and say that paths commands print are relative to it; ask for a brief final answer; and end with the skills catalog when any skill is loaded;
    - a user input holding the task;
 8. log the trimmed answer as an `info` record `answer` with the field `text`;
@@ -54,9 +53,9 @@ Responses providers SHALL send the instructions as a developer item to the confi
 - **WHEN** the task file has a NUL byte in its first 8 KiB, or holds only whitespace
 - **THEN** it exits with code 1, an error names the file and why it was refused, and no network call is made
 
-#### Scenario: A task file the file tools refuse
-- **WHEN** the task file is `.env`, a link to `.env`, or a file inside `DATA_DIR`
-- **THEN** it exits with code 1, an error names the file and why it was refused, and no network call is made
+#### Scenario: Any text file is a task file
+- **WHEN** the task file is `.env`, a link to `.env`, or a text file inside `DATA_DIR`, holding "Say hi\n"
+- **THEN** its first request's user input is "Say hi"
 
 #### Scenario: One way to give the task
 - **WHEN** the agent runs with a task file and `-p`, with two positional arguments, with `-p` twice, or with the option `--verbose`
@@ -149,7 +148,7 @@ Native replay data, API keys and authorization headers SHALL NOT be logged as st
 - **THEN** the `tool result` record's `bytes` counts bytes, not characters
 
 #### Scenario: A failed call
-- **WHEN** `read` refuses `.env`
+- **WHEN** `read` is called for a file that doesn't exist
 - **THEN** a `warn` record `tool failed` carries the tool's error
 
 #### Scenario: The migrated record
@@ -196,7 +195,7 @@ For `openai` and `lmstudio`, effort SHALL be one of `none`, `minimal`, `low`, `m
 
 The agent SHALL also require and validate, whatever the provider:
 - `WORK_DIR`, the working directory of `read`, the file tools and `shell`; a relative path resolves against the current directory, it SHALL name an existing directory, and its real path SHALL be used;
-- `DATA_DIR`, the data folder that holds the store's database (`store`); a relative path resolves against the current directory, it SHALL name an existing directory, its real path SHALL be used, and it SHALL NOT be the working directory or contain it;
+- `DATA_DIR`, the data folder that holds the store's database (`store`); a relative path resolves against the current directory, it SHALL name an existing directory, and its real path SHALL be used, whether or not it is the working directory, contains it or lies inside it;
 - `MAX_STEPS`, a positive whole number in decimal digits;
 - `FILE_TOOLS`, `write-edit` for `write` and `edit`, or `apply-patch` for `apply_patch`;
 - `LOG_FORMAT`, `pretty` or `json` (`structured-log`).
@@ -273,7 +272,7 @@ The agent SHALL also require and validate, whatever the provider:
 
 #### Scenario: A data folder holding the working directory
 - **WHEN** `DATA_DIR` names the working directory, or a directory that contains it
-- **THEN** no network call is made, and an error says `DATA_DIR` must not be or contain `WORK_DIR`
+- **THEN** configuration succeeds, and the store opens in that directory
 
 ### Requirement: Actionable failure messages
 The agent SHALL exit with code 1 and log an error naming the cause and a next step if the model server is unreachable, rejects the API key, returns an invalid LM Studio model list, fails a model call, is still calling tools at the step limit, or gives no answer. It SHALL not log an `answer` record in these cases. A model-call failure SHALL include the provider's detail and an appropriate next step:

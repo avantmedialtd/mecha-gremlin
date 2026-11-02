@@ -2,12 +2,12 @@
 
 ## Purpose
 
-The agent's `read` tool, `read_file` until `file-write-tools`: what it may read, how it pages through a file by line, its limits, and how it reports what it can't do.
+The agent's `read` tool, `read_file` until `file-write-tools`: reading a text file, wherever its path points, how it pages through a file by line, its limits, and how it reports what it can't do.
 ## Requirements
-### Requirement: Read a UTF-8 text file under a root directory
-The agent SHALL provide a `read` tool, created for a root directory and a list of skill directories, which may be empty. Its arguments SHALL be a string `path`, and `offset` and `limit`, each a whole number of at least 1 or null; no other property SHALL be allowed. The JSON Schema the model sees SHALL require all three, as strict mode needs. A call that leaves out `offset` or `limit` SHALL be read as if it were null, because models that ignore strict mode leave them out.
+### Requirement: Read a UTF-8 text file
+The agent SHALL provide a `read` tool, created for a root directory, the working directory. Its arguments SHALL be a string `path`, and `offset` and `limit`, each a whole number of at least 1 or null; no other property SHALL be allowed. The JSON Schema the model sees SHALL require all three, as strict mode needs. A call that leaves out `offset` or `limit` SHALL be read as if it were null, because models that ignore strict mode leave them out.
 
-A relative path SHALL resolve against the root, and an absolute path SHALL be used as it is. On success its output SHALL be the requested lines of the file decoded as UTF-8, with invalid sequences replaced by U+FFFD, and with no line numbers added. With `offset` and `limit` null, the requested lines are the whole file.
+A relative path SHALL resolve against the root, and an absolute path SHALL be used as it is. `read` SHALL refuse no path for where it is: outside the root, through a symbolic link, inside a skill's directory or the data folder, or named like an `.env` file. On success its output SHALL be the requested lines of the file decoded as UTF-8, with invalid sequences replaced by U+FFFD, and with no line numbers added. With `offset` and `limit` null, the requested lines are the whole file.
 
 #### Scenario: Reads a file
 - **WHEN** the root holds `notes.txt` containing "hello", and `read` is called with `{"path":"notes.txt"}`
@@ -37,54 +37,29 @@ A relative path SHALL resolve against the root, and an absolute path SHALL be us
 - **WHEN** `read` is called with an `offset` or a `limit` of 0, -1 or 1.5, or the string "5"
 - **THEN** the arguments fail validation, and no file is read
 
-### Requirement: Never read outside the root and the skill directories
-`read` SHALL refuse, before reading anything, any path that resolves outside every directory it may read: the root and each skill directory. That is:
-- a path that, resolved against the root, is inside neither the root nor a skill directory, which covers `..` and absolute paths;
-- a path whose real path, after following symbolic links, is inside neither the root's real path nor a skill directory's real path.
+#### Scenario: Outside the root
+- **WHEN** `read` is called for `../outside/notes.txt`, and for the absolute path of a text file in a directory outside the root
+- **THEN** each call succeeds with that file's contents
 
-The refusal SHALL say the path is outside the directories the `read` tool may read.
+#### Scenario: Through a symbolic link
+- **WHEN** the root holds `link.txt`, a symbolic link to a text file outside the root
+- **THEN** reading `link.txt` succeeds with the target's contents
 
-#### Scenario: Parent directory
-- **WHEN** `read` is called with `{"path":"../secret.txt"}`, which resolves outside the root and every skill directory
-- **THEN** it fails with an error saying the path is outside the directories it may read
+#### Scenario: Environment files and the data folder
+- **WHEN** `DATA_DIR` is the root's `data` folder, and `read` is called for `.env`, for `.env.local` and for `data/notes.txt`, a text file there
+- **THEN** each call succeeds with the file's contents
 
-#### Scenario: Absolute path outside the root
-- **WHEN** `read` is called with `{"path":"/etc/hosts"}`
-- **THEN** it fails with an error saying the path is outside the directories it may read
-
-#### Scenario: Symbolic link pointing outside
-- **WHEN** the root holds `link.txt`, a symbolic link to a file outside the root and every skill directory
-- **THEN** reading `link.txt` fails with an error saying the path is outside the directories it may read, and the target's contents appear nowhere in the outcome
-
-#### Scenario: Symbolic link pointing inside
-- **WHEN** the root holds `alias.txt`, a symbolic link to `notes.txt` in the root
-- **THEN** reading `alias.txt` succeeds with the contents of `notes.txt`
-
-#### Scenario: A link out of a skill directory
-- **WHEN** a skill directory holds `leak.md`, a symbolic link to a file outside the root and every skill directory, and `read` is called with its absolute path
-- **THEN** it fails with an error saying the path is outside the directories it may read, and the target's contents appear nowhere in the outcome
-
-#### Scenario: A relative path stays in the root
+#### Scenario: A relative path resolves against the root
 - **WHEN** `read` is called with `{"path":"references/forms.md"}`, a file that exists only in a skill directory
 - **THEN** it fails with an error saying there is no such file
 
-### Requirement: Refuse secrets, directories and binary files
+### Requirement: Refuse directories and binary files
 `read` SHALL fail with an error naming the path and the reason when:
-- the requested file name, or the real file name, begins with `.env`;
-- the path, as written or with links resolved, is inside the data folder, `DATA_DIR`, which holds the agent's database;
 - the path is a directory;
 - the file holds a NUL byte in its first 8 KiB, whatever `offset` asks for;
 - the file doesn't exist.
 
 It SHALL report every failure, unexpected I/O errors included, as a failed outcome, and SHALL NOT throw.
-
-#### Scenario: Environment files
-- **WHEN** `read` is called for `.env` or for `.env.local`
-- **THEN** it fails with an error saying environment files can't be read, and the file's contents appear nowhere in the outcome
-
-#### Scenario: A link to an environment file
-- **WHEN** the root holds `innocent.txt`, a symbolic link to `.env`
-- **THEN** reading `innocent.txt` fails as reading `.env` does
 
 #### Scenario: Directory
 - **WHEN** `read` is called for `docs`, a directory
@@ -98,13 +73,9 @@ It SHALL report every failure, unexpected I/O errors included, as a failed outco
 - **WHEN** `read` is called for `missing.txt`, which doesn't exist
 - **THEN** it fails with an error saying there is no such file
 
-#### Scenario: The data folder
-- **WHEN** `DATA_DIR` is the working directory's `data` folder, and `read` is called for `data/db.sqlite`
-- **THEN** it fails with an error saying the path is inside the data folder, and the file's contents appear nowhere in the outcome
-
-#### Scenario: A link into the data folder
-- **WHEN** the root holds `notes.txt`, a symbolic link to a file inside the data folder
-- **THEN** reading `notes.txt` fails as reading inside the data folder does
+#### Scenario: The database
+- **WHEN** `read` is called for `db.sqlite` in the data folder, after the store opened it
+- **THEN** it fails with an error saying it is a binary file, and the file's contents appear nowhere in the outcome
 
 ### Requirement: Cap what it returns
 `read` SHALL return at most 32 KiB (32,768 bytes) of text per call, in whole lines: each requested line is included, with its line ending, while the output still fits. When the first requested line alone is longer than 32 KiB, `read` SHALL return the start of that line, cut back to the nearest UTF-8 character boundary. No character is longer than 4 bytes, so the cut SHALL move back at most 3 bytes. In invalid UTF-8 it stops there, and each broken byte reads as U+FFFD.
@@ -183,4 +154,3 @@ A line SHALL end with `\n`; a final run of text without one SHALL count as a lin
 #### Scenario: An empty file
 - **WHEN** the file is empty, and `read` is called with `offset` null or 1
 - **THEN** the output is empty, with no note
-

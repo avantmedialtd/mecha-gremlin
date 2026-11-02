@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The agent's `edit` tool: replacing exact text in a file under the working directory, how it explains a failed match, and the files it refuses.
+The agent's `edit` tool: replacing exact text in a file, wherever its path points, how it explains a failed match, and the files it refuses.
 ## Requirements
 ### Requirement: Replace exact text in a file
 The agent SHALL provide an `edit` tool, created for a root directory. Its arguments SHALL be exactly the required strings `path`, `old_string` and `new_string` and the required boolean `replace_all`, and no other property SHALL be allowed. Paths SHALL resolve as `write`'s do.
@@ -73,8 +73,8 @@ The rest of the file SHALL be unchanged, byte for byte, and the file SHALL keep 
 - **WHEN** `old_string` and `new_string` are equal
 - **THEN** it fails with an error saying there is nothing to change, and the file is unchanged
 
-### Requirement: Edit only text files under the working directory
-`edit` SHALL apply `write`'s fence: the same refusals of paths outside the working directory, of skill directories, of links leading outside, of broken links, of `.env` files, and of the data folder, with the same messages naming the `edit` tool. It SHALL also fail with an error naming the path and the reason, changing nothing, when:
+### Requirement: Edit only text files
+`edit` SHALL refuse no path for where it is, as `write` refuses none. It SHALL fail with an error naming the path and the reason, changing nothing, when:
 - the file doesn't exist;
 - the path is a directory;
 - the file is larger than 10 MiB (10,485,760 bytes);
@@ -86,14 +86,6 @@ It SHALL report every failure, unexpected I/O errors included, as a failed outco
 #### Scenario: Missing file
 - **WHEN** `edit` is called for `missing.txt`, which doesn't exist
 - **THEN** it fails with an error saying there is no such file, and no file is created
-
-#### Scenario: Outside the working directory
-- **WHEN** `edit` is called for `../other/app.ts`
-- **THEN** it fails with an error saying the path is outside the working directory
-
-#### Scenario: Environment file
-- **WHEN** `edit` is called for `.env`
-- **THEN** it fails with an error saying environment files can't be written, and `.env` is unchanged
 
 #### Scenario: Directory
 - **WHEN** `edit` is called for `docs`, a directory
@@ -111,7 +103,7 @@ It SHALL report every failure, unexpected I/O errors included, as a failed outco
 - **WHEN** the file holds the byte 0xFF and no NUL
 - **THEN** it fails with an error saying the file isn't valid UTF-8, and the file is unchanged
 
-#### Scenario: The data folder
-- **WHEN** `DATA_DIR` is the working directory's `data` folder, and `edit` is called for `data/notes.txt`, a text file there
-- **THEN** it fails with an error saying the path is inside the data folder, and the file is unchanged
+#### Scenario: Wherever the file is
+- **WHEN** `DATA_DIR` is the root's `data` folder, and `edit` is called for `../other/app.ts`, for `.env` and for `data/notes.txt`, each a text file holding `old_string` once
+- **THEN** each file is changed as any other file is
 

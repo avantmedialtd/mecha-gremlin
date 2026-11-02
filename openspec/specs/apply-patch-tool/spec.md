@@ -98,14 +98,14 @@ When a chunk is applied, its removed lines SHALL be replaced by its added lines.
 - **WHEN** the old lines occur twice after the previous chunk, and there is no header
 - **THEN** the first occurrence changes
 
-### Requirement: Add, delete, update and move files under the working directory
-`apply_patch` SHALL apply `write`'s fence to every path the patch names, `Move to` destinations included, with the same messages naming `apply_patch`, and the same refusals of `.env` files and of the data folder.
+### Requirement: Add, delete, update and move files
+`apply_patch` SHALL resolve every path the patch names, `Move to` destinations included, as `write` does, and SHALL refuse none for where it is.
 
 - **Add File** SHALL write the `+` lines, joined with `\n` and ending with `\n`, creating parent directories. An existing file SHALL be replaced, unless it is a directory or larger than 32 KiB, which `write` refuses for the same reasons.
-- **Delete File** SHALL remove the file. It SHALL fail when the file doesn't exist or is a directory.
+- **Delete File** SHALL remove the path the patch names, so that a symbolic link goes, not what it points to. It SHALL fail when the file doesn't exist or is a directory.
 - **Update File** SHALL fail when the file doesn't exist or is a directory, or when `edit` would refuse it: larger than 10 MiB, holding a NUL byte, or not valid UTF-8.
-- **Move to** SHALL write the updated contents to the destination, creating its parent directories, and then remove the source.
-- **A path named in more than one hunk,** as a source or a destination, SHALL fail the patch.
+- **Move to** SHALL write the updated contents to the destination, creating its parent directories, and then remove the source as the patch names it.
+- **A file named in more than one hunk,** as a source or a destination, SHALL fail the patch. Two paths SHALL name one file when they resolve to the same path, or when both exist and have the same real path, as a symbolic link and its target do.
 
 #### Scenario: Adds a file in a new directory
 - **WHEN** a patch adds `docs/new.md` with the lines "+# Title" and "+text"
@@ -119,17 +119,13 @@ When a chunk is applied, its removed lines SHALL be replaced by its added lines.
 - **WHEN** a patch deletes `gone.txt`, which doesn't exist
 - **THEN** it fails with an error naming `gone.txt`, and no file changes
 
+#### Scenario: Deleting a link
+- **WHEN** the root holds `alias.txt`, a symbolic link to `notes.txt`, and a patch deletes `alias.txt`
+- **THEN** `alias.txt` no longer exists, and `notes.txt` is unchanged
+
 #### Scenario: Moves and updates a file
 - **WHEN** a patch updates `src/a.ts` with `*** Move to: lib/b.ts` and one chunk
 - **THEN** `lib/b.ts` holds the updated contents, and `src/a.ts` no longer exists
-
-#### Scenario: Outside the working directory
-- **WHEN** a patch adds `../escape.txt`
-- **THEN** it fails with an error saying the path is outside the working directory, and no file changes
-
-#### Scenario: An environment file
-- **WHEN** a patch updates `.env`
-- **THEN** it fails with an error saying environment files can't be written, and no file changes
 
 #### Scenario: Replacing a large file
 - **WHEN** a patch adds `big.log`, an existing file of 40,000 bytes
@@ -139,9 +135,13 @@ When a chunk is applied, its removed lines SHALL be replaced by its added lines.
 - **WHEN** a patch updates `app.ts` in two separate hunks
 - **THEN** it fails with an error naming `app.ts`, and no file changes
 
-#### Scenario: The data folder
-- **WHEN** `DATA_DIR` is the working directory's `data` folder, and a patch adds `data/x.txt`, or moves `app.ts` to `data/app.ts`
-- **THEN** it fails with an error saying the path is inside the data folder, and no file changes
+#### Scenario: A file named twice through a link
+- **WHEN** the root holds `alias.ts`, a symbolic link to `app.ts`, and a patch updates `alias.ts` and then `app.ts`
+- **THEN** it fails with an error naming `app.ts`, and no file changes
+
+#### Scenario: Wherever the file is
+- **WHEN** `DATA_DIR` is the root's `data` folder, and a patch adds `../outside.txt`, updates `.env`, and moves `app.ts` to `data/app.ts`
+- **THEN** the patch applies, and the report lists `A ../outside.txt`, `M .env` and `M data/app.ts`
 
 ### Requirement: Change nothing unless the whole patch applies, and report each file
 `apply_patch` SHALL parse the whole patch, check every path, read every file it updates or deletes, and work out every new content before it writes, removes or creates anything. If any of those steps fails, no file SHALL change. It SHALL then make the changes in the patch's order. If an I/O error stops it partway, the error SHALL list the files already changed.
@@ -161,4 +161,3 @@ It SHALL report every failure as a failed outcome, and SHALL NOT throw.
 #### Scenario: A move in the report
 - **WHEN** a patch updates `src/a.ts` with `*** Move to: lib/b.ts`
 - **THEN** the report lists `M lib/b.ts`
-
