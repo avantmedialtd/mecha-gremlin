@@ -5,7 +5,7 @@
   - `main/args.ts` refuses an `.env` task file and one in the data folder, through `isEnvFile`, `isInside` and the file's real path.
   - `config/config.ts` refuses a `DATA_DIR` that is or contains `WORK_DIR`, through `isInside`, because the file tools would have refused everything in such a working directory.
   - `mcp/run-directory.ts` refuses a temporary directory inside `WORK_DIR` or `DATA_DIR`, through `isInside`, for npm's `.npmrc` lookup (Brief D36, R18.1).
-  - `errorCode` and `reasonOf` are imported by the tools, `main/args.ts`, `exec/sweep.ts` and three modules in `mcp/`.
+  - `errorCode` and `reasonOf` are imported by the tools and `main/args.ts`. `exec/sweep.ts` and three modules in `mcp/` define copies of their own.
 - **`apply_patch`'s claim.** Each path a patch names goes through `fenceWrite`. The real path it gives locates the file the hunk reads and writes, and keys the check that refuses a file named twice, so a link and its target count as one file. A deleted or moved path is already removed as the patch names it, so a link goes, not what it points to.
 - **The shell.** Every run offers it, and it runs `bash -c` as the user (Brief D18), so the fence never bounded what the model can reach (Brief R20).
 
@@ -35,7 +35,7 @@
   - **A side effect on Bun:** `realpath` fails with `EBADF` on `/dev/stdin` when stdin is a pipe, which `read-task-file`'s design recorded. Without it, Bun 1.4.4 reads a piped `/dev/stdin` as Node does (measured). Taking the task from stdin still waits for `-`.
 - **The configuration lets `DATA_DIR` be or contain `WORK_DIR`.** `overlap` goes from `config/config.ts`, with its error. Nothing refuses such a working directory any more. The README still advises a data folder of the agent's own.
 - **`fence.ts` goes.**
-  - **What moves:** `errorCode` and `reasonOf` go to `tools/errors.ts`. `exec` and `mcp` already import them from `tools/`, so only the module's name changes for them. `isInside` moves to `mcp/run-directory.ts`, its last user, and is exported for its tests.
+  - **What moves:** `errorCode` and `reasonOf` go to `tools/errors.ts`, for the tools and `main/args.ts`. The copies in `exec` and `mcp` stay as they are: sharing them would be a refactor this change doesn't need. `isInside` moves to `mcp/run-directory.ts`, its last user, and is exported for its tests.
   - **What goes:** `isInsideAny`, `isEnvFile`, `exists`, `fenceRead` and `fenceWrite`.
   - **Turned down:** keeping `fence.ts` for what's left, under a name that no longer says what it holds.
 - **The tests.**

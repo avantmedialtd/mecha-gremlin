@@ -4,10 +4,8 @@ import {
     mkdir,
     mkdtemp,
     readFile,
-    realpath,
     rm,
     stat,
-    symlink,
     truncate,
     writeFile,
 } from 'node:fs/promises';
@@ -20,22 +18,24 @@ import { editTool } from '../../src/tools/edit.ts';
 
 const TEN_MIB = 10 * 1024 * 1024;
 
+// The root has a parent of its own, which holds the directory outside it that a test edits.
+let base: string;
 let root: string;
-// Inside the root, as a data folder may be, by its real path, as loadConfig records it.
-let dataDir: string;
 
 beforeEach(async () => {
-    root = await mkdtemp(join(tmpdir(), 'edit-root-'));
+    base = await mkdtemp(join(tmpdir(), 'edit-'));
+    root = join(base, 'root');
+    await mkdir(join(root, 'docs'), { recursive: true });
+    await mkdir(join(root, 'data'));
+    await mkdir(join(base, 'other'));
     await writeFile(join(root, 'app.ts'), 'const a = 1;\nconst b = 2;\n');
     await writeFile(join(root, '.env'), 'MODEL_API_KEY=sk-live-secret');
-    await mkdir(join(root, 'docs'));
-    dataDir = join(await realpath(root), 'data');
-    await mkdir(dataDir);
-    await writeFile(join(dataDir, 'notes.txt'), 'kept\n');
+    await writeFile(join(root, 'data', 'notes.txt'), 'kept\n');
+    await writeFile(join(base, 'other', 'app.ts'), 'const a = 1;\n');
 });
 
 afterEach(async () => {
-    await rm(root, { recursive: true, force: true });
+    await rm(base, { recursive: true, force: true });
 });
 
 const edit = (
@@ -44,7 +44,7 @@ const edit = (
     newString: string,
     replaceAll = false,
 ): Promise<ToolOutcome> => {
-    return editTool(root, dataDir).invoke(
+    return editTool(root).invoke(
         JSON.stringify({
             path,
             old_string: oldString,
@@ -134,7 +134,7 @@ describe('Replace exact text in a file', () => {
     });
 
     test('the model sees a closed schema', () => {
-        const tool = toFunctionTool(editTool(root, dataDir).tool);
+        const tool = toFunctionTool(editTool(root).tool);
 
         expect(tool).toMatchObject({ type: 'function', name: 'edit', strict: true });
         expect(tool.parameters).toEqual({
@@ -151,13 +151,13 @@ describe('Replace exact text in a file', () => {
     });
 
     test('the model is told how to match, and what it leaves to write', () => {
-        expect(editTool(root, dataDir).tool.description).toBe(
+        expect(editTool(root).tool.description).toBe(
             'Replace exact text in a file. old_string must match the file exactly, including whitespace and indentation, and occur once unless replace_all is true. Read the file first to copy the text. To create or replace a whole file, use the write tool.',
         );
     });
 
     test('a missing replace_all is rejected, and the file is unchanged', async () => {
-        const outcome = await editTool(root, dataDir).invoke(
+        const outcome = await editTool(root).invoke(
             JSON.stringify({ path: 'app.ts', old_string: 'a', new_string: 'b' }),
         );
 
@@ -238,7 +238,7 @@ describe('Explain a failed match', () => {
     });
 });
 
-describe('Edit only text files under the working directory', () => {
+describe('Edit only text files', () => {
     test('a missing file', async () => {
         expect(await edit('missing.txt', 'a', 'b')).toEqual({
             ok: false,
@@ -247,37 +247,16 @@ describe('Edit only text files under the working directory', () => {
         await expect(lstat(join(root, 'missing.txt'))).rejects.toThrow('ENOENT');
     });
 
-    test('outside the working directory', async () => {
-        expect(await edit('../other/app.ts', 'a', 'b')).toEqual({
-            ok: false,
-            error: '"../other/app.ts" is outside the working directory, the only place the edit tool may write.',
+    test.each([
+        ['../other/app.ts', 'const a = 1;', 'const a = 0;', 'const a = 0;\n'],
+        ['.env', 'sk-live-secret', 'sk-test', 'MODEL_API_KEY=sk-test'],
+        ['data/notes.txt', 'kept', 'changed', 'changed\n'],
+    ])('wherever the file is: %s', async (path, oldString, newString, after) => {
+        expect(await edit(path, oldString, newString)).toEqual({
+            ok: true,
+            value: `Replaced 1 occurrence in ${path}.`,
         });
-    });
-
-    test('an environment file', async () => {
-        expect(await edit('.env', 'sk-live-secret', 'x')).toEqual({
-            ok: false,
-            error: '".env" is an environment file. The edit tool doesn\'t write those: they hold secrets.',
-        });
-        expect(await contentsOf('.env')).toBe('MODEL_API_KEY=sk-live-secret');
-    });
-
-    test('the data folder', async () => {
-        expect(await edit('data/notes.txt', 'kept', 'changed')).toEqual({
-            ok: false,
-            error: '"data/notes.txt" is inside the data folder. The edit tool doesn\'t write there: it holds the agent\'s database.',
-        });
-        expect(await contentsOf('data/notes.txt')).toBe('kept\n');
-    });
-
-    test('a link into the data folder', async () => {
-        await symlink(join(dataDir, 'notes.txt'), join(root, 'ledger.txt'));
-
-        expect(await edit('ledger.txt', 'kept', 'changed')).toEqual({
-            ok: false,
-            error: '"ledger.txt" is inside the data folder. The edit tool doesn\'t write there: it holds the agent\'s database.',
-        });
-        expect(await contentsOf('data/notes.txt')).toBe('kept\n');
+        expect(await contentsOf(path)).toBe(after);
     });
 
     test('a directory', async () => {

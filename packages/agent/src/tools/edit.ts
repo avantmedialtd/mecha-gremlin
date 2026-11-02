@@ -1,9 +1,10 @@
 import type { Stats } from 'node:fs';
 import { readFile, stat, writeFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { type Result, err, ok } from '@mecha-gremlin/core/result';
 import type { ToolOutcome } from '@mecha-gremlin/core/tools';
 import { z } from 'zod';
-import { errorCode, fenceWrite, reasonOf } from './fence.ts';
+import { errorCode, reasonOf } from './errors.ts';
 import { type ToolHandler, defineTool } from './tool-handler.ts';
 import { counted } from './write.ts';
 
@@ -76,18 +77,13 @@ const notFound = (name: string, text: string, old: string): string => {
         : message;
 };
 
-const edit = async (root: string, dataDir: string, args: Edit): Promise<ToolOutcome> => {
+const edit = async (root: string, args: Edit): Promise<ToolOutcome> => {
     const { path, old_string: old, new_string: replacement, replace_all: replaceAll } = args;
     const name = JSON.stringify(path);
+    const target = resolve(root, path);
 
     try {
-        const fenced = await fenceWrite(root, dataDir, 'edit', path);
-
-        if (!fenced.ok) {
-            return fenced;
-        }
-
-        const text = await readEditable(fenced.value, name);
+        const text = await readEditable(target, name);
 
         if (!text.ok) {
             return text;
@@ -117,7 +113,7 @@ const edit = async (root: string, dataDir: string, args: Edit): Promise<ToolOutc
 
         // A function's result goes in literally, where a string's $& and $1 would be patterns.
         await writeFile(
-            fenced.value,
+            target,
             text.value.replaceAll(old, () => replacement),
         );
 
@@ -127,8 +123,8 @@ const edit = async (root: string, dataDir: string, args: Edit): Promise<ToolOutc
     }
 };
 
-export const editTool = (root: string, dataDir: string): ToolHandler => {
+export const editTool = (root: string): ToolHandler => {
     return defineTool({ name: 'edit', description: DESCRIPTION, schema: EditArgs }, (args) =>
-        edit(root, dataDir, args),
+        edit(root, args),
     );
 };

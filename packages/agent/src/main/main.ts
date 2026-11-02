@@ -35,10 +35,10 @@ const instructions = (workDir: string, fileTools: FileTools): string => {
 };
 
 // The two sets are never offered together, and the order stays fixed for the prompt cache.
-const fileToolsFor = (fileTools: FileTools, workDir: string, dataDir: string): ToolHandler[] => {
+const fileToolsFor = (fileTools: FileTools, workDir: string): ToolHandler[] => {
     return fileTools === 'apply-patch'
-        ? [applyPatchTool(workDir, dataDir)]
-        : [writeTool(workDir, dataDir), editTool(workDir, dataDir)];
+        ? [applyPatchTool(workDir)]
+        : [writeTool(workDir), editTool(workDir)];
 };
 
 const run = async (args: readonly string[]): Promise<number> => {
@@ -50,9 +50,8 @@ const run = async (args: readonly string[]): Promise<number> => {
     };
 
     const loaded = loadConfig(process.env);
-    // Read whatever the configuration's problems, to report its own with them. Without a
-    // configuration there's no data folder to refuse a task file in, but the run fails anyway.
-    const task = await readTask(args, loaded.ok ? loaded.value.dataDir : undefined);
+    // Read whatever the configuration's problems, to report its own with them.
+    const task = await readTask(args);
 
     if (!loaded.ok || !task.ok) {
         const problems = [...(loaded.ok ? [] : loaded.error), ...(task.ok ? [] : [task.error])];
@@ -179,12 +178,8 @@ const run = async (args: readonly string[]): Promise<number> => {
         const developer = skills.length > 0 ? `${preamble}\n\n${renderCatalog(skills)}` : preamble;
         const created = await createSession(config, {
             tools: [
-                readTool(
-                    workDir,
-                    skills.map((skill) => skill.directory),
-                    dataDir,
-                ),
-                ...fileToolsFor(config.fileTools, workDir, dataDir),
+                readTool(workDir),
+                ...fileToolsFor(config.fileTools, workDir),
                 shell.handler,
                 ...(skills.length > 0 ? [activateSkillTool(skills)] : []),
                 ...connected.value,

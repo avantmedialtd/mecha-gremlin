@@ -5,9 +5,14 @@
 // ~/.npmrc still counts.
 import { mkdir, mkdtemp, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join, relative, sep } from 'node:path';
 import { type Result, err, ok } from '@mecha-gremlin/core/result';
-import { isInside } from '../tools/fence.ts';
+
+export const isInside = (root: string, target: string): boolean => {
+    const path = relative(root, target);
+
+    return path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path);
+};
 
 /** Makes the run's directory, mode 0700, in the OS's temporary directory. */
 export const makeRunDirectory = async (

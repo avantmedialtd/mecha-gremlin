@@ -4,7 +4,6 @@ import {
     mkdir,
     mkdtemp,
     readFile,
-    realpath,
     rm,
     stat,
     symlink,
@@ -17,12 +16,9 @@ import { toFunctionTool } from '../../src/model/responses-tools.ts';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { applyPatchTool } from '../../src/tools/apply-patch.ts';
 
-// The root has a parent of its own, so whatever a mutant's broken fence writes through `..` goes
-// when the test ends.
+// The root has a parent of its own, so what a patch writes through `..` goes when the test ends.
 let base: string;
 let root: string;
-// Inside the root, as a data folder may be, by its real path, as loadConfig records it.
-let dataDir: string;
 
 const APP = 'const a = 1;\nconst b = 2;\n';
 
@@ -32,12 +28,11 @@ beforeEach(async () => {
     await mkdir(root);
     await writeFile(join(root, 'app.ts'), APP);
     await writeFile(join(root, 'old.txt'), 'old\n');
-    await writeFile(join(root, '.env'), 'MODEL_API_KEY=sk-live-secret');
+    await writeFile(join(root, '.env'), 'MODEL_API_KEY=sk-live-secret\n');
     await mkdir(join(root, 'src'));
     await writeFile(join(root, 'src', 'a.ts'), 'export const a = 1;\n');
     await mkdir(join(root, 'docs'));
-    dataDir = join(await realpath(root), 'data');
-    await mkdir(dataDir);
+    await mkdir(join(root, 'data'));
 });
 
 afterEach(async () => {
@@ -45,7 +40,7 @@ afterEach(async () => {
 });
 
 const apply = (...lines: readonly string[]): Promise<ToolOutcome> => {
-    return applyPatchTool(root, dataDir).invoke(
+    return applyPatchTool(root).invoke(
         JSON.stringify({ patch: ['*** Begin Patch', ...lines, '*** End Patch'].join('\n') }),
     );
 };
@@ -69,7 +64,7 @@ const CHANGE_APP = ['*** Update File: app.ts', '@@', '-const b = 2;', '+const b 
 
 describe("Accept a patch in Codex's V4A format", () => {
     test('the model sees a closed schema', () => {
-        const tool = toFunctionTool(applyPatchTool(root, dataDir).tool);
+        const tool = toFunctionTool(applyPatchTool(root).tool);
 
         expect(tool).toMatchObject({ type: 'function', name: 'apply_patch', strict: true });
         expect(tool.parameters).toEqual({
@@ -81,7 +76,7 @@ describe("Accept a patch in Codex's V4A format", () => {
     });
 
     test('the description explains the format, with an example', () => {
-        expect(applyPatchTool(root, dataDir).tool.description).toBe(
+        expect(applyPatchTool(root).tool.description).toBe(
             `Add, change, move or delete files with a patch. Nothing is changed unless the whole patch applies. The patch is text in this envelope:
 
 *** Begin Patch
@@ -110,7 +105,7 @@ Example:
     });
 
     test('a patch that does not parse changes nothing', async () => {
-        const outcome = await applyPatchTool(root, dataDir).invoke(
+        const outcome = await applyPatchTool(root).invoke(
             JSON.stringify({ patch: '*** Begin Patch\n*** Add File: new.txt\n+x\n' }),
         );
 
@@ -122,7 +117,7 @@ Example:
     });
 });
 
-describe('Add, delete, update and move files under the working directory', () => {
+describe('Add, delete, update and move files', () => {
     test('adds a file in a new directory', async () => {
         const outcome = await apply('*** Add File: docs/new/new.md', '+# Title', '+text');
 
@@ -237,77 +232,27 @@ describe('Add, delete, update and move files under the working directory', () =>
         });
     });
 
-    test('outside the working directory', async () => {
-        expect(
-            await apply('*** Add File: new.txt', '+x', '*** Add File: ../escape.txt', '+x'),
-        ).toEqual({
-            ok: false,
-            error: '"../escape.txt" is outside the working directory, the only place the apply_patch tool may write.',
-        });
-        expect(await exists('new.txt')).toBe(false);
-        expect(await exists('../escape.txt')).toBe(false);
-    });
+    test('wherever the file is', async () => {
+        const outcome = await apply(
+            '*** Add File: ../outside.txt',
+            '+x',
+            '*** Update File: .env',
+            '@@',
+            '-MODEL_API_KEY=sk-live-secret',
+            '+MODEL_API_KEY=sk-test',
+            '*** Update File: app.ts',
+            '*** Move to: data/app.ts',
+            ...CHANGE_APP.slice(1),
+        );
 
-    test('a move to outside the working directory', async () => {
-        expect(
-            await apply('*** Update File: src/a.ts', '*** Move to: ../b.ts', '@@', '+x'),
-        ).toEqual({
-            ok: false,
-            error: '"../b.ts" is outside the working directory, the only place the apply_patch tool may write.',
+        expect(outcome).toEqual({
+            ok: true,
+            value: 'Success. Updated the following files:\nA ../outside.txt\nM .env\nM data/app.ts',
         });
-        expect(await exists('src/a.ts')).toBe(true);
-    });
-
-    test('an environment file', async () => {
-        expect(
-            await apply(
-                ...CHANGE_APP,
-                '*** Update File: .env',
-                '@@',
-                '-MODEL_API_KEY=sk-live-secret',
-                '+X=1',
-            ),
-        ).toEqual({
-            ok: false,
-            error: '".env" is an environment file. The apply_patch tool doesn\'t write those: they hold secrets.',
-        });
-        expect(await contentsOf('.env')).toBe('MODEL_API_KEY=sk-live-secret');
-        await expectAppUnchanged();
-    });
-
-    test('adding a file in the data folder', async () => {
-        expect(await apply(...CHANGE_APP, '*** Add File: data/x.txt', '+x')).toEqual({
-            ok: false,
-            error: '"data/x.txt" is inside the data folder. The apply_patch tool doesn\'t write there: it holds the agent\'s database.',
-        });
-        expect(await exists('data/x.txt')).toBe(false);
-        await expectAppUnchanged();
-    });
-
-    test('a move into the data folder', async () => {
-        expect(
-            await apply(
-                '*** Update File: app.ts',
-                '*** Move to: data/app.ts',
-                ...CHANGE_APP.slice(1),
-            ),
-        ).toEqual({
-            ok: false,
-            error: '"data/app.ts" is inside the data folder. The apply_patch tool doesn\'t write there: it holds the agent\'s database.',
-        });
-        expect(await exists('data/app.ts')).toBe(false);
-        await expectAppUnchanged();
-    });
-
-    test('a link into the data folder', async () => {
-        await symlink(dataDir, join(root, 'to-data'));
-
-        expect(await apply(...CHANGE_APP, '*** Add File: to-data/x.txt', '+x')).toEqual({
-            ok: false,
-            error: '"to-data/x.txt" is inside the data folder. The apply_patch tool doesn\'t write there: it holds the agent\'s database.',
-        });
-        expect(await exists('data/x.txt')).toBe(false);
-        await expectAppUnchanged();
+        expect(await readFile(join(base, 'outside.txt'), 'utf8')).toBe('x\n');
+        expect(await contentsOf('.env')).toBe('MODEL_API_KEY=sk-test\n');
+        expect(await contentsOf('data/app.ts')).toBe('const a = 1;\nconst b = 3;\n');
+        expect(await exists('app.ts')).toBe(false);
     });
 
     test('adding over a large file', async () => {
@@ -364,6 +309,24 @@ describe('Add, delete, update and move files under the working directory', () =>
             error: `The patch names ${JSON.stringify(join(root, 'old.txt'))} more than once. Put all of a file's changes in one section.`,
         });
         expect(await contentsOf('old.txt')).toBe('old\n');
+    });
+
+    test('a file named twice through a link', async () => {
+        await symlink(join(root, 'app.ts'), join(root, 'alias.ts'));
+
+        expect(
+            await apply(
+                '*** Update File: alias.ts',
+                '@@',
+                '-const a = 1;',
+                '+const a = 0;',
+                ...CHANGE_APP,
+            ),
+        ).toEqual({
+            ok: false,
+            error: 'The patch names "app.ts" more than once. Put all of a file\'s changes in one section.',
+        });
+        await expectAppUnchanged();
     });
 
     test('a move onto the file it moves', async () => {

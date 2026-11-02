@@ -1,9 +1,10 @@
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { err, ok } from '@mecha-gremlin/core/result';
 import type { ToolOutcome } from '@mecha-gremlin/core/tools';
 import { z } from 'zod';
-import { errorCode, fenceRead, reasonOf } from './fence.ts';
+import { errorCode, reasonOf } from './errors.ts';
 import { type ToolHandler, defineTool } from './tool-handler.ts';
 
 // About 8k tokens (Brief R5.5). A browsing run needs a larger context than LM Studio's 8k default
@@ -16,7 +17,7 @@ const BINARY_PROBE = 8 * 1024;
 const NEWLINE = 0x0a;
 
 const DESCRIPTION =
-    "Read a UTF-8 text file and return its contents. The path is relative to the working directory, or absolute inside a skill's directory. offset is the first line to read, from 1, and limit the most lines; pass null for both to read from the start. Each call returns at most 32 KiB in whole lines, with a note giving the offset to continue from.";
+    'Read a UTF-8 text file and return its contents. The path is relative to the working directory, or absolute. offset is the first line to read, from 1, and limit the most lines; pass null for both to read from the start. Each call returns at most 32 KiB in whole lines, with a note giving the offset to continue from.';
 
 const LineNumber = z.int().min(1).nullable();
 
@@ -31,7 +32,7 @@ const ReadArgs = z.preprocess(
         path: z
             .string()
             .describe(
-                "The file's path: relative to the working directory, such as README.md or docs/guide.md, or absolute inside a skill's directory",
+                "The file's path: relative to the working directory, such as README.md or docs/guide.md, or absolute",
             ),
         offset: LineNumber,
         limit: LineNumber,
@@ -193,32 +194,23 @@ const describePage = (page: Page, name: string, first: number): ToolOutcome => {
 
 const readLines = async (
     root: string,
-    skillDirectories: readonly string[],
-    dataDir: string,
     path: string,
     first: number,
     limit: number,
 ): Promise<ToolOutcome> => {
     const name = JSON.stringify(path);
+    const file = resolve(root, path);
 
     try {
-        const fenced = await fenceRead(root, skillDirectories, dataDir, path);
-
-        if (!fenced.ok) {
-            return fenced;
-        }
-
-        const real = fenced.value;
-
-        if ((await stat(real)).isDirectory()) {
+        if ((await stat(file)).isDirectory()) {
             return err(`${name} is a directory.`);
         }
 
-        if (isBinary(await readHead(real))) {
+        if (isBinary(await readHead(file))) {
             return err(`${name} is a binary file.`);
         }
 
-        return describePage(await readPage(real, first, limit), name, first);
+        return describePage(await readPage(file, first, limit), name, first);
     } catch (error) {
         if (errorCode(error) === 'ENOENT') {
             return err(`No such file: ${name}.`);
@@ -228,21 +220,10 @@ const readLines = async (
     }
 };
 
-export const readTool = (
-    root: string,
-    skillDirectories: readonly string[],
-    dataDir: string,
-): ToolHandler => {
+export const readTool = (root: string): ToolHandler => {
     return defineTool(
         { name: 'read', description: DESCRIPTION, schema: ReadArgs },
         ({ path, offset, limit }) =>
-            readLines(
-                root,
-                skillDirectories,
-                dataDir,
-                path,
-                offset ?? 1,
-                limit ?? Number.POSITIVE_INFINITY,
-            ),
+            readLines(root, path, offset ?? 1, limit ?? Number.POSITIVE_INFINITY),
     );
 };

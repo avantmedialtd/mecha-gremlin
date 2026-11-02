@@ -4,7 +4,6 @@ import { type Result, err, ok } from '@mecha-gremlin/core/result';
 import type { Provider } from '@mecha-gremlin/core/statistics';
 import { z } from 'zod';
 import type { LogFormat } from '../log/log.ts';
-import { isInside } from '../tools/fence.ts';
 
 export type { Provider } from '@mecha-gremlin/core/statistics';
 
@@ -119,9 +118,10 @@ const directory = (name: string) => {
     return required(name).transform((raw, ctx) => {
         const path = resolve(process.cwd(), raw);
 
-        // Its real path is used everywhere: on macOS /tmp and /var are links, and a path built
-        // from pwd would fail the file tools' lexical checks. On Node, only the native realpath
-        // also spells each name as it is on disk, as pwd does, when the file system ignores case.
+        // Its real path is used everywhere: on macOS /tmp and /var are links, and the check that
+        // keeps the stdio servers' directory out of it compares real paths. On Node, only the
+        // native realpath also spells each name as it is on disk, as pwd does, when the file
+        // system ignores case.
         try {
             const real = realpathSync.native(path);
 
@@ -204,19 +204,6 @@ export const loadMcpConfig = (env: Env): Result<McpConfig, string[]> => {
     return result.success ? ok({ dataDir: result.data }) : err(messagesOf(result));
 };
 
-// The file tools refuse everything in the data folder, so they couldn't touch a working directory
-// inside it.
-const overlap = (raw: { readonly WORK_DIR?: string; readonly DATA_DIR?: string }): string[] => {
-    const work = common.WORK_DIR.safeParse(raw.WORK_DIR);
-    const data = common.DATA_DIR.safeParse(raw.DATA_DIR);
-
-    return work.success && data.success && isInside(data.data, work.data)
-        ? [
-              `DATA_DIR must not be or contain WORK_DIR, since the file tools refuse everything in the data folder: DATA_DIR is ${data.data}, and WORK_DIR is ${work.data}.`,
-          ]
-        : [];
-};
-
 export const loadConfig = (env: Env): Result<Config, string[]> => {
     const raw = {
         MODEL_PROVIDER: read(env, 'MODEL_PROVIDER'),
@@ -233,20 +220,19 @@ export const loadConfig = (env: Env): Result<Config, string[]> => {
         DATA_DIR: read(env, 'DATA_DIR'),
         SKILLS_PATH: read(env, 'SKILLS_PATH'),
     };
-    const overlapping = overlap(raw);
     const formerName =
         env.MAX_TURNS === undefined
             ? []
             : ['MAX_TURNS is now MAX_STEPS; rename it in your settings.'];
 
     if (!PROVIDERS.some((provider) => provider === raw.MODEL_PROVIDER)) {
-        return err([...messagesOf(commonSchema.safeParse(raw)), ...overlapping, ...formerName]);
+        return err([...messagesOf(commonSchema.safeParse(raw)), ...formerName]);
     }
 
     const result = providerSchema.safeParse(raw);
 
-    if (!result.success || overlapping.length > 0 || formerName.length > 0) {
-        return err([...messagesOf(result), ...overlapping, ...formerName]);
+    if (!result.success || formerName.length > 0) {
+        return err([...messagesOf(result), ...formerName]);
     }
 
     const value = result.data;

@@ -32,15 +32,6 @@ const BASE = {
     DATA_DIR,
 };
 
-const overlapping = (data: string, work: string) => {
-    return {
-        ok: false,
-        error: [
-            `DATA_DIR must not be or contain WORK_DIR, since the file tools refuse everything in the data folder: DATA_DIR is ${data}, and WORK_DIR is ${work}.`,
-        ],
-    };
-};
-
 // macOS's file system ignores case by default, so a path typed in another case names the same
 // directory there.
 const ignoresCase = (() => {
@@ -278,7 +269,6 @@ describe('loadConfig', () => {
             MAX_STEPS: '0',
             FILE_TOOLS: 'both',
             MAX_TURNS: '',
-            DATA_DIR: '.',
         });
 
         expect(result.ok).toBe(false);
@@ -287,13 +277,7 @@ describe('loadConfig', () => {
             throw new Error('configuration unexpectedly succeeded');
         }
 
-        for (const name of [
-            'MODEL_PROVIDER',
-            'MAX_STEPS',
-            'FILE_TOOLS',
-            'MAX_TURNS',
-            'must not be or contain WORK_DIR',
-        ]) {
+        for (const name of ['MODEL_PROVIDER', 'MAX_STEPS', 'FILE_TOOLS', 'MAX_TURNS']) {
             expect(result.error.some((problem) => problem.includes(name))).toBe(true);
         }
     });
@@ -363,33 +347,24 @@ describe('loadConfig', () => {
         }
     });
 
-    test('DATA_DIR must not be the working directory, nor contain it', () => {
+    test('DATA_DIR may be the working directory, contain it or lie inside it', () => {
         const root = realpathSync(mkdtempSync(join(tmpdir(), 'gremlin-config-')));
         mkdirSync(join(root, 'work'));
         mkdirSync(join(root, 'work', 'data'));
-        mkdirSync(join(root, 'data'));
-        mkdirSync(join(root, 'work-data'));
         const work = join(root, 'work');
 
         try {
-            expect(loadConfig({ ...BASE, WORK_DIR: work, DATA_DIR: work })).toEqual(
-                overlapping(work, work),
-            );
-            expect(loadConfig({ ...BASE, WORK_DIR: work, DATA_DIR: root })).toEqual(
-                overlapping(root, work),
-            );
-            // The tools refuse a data folder inside the working directory themselves.
+            expect(loadConfig({ ...BASE, WORK_DIR: work, DATA_DIR: work })).toMatchObject({
+                ok: true,
+                value: { workDir: work, dataDir: work },
+            });
+            expect(loadConfig({ ...BASE, WORK_DIR: work, DATA_DIR: root })).toMatchObject({
+                ok: true,
+                value: { workDir: work, dataDir: root },
+            });
             expect(
                 loadConfig({ ...BASE, WORK_DIR: work, DATA_DIR: join(work, 'data') }),
             ).toMatchObject({ ok: true, value: { workDir: work, dataDir: join(work, 'data') } });
-            expect(
-                loadConfig({ ...BASE, WORK_DIR: work, DATA_DIR: join(root, 'data') }),
-            ).toMatchObject({
-                ok: true,
-            });
-            expect(
-                loadConfig({ ...BASE, WORK_DIR: work, DATA_DIR: join(root, 'work-data') }),
-            ).toMatchObject({ ok: true });
         } finally {
             rmSync(root, { recursive: true, force: true });
         }

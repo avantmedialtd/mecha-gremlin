@@ -42,10 +42,6 @@ const TEST_TASK = 'Carry out the test task.';
 const USAGE =
     "Give the task as a file, as in bun run agent task.md, or inline after --prompt or -p, as in bun run agent -p 'Say hi'.";
 
-const envFileRefusal = (path: string): string => {
-    return `The task file ${JSON.stringify(path)} is an environment file. The agent doesn't take its task from those: they hold secrets.`;
-};
-
 /** Each test sets or clears all of these, so settings in your shell can't leak in. */
 const SETTINGS = [
     'LOG_FORMAT',
@@ -398,28 +394,24 @@ describe('Carry out a task through the agent loop, and log the answer', { timeou
         expect(requests).toHaveLength(0);
     });
 
-    test('task files the file tools refuse: .env, a link to it, and a file in DATA_DIR', async () => {
+    test('any text file is a task file: .env, a link to it, and a file in DATA_DIR', async () => {
         const folder = await mkdtemp(join(tmpdir(), 'agent-task-'));
-        await writeFile(join(folder, '.env'), 'MODEL_API_KEY=sk-live-secret');
+        const data = join(folder, 'data');
+        await mkdir(data);
+        await writeFile(join(folder, '.env'), 'Say hi\n');
         await symlink(join(folder, '.env'), join(folder, 'innocent.md'));
+        await writeFile(join(data, 'task.md'), 'Say hi\n');
 
         try {
             const runs = [
                 await runAgent({}, {}, [join(folder, '.env')]),
                 await runAgent({}, {}, [join(folder, 'innocent.md')]),
-                await runAgent({}, {}, [join(dataDir, 'db.sqlite')]),
+                await runAgent({ DATA_DIR: data }, {}, [join(data, 'task.md')]),
             ];
+            const sayHi = expect.arrayContaining([{ role: 'user', content: 'Say hi' }]);
 
-            expect(runs.map((run) => run.code)).toEqual([1, 1, 1]);
-            expect(runs.map((run) => errors(run.records))).toEqual([
-                [envFileRefusal(join(folder, '.env'))],
-                [envFileRefusal(join(folder, 'innocent.md'))],
-                [
-                    `The task file ${JSON.stringify(join(dataDir, 'db.sqlite'))} is inside the data folder. The agent doesn't take its task from there: it holds the agent's database.`,
-                ],
-            ]);
-            expect(runs.flatMap((run) => run.requests)).toEqual([]);
-            expect(runs.map((run) => run.output).join('')).not.toContain('sk-live-secret');
+            expect(runs.map((run) => run.code)).toEqual([0, 0, 0]);
+            expect(runs.map((run) => run.modelCall?.body?.input)).toEqual([sayHi, sayHi, sayHi]);
         } finally {
             await rm(folder, { recursive: true, force: true });
         }
@@ -672,12 +664,12 @@ describe('Carry out a task through the agent loop, and log the answer', { timeou
         }
     });
 
-    test('the file tools refuse the data folder inside the working directory', async () => {
+    test('the file tools reach a data folder in the working directory, where read refuses the database', async () => {
         const work = await mkdtemp(join(tmpdir(), 'agent-work-'));
         await mkdir(join(work, 'data'));
 
         try {
-            const { records } = await runAgent(
+            const { records, modelCalls } = await runAgent(
                 { WORK_DIR: work, DATA_DIR: join(work, 'data') },
                 {
                     responses: script(
@@ -686,22 +678,19 @@ describe('Carry out a task through the agent loop, and log the answer', { timeou
                                 call('read', { path: 'data/db.sqlite' }, 'call_1'),
                                 call('write', { path: 'data/x.txt', content: 'x' }, 'call_2'),
                             ]),
-                        () => completed([message('I may not.')]),
+                        () => completed([message('Done.')]),
                     ),
                 },
             );
 
             expect(all(records, 'tool failed')).toMatchObject([
-                {
-                    tool: 'read',
-                    error: '"data/db.sqlite" is inside the data folder. The read tool doesn\'t read there: it holds the agent\'s database.',
-                },
-                {
-                    tool: 'write',
-                    error: '"data/x.txt" is inside the data folder. The write tool doesn\'t write there: it holds the agent\'s database.',
-                },
+                { tool: 'read', error: '"data/db.sqlite" is a binary file.' },
             ]);
-            expect(existsSync(join(work, 'data', 'x.txt'))).toBe(false);
+            expect(callOutputs(modelCalls[1])).toEqual([
+                'Error: "data/db.sqlite" is a binary file.',
+                'Created data/x.txt (1 line, 1 byte).',
+            ]);
+            expect(await readFile(join(work, 'data', 'x.txt'), 'utf8')).toBe('x');
         } finally {
             await rm(work, { recursive: true, force: true });
         }
@@ -1156,7 +1145,7 @@ describe('Log each model call and tool call', () => {
             {},
             {
                 responses: script(
-                    () => completed([call('read', { path: '.env' })]),
+                    () => completed([call('read', { path: 'missing.txt' })]),
                     () => completed([message("I can't read that.")]),
                 ),
             },
@@ -1165,7 +1154,7 @@ describe('Log each model call and tool call', () => {
         expect(find(records, 'tool failed')).toMatchObject({
             level: 'warn',
             tool: 'read',
-            error: '".env" is an environment file. The read tool doesn\'t read those: they hold secrets.',
+            error: 'No such file: "missing.txt".',
         });
     });
 
@@ -1435,21 +1424,26 @@ describe('Read the configuration from the environment, and validate it at start-
     });
 
     test.each([
-        ['the working directory', 'work', '.'],
-        ['a directory that holds it', 'work', '..'],
-    ])('a data folder that is %s', async (_kind, work, data) => {
-        await mkdir(join(cwd, work), { recursive: true });
+        ['the working directory', '.'],
+        ['a directory that holds it', '..'],
+    ])('a data folder that is %s: the store opens there', async (_kind, data) => {
+        const base = await mkdtemp(join(tmpdir(), 'agent-work-'));
+        const work = join(base, 'work');
+        await mkdir(work);
 
-        const { code, records, requests } = await runAgent({
-            WORK_DIR: work,
-            DATA_DIR: join(work, data),
-        });
+        try {
+            const { code, records } = await runAgent({
+                WORK_DIR: work,
+                DATA_DIR: join(work, data),
+            });
+            const real = await realpath(join(work, data));
 
-        expect(code).toBe(1);
-        expect(errors(records)).toEqual([
-            `DATA_DIR must not be or contain WORK_DIR, since the file tools refuse everything in the data folder: DATA_DIR is ${join(realCwd, work, data)}, and WORK_DIR is ${join(realCwd, work)}.`,
-        ]);
-        expect(requests).toHaveLength(0);
+            expect(code).toBe(0);
+            expect(find(records, 'asking')).toMatchObject({ dataDir: real });
+            expect(existsSync(join(real, 'db.sqlite'))).toBe(true);
+        } finally {
+            await rm(base, { recursive: true, force: true });
+        }
     });
 });
 

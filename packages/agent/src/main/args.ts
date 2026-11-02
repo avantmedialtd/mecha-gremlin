@@ -1,7 +1,7 @@
-import { readFile, realpath } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { type Result, err, ok } from '@mecha-gremlin/core/result';
-import { errorCode, isEnvFile, isInside, reasonOf } from '../tools/fence.ts';
+import { errorCode, reasonOf } from '../tools/errors.ts';
 import { isBinary } from '../tools/read.ts';
 import { parse } from './options.ts';
 
@@ -20,40 +20,16 @@ const OPTIONS = { prompt: { type: 'string', short: 'p' } } as const;
 
 const HINTS = { unknown: USAGE, value: USAGE };
 
-// The file tools' refusals, without their root: a task file may be anywhere, but the task goes to
-// the provider, and into the asking record, so nothing the model may never read can be its task.
-const fromFile = async (
-    path: string,
-    dataDir: string | undefined,
-): Promise<Result<Task, string>> => {
+const fromFile = async (path: string): Promise<Result<Task, string>> => {
     // As WORK_DIR is resolved, so that task.md is in the directory WORK_DIR=. names: under bun run,
     // the repository's root.
     const file = resolve(process.cwd(), path);
     const name = JSON.stringify(file);
-    const secret = err(
-        `The task file ${name} is an environment file. The agent doesn't take its task from those: they hold secrets.`,
-    );
-
-    if (isEnvFile(file)) {
-        return secret;
-    }
 
     try {
-        const real = await realpath(file);
-
-        if (isEnvFile(real)) {
-            return secret;
-        }
-
-        if (dataDir !== undefined && isInside(dataDir, real)) {
-            return err(
-                `The task file ${name} is inside the data folder. The agent doesn't take its task from there: it holds the agent's database.`,
-            );
-        }
-
         // Read once: a pipe can't be read twice, and nothing can change the file between the
         // probe and the text.
-        const bytes = await readFile(real);
+        const bytes = await readFile(file);
 
         if (isBinary(bytes)) {
             return err(`The task file ${name} is a binary file.`);
@@ -71,10 +47,7 @@ const fromFile = async (
     }
 };
 
-export const readTask = async (
-    args: readonly string[],
-    dataDir: string | undefined,
-): Promise<Result<Task, string>> => {
+export const readTask = async (args: readonly string[]): Promise<Result<Task, string>> => {
     const parsed = parse(args, OPTIONS, HINTS);
 
     if (!parsed.ok) {
@@ -98,7 +71,7 @@ export const readTask = async (
     }
 
     if (values.prompt === undefined) {
-        return path === undefined ? err(REQUIRED) : fromFile(path, dataDir);
+        return path === undefined ? err(REQUIRED) : fromFile(path);
     }
 
     if (path !== undefined) {

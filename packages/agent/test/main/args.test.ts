@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
@@ -11,25 +11,16 @@ const REQUIRED = `A task is required. ${USAGE}`;
 
 const QUESTION = 'Which runtime does README.md describe?';
 
-const SECRET =
-    "is an environment file. The agent doesn't take its task from those: they hold secrets.";
-
-const DATA =
-    "is inside the data folder. The agent doesn't take its task from there: it holds the agent's database.";
-
 const needs = (option: string): string => {
     return `The option ${option} needs a value; one that starts with - is given as --prompt=<value>. ${USAGE}`;
 };
 
-// The directory a run starts in, as process.cwd() gives it, and the data folder inside it, by its
-// real path, as loadConfig records it.
+// The directory a run starts in, as process.cwd() gives it.
 let directory: string;
-let dataDir: string;
 
 beforeAll(async () => {
     directory = await mkdtemp(join(tmpdir(), 'args-'));
-    dataDir = join(await realpath(directory), 'data');
-    await mkdir(dataDir);
+    await mkdir(join(directory, 'data'));
     await mkdir(join(directory, 'docs'));
     await writeFile(join(directory, 'task.md'), `\n  ${QUESTION}\n\n`);
     await writeFile(
@@ -47,13 +38,10 @@ beforeAll(async () => {
     );
     await writeFile(join(directory, 'empty.md'), '');
     await writeFile(join(directory, 'blank.md'), ' \n\t\r\n﻿\n');
-    await writeFile(join(directory, '.env'), 'MODEL_API_KEY=sk-live-secret');
-    await writeFile(join(directory, '.env.local'), 'OTHER_SECRET=1');
+    await writeFile(join(directory, '.env'), 'Say hi\n');
     await symlink(join(directory, '.env'), join(directory, 'innocent.md'));
     await symlink(join(directory, 'task.md'), join(directory, 'alias.md'));
-    await writeFile(join(dataDir, 'db.sqlite'), 'SQLite format 3 refresh_token=rt-secret');
-    await writeFile(join(dataDir, 'notes.md'), 'Say hi');
-    await symlink(join(dataDir, 'db.sqlite'), join(directory, 'ledger.md'));
+    await writeFile(join(directory, 'data', 'notes.md'), 'Say hi\n');
     await writeFile(join(directory, 'locked.md'), 'locked');
     await chmod(join(directory, 'locked.md'), 0o000);
 });
@@ -66,7 +54,7 @@ afterAll(async () => {
 const taskOf = (...args: readonly string[]) => {
     vi.spyOn(process, 'cwd').mockReturnValue(directory);
 
-    return readTask(args, dataDir);
+    return readTask(args);
 };
 
 const nameOf = (path: string): string => {
@@ -108,6 +96,9 @@ describe('Take the task from a file, or from --prompt', () => {
         ['invalid UTF-8 replaced with U+FFFD', 'latin1.txt', 'caf�!'],
         ['a NUL byte after the first 8 KiB', 'late-nul.txt', `${'a'.repeat(8 * 1024)}\0tail`],
         ['through a link, which keeps its own path', 'alias.md', QUESTION],
+        ['named like an environment file', '.env', 'Say hi'],
+        ['through a link to an environment file', 'innocent.md', 'Say hi'],
+        ['in a data folder', 'data/notes.md', 'Say hi'],
     ])('a task file: %s', async (_what, name, text) => {
         expect(await taskOf(name)).toEqual({
             ok: true,
@@ -168,7 +159,7 @@ describe('Refuse a task given more than one way', () => {
     });
 });
 
-describe("Refuse a task file that isn't text, or that the file tools refuse", () => {
+describe("Refuse a task file that can't be read, or isn't text", () => {
     test("a file that doesn't exist: the absolute path looked at, and both ways", async () => {
         expect(await taskOf('Say hi')).toEqual({
             ok: false,
@@ -185,35 +176,6 @@ describe("Refuse a task file that isn't text, or that the file tools refuse", ()
         expect(await taskOf(name)).toEqual({
             ok: false,
             error: `The task file ${nameOf(name)} ${why}`,
-        });
-    });
-
-    test.each(['.env', '.env.local', 'docs/.env.missing', 'innocent.md'])(
-        'an environment file, by its name or its real path: %s',
-        async (name) => {
-            expect(await taskOf(name)).toEqual({
-                ok: false,
-                error: `The task file ${nameOf(name)} ${SECRET}`,
-            });
-        },
-    );
-
-    test.each(['data/db.sqlite', 'ledger.md'])(
-        'a file whose real path is in the data folder: %s',
-        async (name) => {
-            expect(await taskOf(name)).toEqual({
-                ok: false,
-                error: `The task file ${nameOf(name)} ${DATA}`,
-            });
-        },
-    );
-
-    test('without a data folder, a file in it is read', async () => {
-        vi.spyOn(process, 'cwd').mockReturnValue(directory);
-
-        expect(await readTask(['data/notes.md'], undefined)).toEqual({
-            ok: true,
-            value: { text: 'Say hi', file: join(directory, 'data', 'notes.md') },
         });
     });
 

@@ -1,10 +1,10 @@
 import type { Stats } from 'node:fs';
 import { mkdir, stat, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { type Result, err, ok } from '@mecha-gremlin/core/result';
 import type { ToolOutcome } from '@mecha-gremlin/core/tools';
 import { z } from 'zod';
-import { fenceWrite, reasonOf } from './fence.ts';
+import { reasonOf } from './errors.ts';
 import { READ_LIMIT } from './read.ts';
 import { type ToolHandler, defineTool } from './tool-handler.ts';
 
@@ -59,22 +59,11 @@ export const counted = (count: number, unit: string): string => {
 
 // In place, not through a temporary file and a rename, which would replace a link and reset the
 // file's mode.
-const write = async (
-    root: string,
-    dataDir: string,
-    path: string,
-    content: string,
-): Promise<ToolOutcome> => {
+const write = async (root: string, path: string, content: string): Promise<ToolOutcome> => {
     const name = JSON.stringify(path);
+    const target = resolve(root, path);
 
     try {
-        const fenced = await fenceWrite(root, dataDir, 'write', path);
-
-        if (!fenced.ok) {
-            return fenced;
-        }
-
-        const target = fenced.value;
         const existing = await checkReplaceable(
             target,
             name,
@@ -98,9 +87,9 @@ const write = async (
     }
 };
 
-export const writeTool = (root: string, dataDir: string): ToolHandler => {
+export const writeTool = (root: string): ToolHandler => {
     return defineTool(
         { name: 'write', description: DESCRIPTION, schema: WriteArgs },
-        ({ path, content }) => write(root, dataDir, path, content),
+        ({ path, content }) => write(root, path, content),
     );
 };

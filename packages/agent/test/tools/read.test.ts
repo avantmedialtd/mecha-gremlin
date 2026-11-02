@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ToolOutcome } from '@mecha-gremlin/core/tools';
@@ -6,13 +6,11 @@ import { toFunctionTool } from '../../src/model/responses-tools.ts';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { READ_LIMIT, readTool } from '../../src/tools/read.ts';
 
+// The root has a parent of its own, which holds the directories outside it that a test reads.
+let base: string;
 let root: string;
-let realRoot: string;
 let outside: string;
-// A skill's directory is given by its real path, as loadSkills records it.
 let skill: string;
-// Inside the root, as a data folder may be, by its real path, as loadConfig records it.
-let dataDir: string;
 
 /** Line `n` of `hundred.txt`: 99 ASCII characters, its number first, and a `\n`. */
 const hundredLine = (n: number): string => {
@@ -26,14 +24,15 @@ const hundredLines = (from: number, to: number): string => {
 const TEN_LINES = Array.from({ length: 10 }, (_, index) => `${index + 1}\n`).join('');
 
 beforeAll(async () => {
-    root = await mkdtemp(join(tmpdir(), 'read-root-'));
-    outside = await mkdtemp(join(tmpdir(), 'read-outside-'));
-    skill = await realpath(await mkdtemp(join(tmpdir(), 'read-skill-')));
-    await writeFile(join(outside, 'secret.txt'), 'top secret');
-    await mkdir(join(skill, 'references'));
+    base = await mkdtemp(join(tmpdir(), 'read-'));
+    root = join(base, 'root');
+    outside = join(base, 'outside');
+    skill = join(base, 'skill');
+    await mkdir(root);
+    await mkdir(outside);
+    await mkdir(join(skill, 'references'), { recursive: true });
+    await writeFile(join(outside, 'notes.txt'), 'from outside');
     await writeFile(join(skill, 'references', 'forms.md'), '# Forms\n');
-    await writeFile(join(skill, '.env'), 'SKILL_SECRET=1');
-    await symlink(join(outside, 'secret.txt'), join(skill, 'leak.md'));
 
     await writeFile(join(root, 'notes.txt'), 'hello');
     await writeFile(join(root, 'latin1.txt'), new Uint8Array([0x63, 0x61, 0x66, 0xe9, 0x21]));
@@ -41,8 +40,7 @@ beforeAll(async () => {
     await writeFile(join(root, 'docs', 'guide.md'), '# Guide\n');
     await writeFile(join(root, '.env'), 'MODEL_API_KEY=sk-live-secret');
     await writeFile(join(root, '.env.local'), 'OTHER_SECRET=1');
-    await symlink(join(root, '.env'), join(root, 'innocent.txt'));
-    await symlink(join(outside, 'secret.txt'), join(root, 'link.txt'));
+    await symlink(join(outside, 'notes.txt'), join(root, 'link.txt'));
     await symlink(join(root, 'notes.txt'), join(root, 'alias.txt'));
     await writeFile(join(root, 'logo.png'), new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x0d]));
     await writeFile(join(root, 'late-nul.txt'), `${'a'.repeat(8 * 1024)}\0tail`);
@@ -75,28 +73,22 @@ beforeAll(async () => {
     await writeFile(join(root, 'long-later.txt'), `${'x\n'.repeat(30_000)}${'L'.repeat(40_000)}`);
     await writeFile(join(root, 'exact-line.txt'), `${'e'.repeat(READ_LIMIT - 1)}\nnext\n`);
 
-    realRoot = await realpath(root);
-    dataDir = join(realRoot, 'data');
-    await mkdir(dataDir);
-    await writeFile(join(dataDir, 'db.sqlite'), 'SQLite format 3 refresh_token=rt-secret');
-    await symlink(join(dataDir, 'db.sqlite'), join(root, 'ledger.txt'));
-    await symlink(join(root, 'docs'), join(dataDir, 'way-out'));
+    // A data folder inside the root, as DATA_DIR may be. A database's header ends with a NUL byte.
+    await mkdir(join(root, 'data'));
+    await writeFile(join(root, 'data', 'notes.txt'), 'kept\n');
+    await writeFile(join(root, 'data', 'db.sqlite'), 'SQLite format 3\0refresh_token=rt-secret');
 });
 
 afterAll(async () => {
     await chmod(join(root, 'locked.txt'), 0o600);
-    await rm(root, { recursive: true, force: true });
-    await rm(outside, { recursive: true, force: true });
-    await rm(skill, { recursive: true, force: true });
+    await rm(base, { recursive: true, force: true });
 });
 
 type Paging = { readonly offset?: number | null; readonly limit?: number | null };
 
 const read = (path: string, paging: Paging = {}): Promise<ToolOutcome> => {
-    return readTool(root, [skill], dataDir).invoke(JSON.stringify({ path, ...paging }));
+    return readTool(root).invoke(JSON.stringify({ path, ...paging }));
 };
-
-const OUTSIDE = 'is outside the directories the read tool may read.';
 
 const errorOf = (outcome: ToolOutcome): string => {
     expect(outcome.ok).toBe(false);
@@ -104,20 +96,11 @@ const errorOf = (outcome: ToolOutcome): string => {
     return (outcome as Extract<ToolOutcome, { ok: false }>).error;
 };
 
-// By the root's real path, as the agent gives it, which the paths as written start with.
-const readReal = async (path: string): Promise<string> => {
-    return errorOf(await readTool(realRoot, [skill], dataDir).invoke(JSON.stringify({ path })));
-};
-
-const dataError = (path: string): string => {
-    return `${JSON.stringify(path)} is inside the data folder. The read tool doesn't read there: it holds the agent's database.`;
-};
-
 const LINE_NUMBER = {
     anyOf: [{ type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER }, { type: 'null' }],
 };
 
-describe('Read a UTF-8 text file under a root directory', () => {
+describe('Read a UTF-8 text file', () => {
     test('reads a file', async () => {
         expect(await read('notes.txt')).toEqual({ ok: true, value: 'hello' });
     });
@@ -142,21 +125,8 @@ describe('Read a UTF-8 text file under a root directory', () => {
         });
     });
 
-    test('without skill directories, only the root', async () => {
-        const tool = readTool(root, [], dataDir);
-        const inRoot = await tool.invoke(JSON.stringify({ path: 'notes.txt' }));
-        const inSkill = await tool.invoke(
-            JSON.stringify({ path: join(skill, 'references', 'forms.md') }),
-        );
-
-        expect(inRoot).toEqual({ ok: true, value: 'hello' });
-        expect(errorOf(inSkill)).toBe(
-            `${JSON.stringify(join(skill, 'references', 'forms.md'))} ${OUTSIDE}`,
-        );
-    });
-
     test('the model sees a closed schema', () => {
-        const tool = toFunctionTool(readTool(root, [], dataDir).tool);
+        const tool = toFunctionTool(readTool(root).tool);
 
         expect(tool).toMatchObject({ type: 'function', name: 'read', strict: true });
         expect(tool.parameters).toEqual({
@@ -172,16 +142,16 @@ describe('Read a UTF-8 text file under a root directory', () => {
     });
 
     test('the model is told what the tool reads, and how to page', () => {
-        const tool = toFunctionTool(readTool(root, [], dataDir).tool);
+        const tool = toFunctionTool(readTool(root).tool);
 
         expect(tool.description).toBe(
-            "Read a UTF-8 text file and return its contents. The path is relative to the working directory, or absolute inside a skill's directory. offset is the first line to read, from 1, and limit the most lines; pass null for both to read from the start. Each call returns at most 32 KiB in whole lines, with a note giving the offset to continue from.",
+            'Read a UTF-8 text file and return its contents. The path is relative to the working directory, or absolute. offset is the first line to read, from 1, and limit the most lines; pass null for both to read from the start. Each call returns at most 32 KiB in whole lines, with a note giving the offset to continue from.',
         );
         expect(tool.parameters).toMatchObject({
             properties: {
                 path: {
                     description:
-                        "The file's path: relative to the working directory, such as README.md or docs/guide.md, or absolute inside a skill's directory",
+                        "The file's path: relative to the working directory, such as README.md or docs/guide.md, or absolute",
                 },
             },
         });
@@ -190,7 +160,7 @@ describe('Read a UTF-8 text file under a root directory', () => {
     test('extra arguments are rejected before any file is read', async () => {
         // Had the file been looked up, a missing one would say so.
         const error = errorOf(
-            await readTool(root, [], dataDir).invoke(
+            await readTool(root).invoke(
                 '{"path":"missing.txt","offset":null,"limit":null,"encoding":"utf8"}',
             ),
         );
@@ -226,9 +196,7 @@ describe('Read a UTF-8 text file under a root directory', () => {
         ['limit', '5'],
     ])('an invalid %s of %j is rejected before any file is read', async (key, value) => {
         const error = errorOf(
-            await readTool(root, [], dataDir).invoke(
-                JSON.stringify({ path: 'missing.txt', [key]: value }),
-            ),
+            await readTool(root).invoke(JSON.stringify({ path: 'missing.txt', [key]: value })),
         );
 
         expect(error).toMatch(
@@ -236,78 +204,36 @@ describe('Read a UTF-8 text file under a root directory', () => {
         );
         expect(error).not.toContain('No such file');
     });
-});
 
-describe('Never read outside the root and the skill directories', () => {
-    test.each(['..', '../secret.txt', '/etc/hosts', 'docs/../../secret.txt'])(
-        '%s',
-        async (path) => {
-            expect(errorOf(await read(path))).toBe(`${JSON.stringify(path)} ${OUTSIDE}`);
-        },
-    );
-
-    test('a symbolic link pointing outside', async () => {
-        const error = errorOf(await read('link.txt'));
-
-        expect(error).toBe(`"link.txt" ${OUTSIDE}`);
-        expect(error).not.toContain('top secret');
+    test('outside the root, by .. and by an absolute path', async () => {
+        expect(await read('../outside/notes.txt')).toEqual({ ok: true, value: 'from outside' });
+        expect(await read(join(outside, 'notes.txt'))).toEqual({ ok: true, value: 'from outside' });
     });
 
-    test('a link out of a skill directory', async () => {
-        const path = join(skill, 'leak.md');
-        const error = errorOf(await read(path));
-
-        expect(error).toBe(`${JSON.stringify(path)} ${OUTSIDE}`);
-        expect(error).not.toContain('top secret');
+    test('through a symbolic link to a file outside the root', async () => {
+        expect(await read('link.txt')).toEqual({ ok: true, value: 'from outside' });
     });
 
-    test('a relative path stays in the root', async () => {
+    test('through a symbolic link inside the root', async () => {
+        expect(await read('alias.txt')).toEqual({ ok: true, value: 'hello' });
+    });
+
+    test.each([
+        ['.env', 'MODEL_API_KEY=sk-live-secret'],
+        ['.env.local', 'OTHER_SECRET=1'],
+        ['data/notes.txt', 'kept\n'],
+    ])('environment files and the data folder: %s', async (path, contents) => {
+        expect(await read(path)).toEqual({ ok: true, value: contents });
+    });
+
+    test('a relative path resolves against the root, not a skill directory', async () => {
         expect(errorOf(await read('references/forms.md'))).toBe(
             'No such file: "references/forms.md".',
         );
     });
-
-    test("a path that leaves a skill's directory", async () => {
-        const path = join(skill, '..', 'elsewhere.md');
-
-        expect(errorOf(await read(path))).toBe(`${JSON.stringify(path)} ${OUTSIDE}`);
-    });
-
-    test('a symbolic link pointing inside', async () => {
-        expect(await read('alias.txt')).toEqual({ ok: true, value: 'hello' });
-    });
-
-    test('a name that only starts with two dots is inside', async () => {
-        expect(errorOf(await read('..notes.txt'))).toBe('No such file: "..notes.txt".');
-    });
 });
 
-describe('Refuse secrets, directories and binary files', () => {
-    test.each(['.env', '.env.local', 'docs/.env.missing'])('environment file %s', async (path) => {
-        const error = errorOf(await read(path));
-
-        expect(error).toBe(
-            `${JSON.stringify(path)} is an environment file. The read tool doesn't read those: they hold secrets.`,
-        );
-    });
-
-    test('an environment file inside a skill directory', async () => {
-        const path = join(skill, '.env');
-        const error = errorOf(await read(path));
-
-        expect(error).toBe(
-            `${JSON.stringify(path)} is an environment file. The read tool doesn't read those: they hold secrets.`,
-        );
-        expect(error).not.toContain('SKILL_SECRET');
-    });
-
-    test('a link to an environment file', async () => {
-        const error = errorOf(await read('innocent.txt'));
-
-        expect(error).toContain('"innocent.txt" is an environment file.');
-        expect(error).not.toContain('sk-live-secret');
-    });
-
+describe('Refuse directories and binary files', () => {
     test('a directory', async () => {
         expect(errorOf(await read('docs'))).toBe('"docs" is a directory.');
     });
@@ -337,29 +263,10 @@ describe('Refuse secrets, directories and binary files', () => {
         expect(errorOf(await read('locked.txt'))).toMatch(/^Can't read "locked.txt": EACCES/);
     });
 
-    describe('the data folder', () => {
-        test('a file in it', async () => {
-            const error = await readReal('data/db.sqlite');
-
-            expect(error).toBe(dataError('data/db.sqlite'));
-            expect(error).not.toContain('rt-secret');
-        });
-
-        test('a link to a file in it', async () => {
-            const error = await readReal('ledger.txt');
-
-            expect(error).toBe(dataError('ledger.txt'));
-            expect(error).not.toContain('rt-secret');
-        });
-
-        test("a missing file in it, which isn't looked up", async () => {
-            expect(await readReal('data/missing.txt')).toBe(dataError('data/missing.txt'));
-        });
-
-        test('a path in it as written, even through a link that leads out of it', async () => {
-            expect(await readReal('data/way-out/guide.md')).toBe(
-                dataError('data/way-out/guide.md'),
-            );
+    test('the database, whose contents appear nowhere in the outcome', async () => {
+        expect(await read('data/db.sqlite')).toEqual({
+            ok: false,
+            error: '"data/db.sqlite" is a binary file.',
         });
     });
 });

@@ -8,7 +8,7 @@ export type LoadedSkill = {
     readonly name: string;
     readonly description: string;
     readonly body: string;
-    // Its real path, which the read tool's real-path check compares against.
+    // Its real path.
     readonly directory: string;
 };
 

@@ -19,7 +19,7 @@ Inside `packages/agent/src`, the code is grouped by concern:
 - `session`: the agent loop, as a session that yields each step's result;
 - `skills`: finding and reading the skills `SKILLS_PATH` lists;
 - `exec`: running a command, its environment, and stopping a session's processes at the end;
-- `tools`: `read`, `write`, `edit`, `apply_patch`, `shell` and `activate_skill`, and the fence the file tools share;
+- `tools`: `read`, `write`, `edit`, `apply_patch`, `shell` and `activate_skill`;
 - `mcp`: MCP servers: the checks of an entry, the stdio transport, connecting to the servers, and their tools and results;
 - `log`: the structured logger.
 
@@ -58,7 +58,7 @@ The command is `bun run agent <file>`, or `bun run agent --prompt <task>`, on Bu
 - **a task file,** its one argument: the file's text, trimmed and otherwise as written, frontmatter included, whatever its extension. A relative path starts from the directory the agent starts in, which under `bun run` is the repository's root, wherever you type the command, as `WORK_DIR` does. An absolute path always works;
 - **`--prompt <task>`, or `-p <task>`:** the task inline, as one argument, trimmed.
 
-A run fails before any network request, and says why along with any problem in the settings, when it gets no task, a task file and `--prompt` together, more than one task file, `--prompt` twice, or an option it doesn't know; the error names both ways to give the task. A task file fails too when it can't be read, is blank, or is binary, with a NUL byte in its first 8 KiB, as `read` tests. So does one the file tools refuse, a `.env` file, by its name or through a link, or a file in the data folder, so that a slip of the shell's completion can't send your secrets to the provider, nor print them in the log.
+A run fails before any network request, and says why along with any problem in the settings, when it gets no task, a task file and `--prompt` together, more than one task file, `--prompt` twice, or an option it doesn't know; the error names both ways to give the task. A task file fails too when it can't be read, is blank, or is binary, with a NUL byte in its first 8 KiB, as `read` tests.
 
 **Quote `-p`'s value,** in single quotes unless it holds one. Unquoted, the shell splits it into words, and `-p` takes only the first of them, leaving the rest as task files. The shell also reads `?`, `*`, `&`, `;`, `!` and `$` itself: in zsh, macOS's default shell, an unquoted `?` stops the command with "no matches found" before Bun runs. A task file needs no quoting, whatever it holds.
 
@@ -86,21 +86,21 @@ With `LOG_FORMAT=pretty`, records are formatted for reading. A model-call line i
 
 ### The file tools
 
-`read` reads UTF-8 text files under the working directory, `WORK_DIR`, and inside the loaded skills' directories, by absolute path. It pages through a file by line: `offset` is the first line to read, from 1, and `limit` the most lines. Each call returns at most 32 KiB in whole lines, with a note giving the `offset` to continue from. A single line longer than that is cut, and the rest of it can be seen only through the shell.
+`read` reads UTF-8 text files. It pages through a file by line: `offset` is the first line to read, from 1, and `limit` the most lines. Each call returns at most 32 KiB in whole lines, with a note giving the `offset` to continue from. A single line longer than that is cut, and the rest of it can be seen only through the shell.
 
 The model writes and changes files with one of two sets of tools, which `FILE_TOOLS` chooses. The two are never offered together:
 
 - **`write-edit`:** `write` creates or replaces a whole file, creating missing directories, and `edit` replaces exact text in a file. Its `old_string` must occur exactly once, unless `replace_all` is set.
 - **`apply-patch`:** `apply_patch` takes a patch in the V4A format of OpenAI's Codex, which adds, updates, moves and deletes files. It finds the lines to change leniently, as Codex does, and changes nothing unless the whole patch applies.
 
-The four tools share a fence. They refuse:
+A path is relative to the working directory, `WORK_DIR`, or absolute. The four tools take it wherever it points: outside the working directory, through a symbolic link, into a skill's directory or the data folder, or to an `.env` file. They reach whatever your account can, as the shell does, and refuse only what doesn't depend on where a file is:
 
-- paths outside the working directory, including through `..`, absolute paths and symbolic links. `read` may also read inside the skills' directories, which the other three can't write;
-- `.env` files and anything else whose name starts with `.env`, because they hold secrets such as `MODEL_API_KEY`;
-- paths inside the data folder, `DATA_DIR`, as written or through a link, because it holds the agent's database (see [The data folder](#the-data-folder));
-- directories and binary files.
+- a directory, and for `read`, a binary file, with a NUL byte in its first 8 KiB;
+- replacing a file larger than 32 KiB, the most one read returns, since the model may not have read all of it: `write` refuses it, and so does `apply_patch` when it adds a file or moves one onto it;
+- changing a file with `edit` or `apply_patch` when it is larger than 10 MiB, holds a NUL byte, or isn't valid UTF-8;
+- a patch that names a file twice, or that doesn't apply whole.
 
-`write`, and `apply_patch` adding a file, won't replace a file larger than 32 KiB, the most one read returns, since the model may not have read all of it. `edit` and `apply_patch` change files of up to 10 MiB that are valid UTF-8. Every refusal goes back to the model as the tool's output, so the model can explain it or try something else. These limits guard the file tools alone: the shell can read and write anything you can.
+Every refusal goes back to the model as the tool's output, so the model can explain it or try something else. To bound what the tools can reach, and the shell with them, run the agent in a container.
 
 ### The shell
 
@@ -123,7 +123,7 @@ The agent keeps a SQLite database, `db.sqlite`, in the data folder that `DATA_DI
 - **A local file system.** SQLite's locks work only on a local file system, so the data folder must never be on a network share. In Docker, it is a named volume, never a bind mount on Docker Desktop for macOS, where SQLite's locks fail and a commit can be lost.
 - **Copying it.** Copy the database with SQL's `VACUUM INTO`, which writes a consistent copy even while the agent is using it, as in `sqlite3 db.sqlite "VACUUM INTO 'copy.sqlite'"`. Never copy `db.sqlite` alone: while the database is open, its latest commits are in `db.sqlite-wal`.
 - **Where it runs.** better-sqlite3 13 ships prebuilt binaries for x64 and arm64. On Linux, they need glibc 2.34 or later, which Debian 11 and RHEL 8 are too old for, or musl, as on Alpine.
-- **The shell can read it.** `read`, `write`, `edit` and `apply_patch` refuse paths inside the data folder, as they refuse `.env` files, but the shell isn't fenced: a command can read and write the database as it can anything else your account can.
+- **The tools can reach it.** A command can read and write the database as it can anything else your account can, and the file tools reach the folder too, though `read` refuses the database as a binary file.
 - **MCP servers.** It also holds the definitions of the MCP servers that `bun run mcp` adds, with references to secrets but no secrets. Since the shell can change them, one run can choose the servers a later run starts, as it could already change a crontab or a shell profile.
 
 ### MCP servers
@@ -267,7 +267,7 @@ There are no implicit provider, model or operational settings. The Claude cache 
 | `ANTHROPIC_WORKSPACE_ID` | No | Optional Anthropic workspace ID for a key that needs one. |
 | `LOG_FORMAT` | Yes | `pretty` or `json`. |
 | `WORK_DIR` | Yes | Existing directory for the shell and file tools. A relative path resolves against the current directory; the real path is used. |
-| `DATA_DIR` | Yes | Existing directory for the agent's database (see [The data folder](#the-data-folder)). A relative path resolves against the current directory; the real path is used. It must not be `WORK_DIR` or contain it. |
+| `DATA_DIR` | Yes | Existing directory for the agent's database (see [The data folder](#the-data-folder)). A relative path resolves against the current directory; the real path is used. |
 | `MAX_STEPS` | Yes | Maximum model calls in a session, a positive whole number. The old name `MAX_TURNS` is rejected. |
 | `FILE_TOOLS` | Yes | `write-edit` or `apply-patch` (see [The file tools](#the-file-tools)). |
 | `SKILLS_PATH` | No | Skill roots separated by `:`. If absent, no skills are loaded and no other directory is searched. |

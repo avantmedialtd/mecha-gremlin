@@ -1,12 +1,12 @@
 import type { Stats } from 'node:fs';
-import { mkdir, stat, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, realpath, stat, unlink, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { type Hunk, applyChunks, parsePatch } from '@mecha-gremlin/core/patch';
 import { type Result, err, ok } from '@mecha-gremlin/core/result';
 import type { ToolOutcome } from '@mecha-gremlin/core/tools';
 import { z } from 'zod';
 import { readEditable } from './edit.ts';
-import { errorCode, fenceWrite, reasonOf } from './fence.ts';
+import { errorCode, reasonOf } from './errors.ts';
 import { type ToolHandler, defineTool } from './tool-handler.ts';
 import { checkReplaceable } from './write.ts';
 
@@ -72,7 +72,7 @@ const checkDeletable = async (target: string, name: string): Promise<Result<unde
 };
 
 // A deleted or moved path is removed as the patch names it, so a link goes, not what it points to.
-const plan = async (root: string, hunk: Hunk, claim: Claim): Promise<Result<Change, string>> => {
+const plan = async (hunk: Hunk, claim: Claim): Promise<Result<Change, string>> => {
     const name = JSON.stringify(hunk.path);
     const source = await claim(hunk.path);
 
@@ -100,7 +100,7 @@ const plan = async (root: string, hunk: Hunk, claim: Claim): Promise<Result<Chan
                 return deletable;
             }
 
-            return ok({ line: `D ${hunk.path}`, apply: () => unlink(resolve(root, hunk.path)) });
+            return ok({ line: `D ${hunk.path}`, apply: () => unlink(source.value) });
         }
         case 'update': {
             const text = await readEditable(source.value, name);
@@ -142,7 +142,7 @@ const plan = async (root: string, hunk: Hunk, claim: Claim): Promise<Result<Chan
                 line: `M ${hunk.moveTo}`,
                 apply: async () => {
                     await writeCreating(destination.value, updated.value);
-                    await unlink(resolve(root, hunk.path));
+                    await unlink(source.value);
                 },
             });
         }
@@ -150,40 +150,34 @@ const plan = async (root: string, hunk: Hunk, claim: Claim): Promise<Result<Chan
 };
 
 /**
- * Every hunk is checked and worked out before any file changes: its paths fenced, and the files
+ * Every hunk is checked and worked out before any file changes: its paths claimed, and the files
  * it updates or deletes read. A file named twice is refused, since each hunk is worked out from
  * the file as it is now, and a later one would undo an earlier one.
  */
-const planAll = async (
-    root: string,
-    dataDir: string,
-    hunks: readonly Hunk[],
-): Promise<Result<Change[], string>> => {
+const planAll = async (root: string, hunks: readonly Hunk[]): Promise<Result<Change[], string>> => {
     const claimed = new Set<string>();
     const changes: Change[] = [];
 
+    // A link and its target, or a.txt and ./a.txt, are one file with one real path. A target that
+    // doesn't exist yet has none, so it goes by its resolved path; any other failure shows again
+    // when the hunk uses the path.
     const claim: Claim = async (path) => {
-        const fenced = await fenceWrite(root, dataDir, 'apply_patch', path);
+        const target = resolve(root, path);
+        const key = await realpath(target).catch(() => target);
 
-        if (!fenced.ok) {
-            return fenced;
-        }
-
-        const real = fenced.value;
-
-        if (claimed.has(real)) {
+        if (claimed.has(key)) {
             return err(
                 `The patch names ${JSON.stringify(path)} more than once. Put all of a file's changes in one section.`,
             );
         }
 
-        claimed.add(real);
+        claimed.add(key);
 
-        return ok(real);
+        return ok(target);
     };
 
     for (const hunk of hunks) {
-        const change = await plan(root, hunk, claim);
+        const change = await plan(hunk, claim);
 
         if (!change.ok) {
             return change;
@@ -195,7 +189,7 @@ const planAll = async (
     return ok(changes);
 };
 
-const applyPatch = async (root: string, dataDir: string, patch: string): Promise<ToolOutcome> => {
+const applyPatch = async (root: string, patch: string): Promise<ToolOutcome> => {
     const parsed = parsePatch(patch);
 
     if (!parsed.ok) {
@@ -205,7 +199,7 @@ const applyPatch = async (root: string, dataDir: string, patch: string): Promise
     let changes: Result<Change[], string>;
 
     try {
-        changes = await planAll(root, dataDir, parsed.value);
+        changes = await planAll(root, parsed.value);
     } catch (error) {
         return err(`Can't apply the patch: ${reasonOf(error)}. No file was changed.`);
     }
@@ -234,9 +228,9 @@ const applyPatch = async (root: string, dataDir: string, patch: string): Promise
     return ok(['Success. Updated the following files:', ...done].join('\n'));
 };
 
-export const applyPatchTool = (root: string, dataDir: string): ToolHandler => {
+export const applyPatchTool = (root: string): ToolHandler => {
     return defineTool(
         { name: 'apply_patch', description: DESCRIPTION, schema: ApplyPatchArgs },
-        ({ patch }) => applyPatch(root, dataDir, patch),
+        ({ patch }) => applyPatch(root, patch),
     );
 };

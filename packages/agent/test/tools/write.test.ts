@@ -4,7 +4,6 @@ import {
     mkdir,
     mkdtemp,
     readFile,
-    realpath,
     rm,
     stat,
     symlink,
@@ -17,14 +16,12 @@ import { toFunctionTool } from '../../src/model/responses-tools.ts';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { writeTool } from '../../src/tools/write.ts';
 
-// Everything a test touches is under a directory of its own, so whatever a mutant's broken fence
-// writes outside the root, through `..` too, goes when the test ends.
+// Everything a test touches is under a directory of its own, so what a test writes outside the
+// root, through `..` too, goes when the test ends.
 let base: string;
 let root: string;
 let outside: string;
 let skill: string;
-// Inside the root, as a data folder may be, by its real path, as loadConfig records it.
-let dataDir: string;
 
 beforeEach(async () => {
     base = await mkdtemp(join(tmpdir(), 'write-'));
@@ -39,16 +36,10 @@ beforeEach(async () => {
     await writeFile(join(root, 'notes.txt'), 'hello');
     await mkdir(join(root, 'docs'));
     await mkdir(join(root, 'config'));
+    await mkdir(join(root, 'data'));
     await writeFile(join(root, '.env'), 'MODEL_API_KEY=sk-live-secret');
-    await symlink(join(root, '.env'), join(root, 'innocent.txt'));
-    await symlink(join(outside, 'secret.txt'), join(root, 'link.txt'));
-    await symlink(join(root, 'notes.txt'), join(root, 'alias.txt'));
+    await symlink(join(outside, 'secret.txt'), join(root, 'alias.txt'));
     await symlink(join(outside, 'created-by-link.txt'), join(root, 'dangling.txt'));
-    await symlink(outside, join(root, 'out'));
-    dataDir = join(await realpath(root), 'data');
-    await mkdir(dataDir);
-    await writeFile(join(dataDir, 'db.sqlite'), 'SQLite format 3');
-    await symlink(dataDir, join(root, 'to-data'));
 });
 
 afterEach(async () => {
@@ -56,35 +47,14 @@ afterEach(async () => {
 });
 
 const write = (path: string, content: string): Promise<ToolOutcome> => {
-    return writeTool(root, dataDir).invoke(JSON.stringify({ path, content }));
+    return writeTool(root).invoke(JSON.stringify({ path, content }));
 };
 
 const contentsOf = (path: string): Promise<string> => {
     return readFile(join(root, path), 'utf8');
 };
 
-const exists = async (path: string): Promise<boolean> => {
-    return lstat(path).then(
-        () => true,
-        () => false,
-    );
-};
-
-const outsideError = (path: string) => {
-    return {
-        ok: false,
-        error: `${JSON.stringify(path)} is outside the working directory, the only place the write tool may write.`,
-    };
-};
-
-const secretError = (path: string) => {
-    return {
-        ok: false,
-        error: `${JSON.stringify(path)} is an environment file. The write tool doesn't write those: they hold secrets.`,
-    };
-};
-
-describe('Write a UTF-8 text file under the working directory', () => {
+describe('Write a UTF-8 text file', () => {
     test('creates a file', async () => {
         const outcome = await write('new.txt', 'one\ntwo\n');
 
@@ -135,7 +105,7 @@ describe('Write a UTF-8 text file under the working directory', () => {
     });
 
     test('the model sees a closed schema', () => {
-        const tool = toFunctionTool(writeTool(root, dataDir).tool);
+        const tool = toFunctionTool(writeTool(root).tool);
 
         expect(tool).toMatchObject({ type: 'function', name: 'write', strict: true });
         expect(tool.parameters).toEqual({
@@ -147,13 +117,13 @@ describe('Write a UTF-8 text file under the working directory', () => {
     });
 
     test('the model is told what the tool writes, and what it leaves to edit', () => {
-        expect(writeTool(root, dataDir).tool.description).toBe(
+        expect(writeTool(root).tool.description).toBe(
             "Create or replace a UTF-8 text file with the given content, creating missing directories. The path is relative to the working directory. To change part of a file, use the edit tool; files over 32 KiB can't be replaced whole.",
         );
     });
 
     test('extra arguments are rejected, and nothing is written', async () => {
-        const outcome = await writeTool(root, dataDir).invoke(
+        const outcome = await writeTool(root).invoke(
             '{"path":"notes.txt","content":"x","append":true}',
         );
 
@@ -163,19 +133,20 @@ describe('Write a UTF-8 text file under the working directory', () => {
         });
         expect(await contentsOf('notes.txt')).toBe('hello');
     });
-});
 
-describe('Never write outside the working directory', () => {
-    test('a parent directory', async () => {
-        expect(await write('../escape.txt', 'x')).toEqual(outsideError('../escape.txt'));
-        expect(await exists(join(root, '..', 'escape.txt'))).toBe(false);
-    });
+    test('outside the root, by .. and by an absolute path', async () => {
+        const absolute = join(outside, 'elsewhere.txt');
 
-    test('an absolute path outside the root', async () => {
-        const path = join(outside, 'elsewhere.txt');
-
-        expect(await write(path, 'x')).toEqual(outsideError(path));
-        expect(await exists(path)).toBe(false);
+        expect(await write('../outside/notes.txt', 'x')).toEqual({
+            ok: true,
+            value: 'Created ../outside/notes.txt (1 line, 1 byte).',
+        });
+        expect(await write(absolute, 'x')).toEqual({
+            ok: true,
+            value: `Created ${absolute} (1 line, 1 byte).`,
+        });
+        expect(await readFile(join(outside, 'notes.txt'), 'utf8')).toBe('x');
+        expect(await readFile(absolute, 'utf8')).toBe('x');
     });
 
     test('an absolute path inside the root', async () => {
@@ -188,55 +159,46 @@ describe('Never write outside the working directory', () => {
         expect(await contentsOf('notes.txt')).toBe('new');
     });
 
-    test("a skill's file", async () => {
-        const path = join(skill, 'SKILL.md');
-
-        expect(await write(path, 'x')).toEqual(outsideError(path));
-        expect(await readFile(path, 'utf8')).toBe('# Skill\n');
-    });
-
-    test('a linked directory pointing outside', async () => {
-        expect(await write('out/new/file.txt', 'x')).toEqual(outsideError('out/new/file.txt'));
-        expect(await exists(join(outside, 'new'))).toBe(false);
-    });
-
-    test('a link to a file outside', async () => {
-        expect(await write('link.txt', 'x')).toEqual(outsideError('link.txt'));
-        expect(await readFile(join(outside, 'secret.txt'), 'utf8')).toBe('top secret');
-    });
-
-    test('a broken link', async () => {
-        expect(await write('dangling.txt', 'x')).toEqual(outsideError('dangling.txt'));
-        expect(await exists(join(outside, 'created-by-link.txt'))).toBe(false);
-    });
-
-    test('a link inside the root', async () => {
+    test('through a symbolic link to a file outside the root, which stays a link', async () => {
         const outcome = await write('alias.txt', 'new');
 
         expect(outcome).toEqual({ ok: true, value: 'Replaced alias.txt (1 line, 3 bytes).' });
-        expect(await contentsOf('notes.txt')).toBe('new');
+        expect(await readFile(join(outside, 'secret.txt'), 'utf8')).toBe('new');
         expect((await lstat(join(root, 'alias.txt'))).isSymbolicLink()).toBe(true);
+    });
+
+    test('through a broken link, which creates its target where it points', async () => {
+        const outcome = await write('dangling.txt', 'x');
+
+        expect(outcome).toEqual({ ok: true, value: 'Created dangling.txt (1 line, 1 byte).' });
+        expect(await readFile(join(outside, 'created-by-link.txt'), 'utf8')).toBe('x');
+        expect((await lstat(join(root, 'dangling.txt'))).isSymbolicLink()).toBe(true);
+    });
+
+    test.each([
+        ['.env', 'Replaced'],
+        ['config/.env.local', 'Created'],
+        ['data/notes.txt', 'Created'],
+    ])('environment files and the data folder: %s', async (path, done) => {
+        expect(await write(path, 'X=1\n')).toEqual({
+            ok: true,
+            value: `${done} ${path} (1 line, 4 bytes).`,
+        });
+        expect(await contentsOf(path)).toBe('X=1\n');
+    });
+
+    test("a skill's file", async () => {
+        const path = join(skill, 'SKILL.md');
+
+        expect(await write(path, '# Changed\n')).toEqual({
+            ok: true,
+            value: `Replaced ${path} (1 line, 10 bytes).`,
+        });
+        expect(await readFile(path, 'utf8')).toBe('# Changed\n');
     });
 });
 
-describe('Refuse secrets, directories and large files', () => {
-    test.each(['.env', 'config/.env.local'])('environment file %s', async (path) => {
-        expect(await write(path, 'STOLEN=1')).toEqual(secretError(path));
-    });
-
-    test('nothing is written to an environment file', async () => {
-        await write('.env', 'STOLEN=1');
-        await write('config/.env.local', 'STOLEN=1');
-
-        expect(await contentsOf('.env')).toBe('MODEL_API_KEY=sk-live-secret');
-        expect(await exists(join(root, 'config', '.env.local'))).toBe(false);
-    });
-
-    test('a link to an environment file', async () => {
-        expect(await write('innocent.txt', 'STOLEN=1')).toEqual(secretError('innocent.txt'));
-        expect(await contentsOf('.env')).toBe('MODEL_API_KEY=sk-live-secret');
-    });
-
+describe('Refuse directories and large files', () => {
     test('a directory', async () => {
         expect(await write('docs', 'x')).toEqual({ ok: false, error: '"docs" is a directory.' });
     });
@@ -266,23 +228,6 @@ describe('Refuse secrets, directories and large files', () => {
             value: 'Replaced exact.txt (1 line, 5 bytes).',
         });
         expect(await contentsOf('exact.txt')).toBe('short');
-    });
-
-    test.each(['data/db.sqlite', 'data/new.txt'])('the data folder: %s', async (path) => {
-        expect(await write(path, 'x')).toEqual({
-            ok: false,
-            error: `${JSON.stringify(path)} is inside the data folder. The write tool doesn't write there: it holds the agent's database.`,
-        });
-        expect(await readFile(join(dataDir, 'db.sqlite'), 'utf8')).toBe('SQLite format 3');
-        expect(await exists(join(dataDir, 'new.txt'))).toBe(false);
-    });
-
-    test('a link into the data folder', async () => {
-        expect(await write('to-data/x.txt', 'x')).toEqual({
-            ok: false,
-            error: '"to-data/x.txt" is inside the data folder. The write tool doesn\'t write there: it holds the agent\'s database.',
-        });
-        expect(await exists(join(dataDir, 'x.txt'))).toBe(false);
     });
 
     test.skipIf(process.getuid?.() === 0)('a parent directory that is not writable', async () => {
