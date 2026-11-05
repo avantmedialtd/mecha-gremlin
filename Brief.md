@@ -34,7 +34,7 @@
 > - **2026-11-01, late night:** R20 records where the file tools' fence came from and what each of its rules stops, given the shell that every run has. C20 proposes that no file tool refuse a path for where it is, while the refusals that don't depend on where a file is stay. D41 and D42 are decided as asked: the file tools refuse nothing by path, and no setting brings the fence back, since "if we need sandboxing, we will use containers". D43 is decided too, as recommended: a task file refuses neither `.env` files nor the data folder. Q26 asks whether the file tools should expand `~`. The change `remove-file-tool-fence` proposes all three decisions.
 > - **2026-11-02:** the change `remove-file-tool-fence` carries out D41, D42 and D43. `read`, `write`, `edit` and `apply_patch` resolve a relative path against the working directory, take an absolute one as it is, and refuse no path for where it is: outside the working directory, through a link, in a skill's directory or the data folder, or named like an `.env` file. What doesn't depend on where a file is stays refused, with the same messages: a directory, a binary file, a file too large to replace whole or to edit, text that isn't UTF-8, and a patch that names a file twice or doesn't apply whole. A task file may be any text file, `DATA_DIR` may be or contain `WORK_DIR`, and no setting brings the fence back.
 > - **2026-11-05:** R21 records how a run chooses its MCP servers: every enabled server connects for every run, so under D33 a server that can't start fails tasks that never use it, and the only fix the error offers, `disable`, takes the server from every task. C21 proposes that a task file's frontmatter name the servers the task needs, in an `mcp` list, as 4.7's `skills:` list names its skills, with every enabled server when it names none. D44–D46 are open, and Q27 asks whether a task should narrow a server's tools too.
-> - **2026-11-05, later:** R22 records how twelve other harnesses let a definition file or a run choose MCP servers. Only Claude Code's sub-agents name configured servers in their frontmatter; elsewhere a file narrows tools by server pattern or brings servers of its own, a run's own choice is a flag, and no harness chooses servers one by one through an environment variable. Every harness but Codex, whose servers can be `required`, carries on without a server that fails, only Claude Code tells the model, and every harness strips a definition file's frontmatter from the prompt. R23 records how the two YAML parsers read the frontmatter notes hold, some of which neither accepts. D45 now recommends stripping the block from the prompt, and D47 and D48 ask about frontmatter that isn't valid YAML and keys the run doesn't read.
+> - **2026-11-05, later:** R22 records how twelve other harnesses let a definition file or a run choose MCP servers. Only Claude Code's sub-agents name configured servers in their frontmatter; elsewhere a file narrows tools by server pattern or brings servers of its own, a run's own choice is a flag, and no harness chooses servers one by one through an environment variable. Every harness but Codex, whose servers can be `required`, carries on without a server that fails, only Claude Code tells the model, and every harness strips a definition file's frontmatter from the prompt. R23 records how the two YAML parsers read the frontmatter notes hold, some of which neither accepts. D45 now recommends stripping the block from the prompt, and D47 and D48 ask about frontmatter that isn't valid YAML and keys the run doesn't read. R24 records what letting a task go without a server would take, and C22 proposes a `?` that marks a listed server optional (D49).
 
 ---
 
@@ -1569,6 +1569,27 @@ Measured on 2026-11-05 for D45, D47 and D48, with this repository's `parseYamlWi
 
 **Sources:** a scratch script calling `packages/yaml/src/parse.ts` on Bun 1.4.4; `packages/core/src/skills.ts`; the `agent` spec; the archived change `read-task-file`'s design; R22.4.
 
+## R24. What letting a task go without a server would take
+
+Researched on 2026-11-05 for C22, from this repository's code and the Brief, with R23's probe. **[H]** unless marked.
+
+**R24.1 Where a run fails now.**
+- **Before any network request,** a reference that can't resolve, an entry that fails its checks again, or a login that has to be given again fails the run: `prepare` in `mcp/servers.ts` gathers every server's problems, and one is enough (D33).
+- **While connecting,** `connect` waits for every server, and one failure closes them all and fails the run with each failed server's message (`collect`, in the same file).
+- **Mid-session,** a server that dies isn't restarted. Its calls fail for the rest of the run, naming it, and the model sees those failures as tool outcomes (Q23).
+
+**R24.2 What a task can do about a missing source.** A task can be written to report a source it couldn't check, as a daily summary does when one of its sources is down. Under D33, a source whose server can't start ends the run before the model sees anything, so such a task never gets to say so.
+
+**R24.3 What it would take.**
+- **Keeping failures apart.** `prepare` and `connect` would set an optional server's problems aside from the others', close that server alone, and go on with the rest.
+- **Telling the model.** `main.ts` builds the developer item from the preamble and the skills catalog. A line naming each left-out server and its reason would go there, and a run whose servers all start would send what it sends now, for the prompt cache.
+- **Redacting.** The reason would be the start-up failure's, already redacted of the server's resolved values, without its stderr lines.
+- **A marker.** Server names match `^[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*$` (4.12), so no name holds a `?`. Both parsers keep `github?` as it is, in a list on one line or one item a line, and a separate key, such as `optional_mcp: [github]`, parses too.
+- **A slow server isn't a missing one.** A server that answers slowly in a run's first minutes needs a longer `--startup-timeout`, not a marker.
+- **Elsewhere,** no harness has an optional flag for a task or an agent. Codex makes a server required by its own setting, off by default, and only Claude Code tells the model which server failed (R22.3).
+
+**Sources:** this repository's `packages/agent/src/mcp/servers.ts` and `packages/agent/src/main/main.ts`; 4.12; R23's probe, extended to `?` markers; R22.3.
+
 ---
 
 # Part 3: Where the brief stands, and challenges
@@ -2073,6 +2094,29 @@ These are **proposals, not decisions**. Each links to a decision in Part 5. "Bri
   - **It's stricter than the harnesses surveyed,** which mostly ignore a name that matches nothing (R22.1). A task file copied to a machine whose servers have other names fails until it's edited.
   - **Prose can pass for frontmatter.** A file that opens with a horizontal rule, a line such as `Note: call Ann` and another rule loses that line from the prompt, since it parses as a mapping.
 - **Decision:** D44 for where the choice lives, D45 for what the frontmatter means, D46 for a listed server that's disabled, D47 for frontmatter that isn't valid YAML, and D48 for a key the run doesn't read. Q27 asks whether a task should narrow a server's tools as well.
+
+### C22. A task can go without a server it marks optional
+- **Brief says:** "Every server that isn't disabled is required." (4.12). D33 rejected a per-server `required` flag.
+- **Asked (2026-11-05):** to cover optional servers in the change that lets a task choose its servers, rather than in a later one: a `?` marker, a warning record, and a note in the model's instructions.
+- **Finding (R24, R22.3):**
+  - **A task written to report a missing source can't,** since a server that can't start ends the run before the model sees anything (R24.2).
+  - **No harness has a per-task optional flag.** Elsewhere a failed server is left out by default, Codex lets a server require itself, and only Claude Code tells the model (R22.3).
+  - **No server name holds a `?`,** and both parsers keep `github?` as it is (R24.3).
+- **Proposal:**
+  - **A `?` after a listed name marks the server optional:** `mcp: [docs, github?]`.
+  - **What would fail the run for a required server leaves an optional one out:** a reference that can't resolve, an entry that fails its checks, a login to give again, a start that fails or runs out of time, or a tool that `includeTools` names and the server doesn't list. So does being disabled, so D46 holds for unmarked servers only.
+  - **A name the store doesn't hold still fails the run,** marked or not, and so does a name given twice, with or without its `?`.
+  - **A left-out server is logged and told.** A `warn` record names it and the reason, and the model's instructions gain a line naming each left-out server and why, such as "it needs a login".
+  - **The reason is the start-up failure's,** redacted as D33's error is, without stderr.
+  - **A run whose servers all start sends its instructions unchanged,** for the prompt cache.
+  - **Without a `?`, a server stays required,** as D33 says, and so does every server of a task without a list.
+  - **The exit code doesn't change:** a run that answers exits with 0, whatever it left out.
+- **Against:**
+  - **A left-out server sets off no alert.** Until runs are stored and alerts exist (Q1), only the warning record and the task's own answer show it.
+  - **A `?` can hide a broken configuration:** an unset variable or a spent login leaves the server out run after run, each time with only a warning.
+  - **It's new syntax,** which no other harness has, in a list that otherwise holds plain names.
+  - **It reverses D33 for the servers it marks.**
+- **Decision:** D49.
 
 ---
 
@@ -2832,6 +2876,7 @@ A draft for the change that gives the agent MCP servers ahead of OAuth (C16, D35
 | D46 | A server the task lists that's disabled | fail the run, pointing to `bun run mcp enable` · skip it with a warning, as Claude Code does a server that a policy blocks (R22.1) | **Fail the run:** the task says it needs the server, as D33 fails one that can't start (C21) | open |
 | D47 | Frontmatter that isn't valid YAML | fail the run, with the parser's reason and line · warn, and send the block as text with every enabled server | **Fail the run:** stripped, a broken block can be neither read nor safely sent, and notes do hold such blocks (C21, R23.1) | open |
 | D48 | A key in the frontmatter that the run doesn't read | warn and ignore it · fail the run, as Gemini CLI's sub-agents do · ignore it silently, as Claude Code does (R22.4) | **Warn and ignore it:** a misspelt `mcps` shows in the log, and a note's `tags` don't fail it (C21) | open |
+| D49 | A server a task can go without | none: every listed server is required, as D33 says · a `?` after a listed name, which leaves the server out when it can't be used · a separate list of optional servers | **A `?` after the name:** a server that can't be used is left out, with a warning record and a line in the model's instructions, and a name the store doesn't hold still fails the run (C22, R24) | open |
 
 ## Open questions
 
