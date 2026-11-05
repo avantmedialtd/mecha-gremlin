@@ -33,6 +33,7 @@
 > - **2026-11-01, night:** the change `read-task-file` carries out D39 and D40. A run takes its task from the file its one argument names, trimmed and otherwise verbatim, frontmatter included, or inline with `--prompt` or `-p`. A task given in both ways, or in neither, fails the run before any request, reported with the configuration's problems, and so does a task file that is binary, blank, an environment file or inside the data folder. The `asking` record keeps the task's text, and names the file it came from.
 > - **2026-11-01, late night:** R20 records where the file tools' fence came from and what each of its rules stops, given the shell that every run has. C20 proposes that no file tool refuse a path for where it is, while the refusals that don't depend on where a file is stay. D41 and D42 are decided as asked: the file tools refuse nothing by path, and no setting brings the fence back, since "if we need sandboxing, we will use containers". D43 is decided too, as recommended: a task file refuses neither `.env` files nor the data folder. Q26 asks whether the file tools should expand `~`. The change `remove-file-tool-fence` proposes all three decisions.
 > - **2026-11-02:** the change `remove-file-tool-fence` carries out D41, D42 and D43. `read`, `write`, `edit` and `apply_patch` resolve a relative path against the working directory, take an absolute one as it is, and refuse no path for where it is: outside the working directory, through a link, in a skill's directory or the data folder, or named like an `.env` file. What doesn't depend on where a file is stays refused, with the same messages: a directory, a binary file, a file too large to replace whole or to edit, text that isn't UTF-8, and a patch that names a file twice or doesn't apply whole. A task file may be any text file, `DATA_DIR` may be or contain `WORK_DIR`, and no setting brings the fence back.
+> - **2026-11-05:** R21 records how a run chooses its MCP servers: every enabled server connects for every run, so under D33 a server that can't start fails tasks that never use it, and the only fix the error offers, `disable`, takes the server from every task. C21 proposes that a task file's frontmatter name the servers the task needs, in an `mcp` list, as 4.7's `skills:` list names its skills, with every enabled server when it names none. D44–D46 are open, and Q27 asks whether a task should narrow a server's tools too.
 
 ---
 
@@ -112,7 +113,7 @@ Everything private (secrets, client specifics, my own skills and task definition
 
 ▸ **2. Agent loop.** Draft in 4.5. Budgets and a context-fill check beyond the iteration cap: C8. Narration handling: C9, using LM Studio's own markers (R5.2). What a turn is, and how other agent loops count and stop: R15. Naming the loop's unit a step: C13.
 
-▸ **3. Skills.** The SKILL.md spec has no typed tools (R7), so C4 proposes a different split. Storage: on disk (4.7). For the first skills change: R12, Q12–Q17.
+▸ **3. Skills.** The SKILL.md spec has no typed tools (R7), so C4 proposes a different split. Storage: on disk (4.7). For the first skills change: R12, Q12–Q17. A task's MCP servers, by the same rule: C21.
 
 ▸ **4. Base tools.** The shell, and the file tools `read`, `write` and `edit`, with `apply_patch` in place of `write` and `edit` as the alternative (D23, R16). Where they execute: C3. Before M1, the shell runs on the host (C12, D18). Process-group kill, pipe and stdin handling, and output caps: C3, 4.5, R8, R10.
 
@@ -1456,6 +1457,47 @@ The tools' other refusals don't depend on where a file is: a directory; a whole 
 
 **Sources:** this repository's `packages/agent/src/tools/{fence,read,write,edit,apply-patch}.ts`, `main/{main,args}.ts`, `config/config.ts`, `mcp/run-directory.ts` and `exec/env.ts`; the specs `read-tool`, `write-tool`, `edit-tool`, `apply-patch-tool` and `agent`; the archived changes `tool-call-loop`, `skills-and-shell`, `file-write-tools`, `add-persistence` and `read-task-file`; `mount` and `mkdir` on macOS 27; a scratch database under Bun 1.4.4.
 
+## R21. How a run chooses its MCP servers, and where a task's choice could live
+
+Researched on 2026-11-05 for C21, from this repository's code and README, and from the Brief itself. **[H]** unless marked.
+
+**R21.1 What a run connects now.**
+- **Every enabled server, for every run.** `main.ts` lists the store's servers and connects each one whose `disabled` flag is off: "A server's own flag alone decides whether it starts." The flag is the only switch, and `bun run mcp disable <name>` turns a server off for every run.
+- **All of their tools.** The connected servers' tools follow the built-in ones, sorted by name, and stay fixed for the session (4.12). A server's `includeTools` and `excludeTools` narrow its tools for every run alike (D34).
+- **One failure fails the run.** A server that can't start, answer, or list a tool that `includeTools` names fails the run before the first model call. The error offers one fix, the global one: "To run without it: bun run mcp disable <name>." (D33)
+- **The task says nothing about servers.** A task file's text, frontmatter included, goes to the model verbatim, and nothing else reads it (D40).
+
+**R21.2 What every server for every task costs.**
+- **Every task depends on every server.** A one-line question that needs one server fails when an unrelated server's login is spent or a stdio server won't start, and disabling the broken server takes it from the tasks that do need it.
+- **Tokens.** The 15 servers measured cost about 21,900 tokens of tool definitions, against about 700 for the built-in tools (4.12, Q21). LM Studio's default context has been 8k since 0.4.16 (R5.5).
+- **The model's choices.** Part 1: "too many tools degrade the model's choices".
+- **Start-up.** Every server connects before the first model call, within its `startupTimeoutMs`, and a stdio server starts its processes first: for `@playwright/mcp`, a browser.
+
+**R21.3 Where the Brief already puts a task's choices.**
+- **Part 1, component 3:** "A task gets the relevant subset, not every skill, because too many tools degrade the model's choices."
+- **4.7:** "the `skills:` list in TASK.md frontmatter names the subset for that task. `gremlin apply` rejects unknown names." `SKILLS_PATH` says where skills live, and the frontmatter which of them a task gets.
+- **C6** lists TASK.md's frontmatter: the schedule, time zone, model profile, skills, budgets, overlap and catch-up. Until TASK.md exists, the model and the step limit come from the environment: `.env` for every run, or a variable on the command line for one, which overrides `.env` (README).
+- **C6, since 2026-11-01:** "Reading TASK.md's frontmatter would change only what a file that opens with a `---` block means." D40 sends that block verbatim, so that notes with tags in their frontmatter run as they are.
+- **4.1 and 4.8** draw one daemon, `gremlin serve`, with the agent loop inside it, whose workers claim and run every task's queued runs. `gremlin run <task>` queues a run by hand.
+
+**R21.4 Three places a choice could live.**
+
+| | A list in the task file's frontmatter | An environment variable | A flag |
+|---|---|---|---|
+| **For example** | `mcp: [docs, github]` | `MCP_SERVERS=docs,github` | `--mcp docs --mcp github` |
+| **Kept with** | the task, beside the text that relies on the servers | whatever starts the run | whatever starts the run |
+| **Set once** | yes | only on the command line: `.env` is every run's, so a list there narrows every task, which `disable` can already do | no, on every run |
+| **Inline tasks (`-p`)** | not unless the same rule reads inline text | yes | yes |
+| **D40** | a `---` block gains a meaning | unchanged | unchanged |
+| **M1** | TASK.md reads the same key, and `gremlin apply` can reject unknown names, as 4.7 does for skills | one daemon runs every task, so its environment can't differ by task. A value per task would come from the task's definition anyway | only `gremlin run <task>`; a scheduled run has no command line |
+
+**R21.5 The seam in the code.**
+- **The task is read first.** `readTask` (`main/args.ts`) runs before the store opens, so that its problems are reported with the configuration's. A list's YAML and its shape could be checked there.
+- **Names are checked once the store opens.** The filter in `main.ts` runs after the servers are listed and still before any network request, as D33 requires. `createMcpServers` takes the rows to connect, and needn't change.
+- **The parsers exist.** `splitFrontmatter` (`core/src/skills.ts`) and `parseYaml` (`@mecha-gremlin/yaml`) read SKILL.md's frontmatter. `splitFrontmatter` refuses a text without frontmatter, which a task file may be, with a message about SKILL.md.
+
+**Sources:** this repository's `packages/agent/src/main/{main,args}.ts`, `mcp/{servers,resolve}.ts` and `config/config.ts`; `packages/core/src/skills.ts`; `packages/yaml/src/parse.ts`; `packages/store/src/mcp-server.ts`; the README; Part 1, C6, 4.1, 4.7, 4.8, 4.12, D33, D34, D40 and Q21.
+
 ---
 
 # Part 3: Where the brief stands, and challenges
@@ -1920,6 +1962,39 @@ These are **proposals, not decisions**. Each links to a decision in Part 5. "Bri
   - **It takes out code and tests** that `add-persistence` and `read-task-file` added days ago.
   - **With paths free to leave the working directory, a model is likelier to write `~/…`,** which no tool expands (R20.5, Q26).
 - **Decision:** D41 for the file tools, D42 for a setting, and D43 for a task file.
+
+### C21. A task names the MCP servers it needs
+- **Brief says:** "A task gets the relevant subset, not every skill, because too many tools degrade the model's choices." (Part 1). 4.7 gives a task its skills through TASK.md's `skills:` list, but every run connects every enabled MCP server (4.12, D33).
+- **Asked (2026-11-05):** "It's good that by default we expose all MCPs to the task, but we should have a way to limit the MCPs for a given task that does not need all of them, I was wondering if we could or should encode it into the prompt markdown or use env vars instead."
+- **Finding (R21):**
+  - **Every task depends on every server.** A server that can't start fails tasks that never call it, and the only fix the error offers, `disable`, takes it from the tasks that do (R21.2).
+  - **The definitions cost** about 21,900 tokens for the 15 servers measured, against about 700 for the built-in tools (Q21).
+  - **The Brief already puts a task's choices in its frontmatter:** its skills (4.7), and its model profile and budgets (C6).
+  - **An environment variable can't choose for one task** from `.env`, which every run reads, and can't differ by task in 4.8's one daemon (R21.4).
+- **Proposal:**
+  - **A task file's frontmatter names its servers,** in a top-level `mcp` list of the names `bun run mcp list` shows:
+    ```markdown
+    ---
+    mcp: [docs, github]
+    ---
+    Summarise the issues opened since yesterday.
+    ```
+  - **No list means every enabled server,** as now, and `mcp: []` means none.
+  - **A list is exact.** The run connects the servers it names and no others, so a server added later reaches only the tasks without a list.
+  - **A name the store doesn't hold fails the run** before any network request, pointing to `bun run mcp list`. **So does a disabled one,** pointing to `bun run mcp enable <name>`, since the task says it needs it (D46).
+  - **The text still goes to the model verbatim,** the list included, so D40 holds. Other keys are ignored, so a note runs as it does now (D45).
+  - **A record names the servers the task chose,** or says that it named none, so that a misspelt key, which leaves every server on, shows in the log.
+  - **D33's error gains a fix for one task:** give the task an `mcp` list without the server, beside `bun run mcp disable <name>`.
+  - **An inline task (`-p`) gets every enabled server** for now. A flag can follow if one-off runs need a choice.
+  - **When TASK.md arrives (D5),** it reads the same key, and `gremlin apply` rejects unknown names, as for skills (4.7).
+  - **It isn't a boundary.** The list narrows what the model is offered, for cost, relevance and reliability. The shell still reaches every server's API and the store (C20).
+- **Against:**
+  - **A `---` block gains a meaning** four days after D40 kept it verbatim. A note whose frontmatter isn't valid YAML, which runs today, would fail (D45).
+  - **A misspelt key (`mcps`) is ignored,** and the run gets every server, as today. Only the record shows it.
+  - **The text and the list can disagree.** A task that mentions a server it doesn't list gets none of its tools, and the model reports that it can't reach the server, or works around it through the shell.
+  - **Only the file given to the run chooses.** A task that has the model `read` another task file follows that file's text, not its list.
+  - **An inline task can't choose** until a flag exists.
+- **Decision:** D44 for where the choice lives, D45 for what the frontmatter means, and D46 for a listed server that's disabled. Q27 asks whether a task should narrow a server's tools as well.
 
 ---
 
@@ -2621,7 +2696,7 @@ A draft for the change that gives the agent MCP servers ahead of OAuth (C16, D35
   - the README's warning that MCP tool descriptions and results reach the model as untrusted text.
 - **Docker images** need `ps` (procps), or a listing from `/proc`, for the sweep and for the transport's close (Q24).
 
-**Open:** Q18 and S7 (LM Studio's handling of `__` and digits); Q21, deferring tool definitions (the 15 servers measured cost about 21,900 tokens, against about 700 for the built-in tools); Q23, Q24 and S10.
+**Open:** Q18 and S7 (LM Studio's handling of `__` and digits); Q21, deferring tool definitions (the 15 servers measured cost about 21,900 tokens, against about 700 for the built-in tools); Q23, Q24 and S10; and D44–D46 with Q27, a task's own choice of servers (C21).
 
 ---
 
@@ -2674,6 +2749,9 @@ A draft for the change that gives the agent MCP servers ahead of OAuth (C16, D35
 | D41 | What the file tools refuse by path | as now: outside the working directory (for `read`, outside it and the skill directories), `.env*` names and the data folder · `read` alone, refusing `.env*` names and the data folder · nothing (R20) | **Nothing:** the refusals that don't depend on where a file is stay, and a container is the only sandbox (C20) | **decided 2026-11-01: nothing,** as asked: "This harness should not worry about this type of safety, if we need sandboxing, we will use containers." The change `remove-file-tool-fence` carries it out |
 | D42 | A setting that brings the fence back | a setting, off by default · none | **None:** with a shell in every run, the setting would only look like a sandbox (C20) | **decided 2026-11-01: none,** as asked. The change `remove-file-tool-fence` carries it out |
 | D43 | What a task file refuses by path | `.env*` names and the data folder, as C19 proposed against a slip of the shell's completion · nothing, as with the file tools (D41) | **Nothing:** C19 tied the rule to what the file tools refuse, and the harness guards no paths (C20). A binary or blank file still fails, since neither holds a task | **decided 2026-11-01: nothing,** as recommended. The change `remove-file-tool-fence` carries it out |
+| D44 | Where a task's choice of MCP servers lives | nowhere: every enabled server for every task, as now · a list in the task file's frontmatter · an environment variable set for the run · a flag | **The frontmatter, with every enabled server when it names none:** the choice stays beside the text that relies on it, as 4.7's `skills:` list does, and an environment variable can't choose for one task from `.env` or in 4.8's one daemon (C21, R21) | open |
+| D45 | What a task file's frontmatter means once a key in it is read | read the keys it knows, and still send the whole text verbatim · strip it, so that the body is the prompt, as C6 says of TASK.md · read only a `gremlin` mapping inside it | **Read the known keys, and send the text verbatim:** D40 holds, a note's own keys are ignored, and C6's keys stay at the top level. Frontmatter that isn't valid YAML fails the run (C21) | open |
+| D46 | A server the task lists that's disabled | fail the run, pointing to `bun run mcp enable` · skip it with a warning | **Fail the run:** the task says it needs the server, as D33 fails one that can't start (C21) | open |
 
 ## Open questions
 
@@ -2705,6 +2783,7 @@ A draft for the change that gives the agent MCP servers ahead of OAuth (C16, D35
 | Q24 | Do the Docker images install procps, or do the sweep and the transport read `/proc` on Linux? | The official Bun and Node images ship no `ps`, so in them the sweep fails and the transport finds no descendants to stop (R18.3). |
 | Q25 | What does each provider do with a first request larger than the model's context: fail it, or cut it silently? | A task file has no size limit, unlike an argument (R19), and LM Studio's default context has been 8k since 0.4.16 (R5.5). A failure ends the run with an error, while a silent cut runs a task the model saw only in part. It decides whether a task file needs a cap (C19). |
 | Q26 | Should the file tools expand a leading `~` to the home directory? | None does: `~/notes.md` makes a directory named `~` in `WORK_DIR` (R20.5). The shell expands it, and once paths may leave the working directory (D41), a model is likelier to write one. |
+| Q27 | Should a task narrow a server's tools as well as choose the server? | A task that only reads could be offered only a server's read tools, as `includeTools` narrows them for every run (D34). A list of names can grow into a mapping, such as `mcp: {docs: [search]}`, without breaking (C21). |
 
 **Q12–Q17 (2026-10-16).** The OpenSpec change `skills-and-shell` answers each in its design (`openspec/changes/archive/2026-10-16-skills-and-shell/design.md`):
 
