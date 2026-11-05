@@ -40,6 +40,10 @@ const SEE_HELP = 'bun run mcp help explains the command.';
 const NO_SERVERS =
     'There are no MCP servers. Add one with bun run mcp add <name> <url>, or bun run mcp add <name> -- <command> [args…].\n';
 
+const without = (name: string): string => {
+    return `To run without it: bun run mcp disable ${name}, for every run, or an mcp list in the task's frontmatter that leaves it out, for one task.`;
+};
+
 let dataDir: string;
 
 beforeAll(async () => {
@@ -914,6 +918,7 @@ const laterRun = async (url: string) => {
                 {
                     name: 'docs',
                     prefix: 'docs',
+                    disabled: false,
                     entry: { url, startupTimeoutMs: 10_000, toolTimeoutMs: 10_000 },
                 },
             ]);
@@ -1030,7 +1035,7 @@ describe('Log in to a Streamable HTTP server with OAuth', { timeout: 20_000 }, (
         expect(result).toEqual({
             code: 1,
             stdout: '',
-            stderr: "error: The MCP server docs can't start. It refers to DOCS_KEY_UNSET, which is unset or blank: set it in .env. To run without it: bun run mcp disable docs.\n",
+            stderr: `error: The MCP server docs can't start. It refers to DOCS_KEY_UNSET, which is unset or blank: set it in .env. ${without('docs')}\n`,
         });
     });
 
@@ -1153,7 +1158,7 @@ describe('Log out, and show a login', { timeout: 20_000 }, () => {
         expect(later).toEqual({
             ok: false,
             error: [
-                "The MCP server docs couldn't start: it needs a login: bun run mcp login docs.\nTo run without it: bun run mcp disable docs.",
+                `The MCP server docs couldn't start: it needs a login: bun run mcp login docs.\n${without('docs')}`,
             ],
         });
     });

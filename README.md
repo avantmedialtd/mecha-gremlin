@@ -6,14 +6,14 @@ A self-hosted, scheduled agent runner, in early development. The design and its 
 
 | Package | What it is |
 |---|---|
-| [`packages/core`](packages/core) | `@mecha-gremlin/core`: stateless, provider-independent types and functions. `model-call`, `history` and `statistics` define Gremlin's call, native replay and typed provider statistics contracts. `tools` defines tools through any [Standard Schema](https://standardschema.dev) library and validates their arguments. `skills` checks a SKILL.md and renders the skills catalog and a skill's activation, `output` caps a command's output as it streams in, and `patch` parses and applies Codex's V4A patches. Core depends on neither model SDK. |
+| [`packages/core`](packages/core) | `@mecha-gremlin/core`: stateless, provider-independent types and functions. `model-call`, `history` and `statistics` define Gremlin's call, native replay and typed provider statistics contracts. `tools` defines tools through any [Standard Schema](https://standardschema.dev) library and validates their arguments. `skills` finds a text's frontmatter, checks a SKILL.md and renders the skills catalog and a skill's activation, `output` caps a command's output as it streams in, and `patch` parses and applies Codex's V4A patches. Core depends on neither model SDK. |
 | [`packages/yaml`](packages/yaml) | `@mecha-gremlin/yaml`: `parseYaml`, which uses Bun's built-in parser, `Bun.YAML`, on Bun, and the [`yaml`](https://www.npmjs.com/package/yaml) package elsewhere. The two give the same values for everything frontmatter uses. |
 | [`packages/process`](packages/process) | `@mecha-gremlin/process`: `spawnProcess`, which uses `Bun.spawn` on Bun and `node:child_process` elsewhere, and gives the process the same shape on both: its pid, a stream to write to its stdin when asked for one, its output as web streams, a promise of how it exited, and `unref()`. |
 | [`packages/store`](packages/store) | `@mecha-gremlin/store`: the data folder's SQLite database, through [TypeORM](https://typeorm.io) and [better-sqlite3](https://www.npmjs.com/package/better-sqlite3), the same on Bun and Node. `store` opens `db.sqlite` in a given folder, sets its pragmas and runs its migrations, and runs every query on a store after the one before it. `credential` keeps OAuth credentials, with a lease for their refresh, and `mcp-server` keeps the MCP servers' definitions. |
 | [`packages/agent`](packages/agent) | `@mecha-gremlin/agent`: the agent. It carries out a task in an agent loop, with a shell, file tools, skills and MCP servers' tools, and opens the store in its data folder. It runs on Bun or Node. |
 
 Inside `packages/agent/src`, the code is grouped by concern:
-- `main`: the entry points, `main.ts` for a run and `mcp.ts` for the `mcp` command, and their helpers: a run's arguments and task file, log fields and failure messages; the command's arguments, times, output and help text, in `mcp-args.ts`, `mcp-time.ts`, `mcp-output.ts` and `mcp-help.ts`; and the strict parsing of options that both use, which names the option it refuses, in `options.ts`;
+- `main`: the entry points, `main.ts` for a run and `mcp.ts` for the `mcp` command, and their helpers: a run's arguments, task file and its frontmatter, log fields and failure messages; the command's arguments, times, output and help text, in `mcp-args.ts`, `mcp-time.ts`, `mcp-output.ts` and `mcp-help.ts`; and the strict parsing of options that both use, which names the option it refuses, in `options.ts`;
 - `config`;
 - `model`: model choice, LM Studio's model list, and the Responses and Anthropic Messages adapters;
 - `session`: the agent loop, as a session that yields each step's result;
@@ -23,7 +23,7 @@ Inside `packages/agent/src`, the code is grouped by concern:
 - `mcp`: MCP servers: the checks of an entry, the stdio transport, connecting to the servers, and their tools and results;
 - `log`: the structured logger.
 
-`yaml` and `process` choose their implementation once, when each module loads, from the global object: Bun's when `globalThis.Bun` is defined, the other one otherwise. The agent reads skills' frontmatter with `yaml`, and runs commands and `ps` with `process`.
+`yaml` and `process` choose their implementation once, when each module loads, from the global object: Bun's when `globalThis.Bun` is defined, the other one otherwise. The agent reads the frontmatter of skills and tasks with `yaml`, and runs commands and `ps` with `process`.
 
 At the top, [`test`](test) holds the signal guard, a Vitest setup file for every package's tests (see Develop).
 
@@ -55,20 +55,39 @@ WORK_DIR=. bun run agent:node -p 'Which runtime does README.md describe?'  # the
 `task.md` stands for a file of yours that holds the task, such as a Markdown note. The other two ask about this repository's README, so `WORK_DIR=.` points them at it; a setting on the command line overrides `.env`.
 
 The command is `bun run agent <file>`, or `bun run agent --prompt <task>`, on Bun, and `bun run agent:node` with the same arguments and settings on Node. It takes the task from one of:
-- **a task file,** its one argument: the file's text, trimmed and otherwise as written, frontmatter included, whatever its extension. A relative path starts from the directory the agent starts in, which under `bun run` is the repository's root, wherever you type the command, as `WORK_DIR` does. An absolute path always works;
-- **`--prompt <task>`, or `-p <task>`:** the task inline, as one argument, trimmed.
+- **a task file,** its one argument: the file's text, trimmed and otherwise as written, whatever its extension, less its frontmatter. A relative path starts from the directory the agent starts in, which under `bun run` is the repository's root, wherever you type the command, as `WORK_DIR` does. An absolute path always works;
+- **`--prompt <task>`, or `-p <task>`:** the task inline, as one argument, trimmed, less its frontmatter.
 
 A run fails before any network request, and says why along with any problem in the settings, when it gets no task, a task file and `--prompt` together, more than one task file, `--prompt` twice, or an option it doesn't know; the error names both ways to give the task. A task file fails too when it can't be read, is blank, or is binary, with a NUL byte in its first 8 KiB, as `read` tests.
+
+**Frontmatter.** A task may open with frontmatter: a `---` line, YAML, and another `---` line. The run reads it, and the model gets only the text after it, trimmed, so a note's frontmatter, such as its tags, no longer reaches the model: whatever the model needs from it goes in the text. The run reads one key, `mcp`, the MCP servers the task needs (see [MCP servers](#mcp-servers)):
+
+```markdown
+---
+mcp: [docs, github?]
+---
+Summarise the issues opened since yesterday.
+```
+
+- **What counts.** A block is frontmatter when its lines parse as a YAML mapping, or are empty. One that parses as anything else, such as a sentence between two horizontal rules, stays in the task, and so does an opening `---` line that no later one closes. A line between two rules at the top of a file that reads as a mapping, such as `Note: call Ann`, is taken for frontmatter, as other tools take it.
+- **Other keys** are ignored, each with a `frontmatter key ignored` warning that names it, so that a misspelt `mcps` shows in the log.
+- **What fails,** before any network request and along with any problem in the settings:
+  - frontmatter that isn't valid YAML, such as `title: Meeting: Q3 plan`, which a note may hold: the error gives the lines it takes and the parser's reason, and quoting the value mends it;
+  - an `mcp` value that isn't a list of server names, such as `mcp: docs`, where `mcp: [docs]` is meant, or `mcp: []` for none;
+  - a name given twice, with or without its `?`;
+  - a task that is blank once its frontmatter is stripped.
+- **Inline,** a task that opens with frontmatter goes after `--prompt=`, as in `--prompt='---…'`, since `-p` refuses a next argument that starts with `-`.
 
 **Quote `-p`'s value,** in single quotes unless it holds one. Unquoted, the shell splits it into words, and `-p` takes only the first of them, leaving the rest as task files. The shell also reads `?`, `*`, `&`, `;`, `!` and `$` itself: in zsh, macOS's default shell, an unquoted `?` stops the command with "no matches found" before Bun runs. A task file needs no quoting, whatever it holds.
 
 The model carries out the task with its tools, offered in this order: `read`; `write` and `edit`, or `apply_patch` in their place when `FILE_TOOLS` is `apply-patch`; `shell`; `activate_skill` when skills are loaded; and then the tools of the MCP servers you have added, sorted by name (see [MCP servers](#mcp-servers)). The loop runs until it answers, for at most the configured `MAX_STEPS`. A question about a file usually takes two steps: one to read it and one to answer. A browsing task takes many more, about two for each page action. On a local 27B model, a model call took from 15 seconds to about 2 minutes in testing, growing with the size of what the model reads.
 
 Everything is logged to stdout as structured records, one per line:
+- each key in the task's frontmatter that the run doesn't read;
 - the skills loaded, and any that couldn't be;
 - the migrations applied to the database, when there are any;
-- each MCP server the run connected to, in name order: the tools it offers, their definitions' size and a hash of its tool list, after any tools it dropped;
-- the task, with its file's absolute path when it came from one, the run's ID, the working directory and the data folder;
+- each MCP server the run chose, in name order: for one it connected to, the tools it offers, their definitions' size and a hash of its tool list, after any tools it dropped; for an optional one it left out, why;
+- the task, with its file's absolute path when it came from one and its `mcp` list when it has one, the run's ID, the working directory and the data folder;
 - each model call's provider-specific statistics, including reported usage, cache counts and rate-limit headers, even when a call fails;
 - each tool call and its result;
 - the answer;
@@ -128,7 +147,7 @@ The agent keeps a SQLite database, `db.sqlite`, in the data folder that `DATA_DI
 
 ### MCP servers
 
-The agent can use the tools of [MCP](https://modelcontextprotocol.io) servers: local servers, which a run starts and talks to over stdio, and remote ones, which it reaches over Streamable HTTP. The `mcp` command keeps their definitions in the data folder, and each run connects to every server that isn't disabled before its first model call. A remote server that needs a login gets one from `bun run mcp login`. MCP resources and prompts aren't supported, and an image a tool returns is described to the model but not shown. `bun run mcp help` summarises this section at the terminal, and needs no setting.
+The agent can use the tools of [MCP](https://modelcontextprotocol.io) servers: local servers, which a run starts and talks to over stdio, and remote ones, which it reaches over Streamable HTTP. The `mcp` command keeps their definitions in the data folder, and before its first model call a run connects to the servers its task's `mcp` list names, or, without a list, to every server that isn't disabled. A remote server that needs a login gets one from `bun run mcp login`. MCP resources and prompts aren't supported, and an image a tool returns is described to the model but not shown. `bun run mcp help` summarises this section at the terminal, and needs no setting.
 
 **Adding a server.** `bun run mcp add` takes the server's name, and then its URL, for a remote server, or `--` and its command, for a local one, as `claude mcp add` does. A remote server, whose header holds a reference to a variable:
 
@@ -216,15 +235,17 @@ bun run mcp login docs
 - **Logging out.** `bun run mcp logout <name>` deletes a server's login, and `remove` deletes it with the server. Neither revokes the tokens at the authorization server.
 - **Where the tokens are.** The client, its secret, the tokens and what the login discovered are kept in `db.sqlite` in the data folder: mode 0600, but not encrypted, and the shell can read them, as it can the rest of the database. Nothing the command prints holds a code, a token, a code verifier or a client secret, and runs redact a server's tokens and client secret as they redact its references.
 - **In a run.** Each request to the server carries its access token, in place of an `Authorization` header of its own. A token that expires within 5 minutes is refreshed before the server's first request, and a request the server answers with 401 is sent once more, after a refresh. Runs refresh a login one at a time, so that two runs at once never send the same refresh token: an authorization server that rotates them revokes the whole login when one comes back.
-- **Needs a new login.** When the authorization server refuses a refresh, the login is spent: `bun run mcp get <name>` shows `needs a new login`, and every run fails at that server, before any request, until `bun run mcp login <name>` gives it a new one. A refresh that fails otherwise, as when the authorization server doesn't answer within 25 seconds, keeps the tokens and fails only that run.
+- **Needs a new login.** When the authorization server refuses a refresh, the login is spent: `bun run mcp get <name>` shows `needs a new login`, and every run that chooses that server fails at it, before any request, or leaves it out when its task marks it optional, until `bun run mcp login <name>` gives it a new one. A refresh that fails otherwise, as when the authorization server doesn't answer within 25 seconds, keeps the tokens and fails only that run.
 
 **Running with servers.**
 
 - **Check a new server** with a short run, such as `bun run agent -p 'Say hi'`, and look at its `mcp server` record: the tools it offers, their definitions' size in bytes, and a hash of its tool list, which changes when the list does.
-- **A server that fails, fails every run**, before the first model call, with its error and the last lines of its stderr, until it's fixed or disabled with `bun run mcp disable <name>`.
+- **A task chooses its servers** with an `mcp` list in its frontmatter (see [Run](#run)), of the names `bun run mcp list` shows. The run connects those servers and no others, so `mcp: []` connects none, and a server added later reaches only the tasks without a list. A task without a list gets every server that isn't disabled. A listed name that no server has fails the run before any request, naming `bun run mcp list`, and so does a listed server that's disabled, naming `bun run mcp enable <name>`.
+- **A server that fails, fails the run**, before the first model call, with its error and the last lines of its stderr. The error ends with two ways to run without it: `bun run mcp disable <name>`, for every run, or an `mcp` list in the task's frontmatter that leaves it out, for one task.
+- **A `?` after a listed name marks a server the task can go without,** as in `mcp: [docs, github?]`. Whatever would fail the run for any other server leaves that one out instead: being disabled, a reference that can't resolve, an entry that fails its checks, a login to give again, a start that fails or runs out of time, or a tool named with `--include-tool` that it doesn't list. The run logs an `mcp server left out` warning with the reason, ends the model's instructions with a paragraph naming each server left out and why, so that a task written to report a missing source can say so, and goes on. Its exit code doesn't change, and a run whose servers all start sends the instructions it would without the `?`. Nothing else tells you a server was left out: each run's warning and the task's answer show it.
 - **Where stdio servers run.** A server runs in its `cwd`, or else in a directory made for the run in the OS's temporary directory, holding only an empty `node_modules`, so that npm reads no `.npmrc` above it: not one the file tools wrote into the working directory. It can't keep out one a shell command writes to `~/.npmrc`. When the run ends, each server gets end-of-file, then SIGTERM, then SIGKILL, with the process groups its children lead, such as a browser's.
-- **Untrusted text.** Tool descriptions and results reach the model as text the server wrote, which may try to steer it. Add servers you trust, and offer only the tools you need with `--include-tool`.
-- **Context.** Every tool's definition is sent with every model call: the tools of the fifteen servers measured in the Brief's R18.2 came to about 21,900 tokens, against about 700 for the built-in tools. A server's own flags, and `--include-tool`, keep the list short.
+- **Untrusted text.** Tool descriptions and results reach the model as text the server wrote, which may try to steer it, and so does the reason an optional server was left out when it quotes the server's error. Add servers you trust, and offer only the tools you need with `--include-tool`.
+- **Context.** Every tool's definition is sent with every model call: the tools of the fifteen servers measured in the Brief's R18.2 came to about 21,900 tokens, against about 700 for the built-in tools. A task's `mcp` list, a server's own flags and `--include-tool` keep the list short.
 
 ### Skills
 

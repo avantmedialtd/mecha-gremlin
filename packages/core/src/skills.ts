@@ -25,6 +25,8 @@ export type ActivatedSkill = {
 
 const DELIMITER = '---';
 
+const LINE_BREAK = /\r?\n/;
+
 // The Agent Skills spec's limits. A longer value still works, so it only gets a warning.
 const MAX_NAME = 64;
 const MAX_DESCRIPTION = 1024;
@@ -40,26 +42,36 @@ const CATALOG_INSTRUCTION =
 const PATHS_NOTE =
     "Paths to this skill's own files, such as references/…, are relative to the skill directory.";
 
-export const splitFrontmatter = (text: string): Result<SplitText, string> => {
-    const [first, ...lines] = text.split(/\r?\n/);
-
-    if (first !== DELIMITER) {
-        return err('it has no frontmatter: SKILL.md must start with a --- line');
-    }
-
+export const findFrontmatter = (text: string): SplitText | undefined => {
+    const [first, ...lines] = text.split(LINE_BREAK);
     const end = lines.indexOf(DELIMITER);
 
-    if (end === -1) {
-        return err("its frontmatter doesn't end: no --- line closes it");
+    if (first !== DELIMITER || end === -1) {
+        return undefined;
     }
 
-    return ok({
+    return {
         frontmatter: lines.slice(0, end).join('\n'),
         body: lines
             .slice(end + 1)
             .join('\n')
             .trim(),
-    });
+    };
+};
+
+// A SKILL.md must have frontmatter, where a task file may not.
+export const splitFrontmatter = (text: string): Result<SplitText, string> => {
+    const [first] = text.split(LINE_BREAK);
+
+    if (first !== DELIMITER) {
+        return err('it has no frontmatter: SKILL.md must start with a --- line');
+    }
+
+    const found = findFrontmatter(text);
+
+    return found === undefined
+        ? err("its frontmatter doesn't end: no --- line closes it")
+        : ok(found);
 };
 
 const isMapping = (value: unknown): value is Readonly<Record<string, unknown>> => {

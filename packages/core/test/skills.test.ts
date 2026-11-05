@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import {
     type CatalogEntry,
+    findFrontmatter,
     readSkill,
     renderActivation,
     renderCatalog,
@@ -10,6 +11,42 @@ import {
 const SKILL_MD = '---\nname: pdf\ndescription: Work with PDFs.\n---\n# PDF\n';
 
 const DESCRIPTION = 'Work with PDFs.';
+
+describe('findFrontmatter', () => {
+    test('the block, and the text after it, trimmed', () => {
+        expect(findFrontmatter('---\nmcp: [docs]\ntags: [work]\n---\n\nSay hi\n')).toEqual({
+            frontmatter: 'mcp: [docs]\ntags: [work]',
+            body: 'Say hi',
+        });
+    });
+
+    test('Windows line endings', () => {
+        expect(findFrontmatter('---\r\na: 1\r\n---\r\nSay hi\r\n  and bye\r\n')).toEqual({
+            frontmatter: 'a: 1',
+            body: 'Say hi\n  and bye',
+        });
+    });
+
+    test.each([
+        ['no first --- line, though later ones', 'Say hi\n---\na: 1\n---\nbye'],
+        ['a first line that only starts like one', '--- \na: 1\n---\nSay hi'],
+        ['an opening line that nothing closes', '---\nSay hi\n'],
+        ['an opening line alone', '---'],
+    ])('no block: %s', (_what, text) => {
+        expect(findFrontmatter(text)).toBeUndefined();
+    });
+
+    test('the first --- line after the opening one closes it', () => {
+        expect(findFrontmatter('---\na: 1\n---\nabove\n---\nbelow')).toEqual({
+            frontmatter: 'a: 1',
+            body: 'above\n---\nbelow',
+        });
+    });
+
+    test('an empty block, and nothing after it', () => {
+        expect(findFrontmatter('---\n---')).toEqual({ frontmatter: '', body: '' });
+    });
+});
 
 describe('splitFrontmatter', () => {
     test('a skill as the spec describes it', () => {

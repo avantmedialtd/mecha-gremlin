@@ -3,10 +3,10 @@ import { resolve } from 'node:path';
 import { type Result, err, ok } from '@mecha-gremlin/core/result';
 import { errorCode, reasonOf } from '../tools/errors.ts';
 import { isBinary } from '../tools/read.ts';
+import { type TaskText, readFrontmatter } from './frontmatter.ts';
 import { parse } from './options.ts';
 
-export type Task = {
-    readonly text: string;
+export type Task = TaskText & {
     /** The task file's absolute path, not its real one; undefined for a task given inline. */
     readonly file: string | undefined;
 };
@@ -19,6 +19,12 @@ const REQUIRED = `A task is required. ${USAGE}`;
 const OPTIONS = { prompt: { type: 'string', short: 'p' } } as const;
 
 const HINTS = { unknown: USAGE, value: USAGE };
+
+const taskOf = (text: string, file: string | undefined, where: string): Result<Task, string> => {
+    const read = readFrontmatter(text, where);
+
+    return read.ok ? ok({ ...read.value, file }) : read;
+};
 
 const fromFile = async (path: string): Promise<Result<Task, string>> => {
     // As WORK_DIR is resolved, so that task.md is in the directory WORK_DIR=. names: under bun run,
@@ -37,7 +43,9 @@ const fromFile = async (path: string): Promise<Result<Task, string>> => {
 
         const text = new TextDecoder().decode(bytes).trim();
 
-        return text ? ok({ text, file }) : err(`The task file ${name} is blank.`);
+        return text
+            ? taskOf(text, file, `task file ${name}`)
+            : err(`The task file ${name} is blank.`);
     } catch (error) {
         return err(
             errorCode(error) === 'ENOENT'
@@ -80,5 +88,5 @@ export const readTask = async (args: readonly string[]): Promise<Result<Task, st
 
     const text = values.prompt.trim();
 
-    return text ? ok({ text, file: undefined }) : err(REQUIRED);
+    return text ? taskOf(text, undefined, 'task given with --prompt') : err(REQUIRED);
 };

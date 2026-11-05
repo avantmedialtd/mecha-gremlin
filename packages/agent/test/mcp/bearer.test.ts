@@ -146,7 +146,11 @@ const runOf = (
 };
 
 const rowOf = (url: string, entry: Readonly<Record<string, unknown>> = {}) => {
-    return { name: 'docs', prefix: 'docs', entry: { url, ...TIMEOUTS, ...entry } };
+    return { name: 'docs', prefix: 'docs', disabled: false, entry: { url, ...TIMEOUTS, ...entry } };
+};
+
+const without = (name: string): string => {
+    return `To run without it: bun run mcp disable ${name}, for every run, or an mcp list in the task's frontmatter that leaves it out, for one task.`;
 };
 
 type Saved = {
@@ -220,14 +224,14 @@ const sql = (statement: string): Promise<unknown> => {
     });
 };
 
-const handlersOf = async (mcp: McpServers, url: string): Promise<ToolHandler[]> => {
+const handlersOf = async (mcp: McpServers, url: string): Promise<readonly ToolHandler[]> => {
     const connected = await mcp.connect([rowOf(url)]);
 
     if (!connected.ok) {
         throw new Error(connected.error.join('\n'));
     }
 
-    return connected.value;
+    return connected.value.tools;
 };
 
 const problemsOf = async (mcp: McpServers, url: string): Promise<string[]> => {
@@ -271,6 +275,7 @@ describe("Use a server's login in a run", { timeout: 20_000 }, () => {
             {
                 name: 'docs',
                 prefix: 'docs',
+                disabled: false,
                 entry: {
                     url: 'https://docs.example.test/mcp',
                     headers: { Authorization: 'Bearer ${DOCS_TOKEN}', 'X-Team': 'docs' },
@@ -495,7 +500,7 @@ describe("Use a server's login in a run", { timeout: 20_000 }, () => {
         expect(connected).toEqual({
             ok: false,
             error: [
-                "The MCP server docs couldn't start: its login couldn't be refreshed: another run held its refresh for over 35 seconds.\nTo run without it: bun run mcp disable docs.",
+                `The MCP server docs couldn't start: its login couldn't be refreshed: another run held its refresh for over 35 seconds.\n${without('docs')}`,
             ],
         });
         expect(guard.auth.tokenRequests).toEqual([]);
@@ -535,8 +540,7 @@ describe("Use a server's login in a run", { timeout: 20_000 }, () => {
         await sql('DELETE FROM credential');
         const whileGone = await loggingOut;
 
-        const needs =
-            "The MCP server docs couldn't start: it needs a new login: bun run mcp login docs.\nTo run without it: bun run mcp disable docs.";
+        const needs = `The MCP server docs couldn't start: it needs a new login: bun run mcp login docs.\n${without('docs')}`;
         expect(whileRefused).toEqual({ ok: false, error: [needs] });
         expect(whileGone).toEqual({ ok: false, error: [needs] });
     });
@@ -562,7 +566,7 @@ describe("Use a server's login in a run", { timeout: 20_000 }, () => {
         expect(connected).toEqual({
             ok: false,
             error: [
-                "The MCP server docs couldn't start: it needs a new login: bun run mcp login docs.\nTo run without it: bun run mcp disable docs.",
+                `The MCP server docs couldn't start: it needs a new login: bun run mcp login docs.\n${without('docs')}`,
             ],
         });
     });
@@ -578,11 +582,11 @@ describe("Use a server's login in a run", { timeout: 20_000 }, () => {
         const later = await problemsOf(runOf('run-b'), guard.server.url);
 
         expect(first).toEqual([
-            "The MCP server docs couldn't start: its login was refused when refreshed, so it needs a new login: bun run mcp login docs.\nTo run without it: bun run mcp disable docs.",
+            `The MCP server docs couldn't start: its login was refused when refreshed, so it needs a new login: bun run mcp login docs.\n${without('docs')}`,
         ]);
         expect(row).toMatchObject({ needsLogin: true, leaseOwner: null });
         expect(later).toEqual([
-            "The MCP server docs can't start. Its login was refused when refreshed, so it needs a new login: bun run mcp login docs. To run without it: bun run mcp disable docs.",
+            `The MCP server docs can't start. Its login was refused when refreshed, so it needs a new login: bun run mcp login docs. ${without('docs')}`,
         ]);
         expect([guard.auth.requests.length, guard.server.requests.length]).toEqual(requests);
     });
@@ -617,7 +621,7 @@ describe("Use a server's login in a run", { timeout: 20_000 }, () => {
         expect(connected).toEqual({
             ok: false,
             error: [
-                "The MCP server docs couldn't start: its login couldn't be refreshed: the authorization server didn't answer within 25 seconds.\nTo run without it: bun run mcp disable docs.",
+                `The MCP server docs couldn't start: its login couldn't be refreshed: the authorization server didn't answer within 25 seconds.\n${without('docs')}`,
             ],
         });
         expect(row).toMatchObject({ needsLogin: false, leaseOwner: null });
@@ -666,7 +670,7 @@ describe("Use a server's login in a run", { timeout: 20_000 }, () => {
         const problems = await problemsOf(runOf('run-a'), guard.server.url);
 
         expect(problems).toEqual([
-            "The MCP server docs couldn't start: its login has no refresh token, so it can't be refreshed: log in again with bun run mcp login docs.\nTo run without it: bun run mcp disable docs.",
+            `The MCP server docs couldn't start: its login has no refresh token, so it can't be refreshed: log in again with bun run mcp login docs.\n${without('docs')}`,
         ]);
     });
 
@@ -681,7 +685,7 @@ describe("Use a server's login in a run", { timeout: 20_000 }, () => {
         const problems = await problemsOf(runOf('run-a'), guard.server.url);
 
         expect(problems).toEqual([
-            "The MCP server docs couldn't start: it refused its login's token even after a refresh: log in again with bun run mcp login docs.\nTo run without it: bun run mcp disable docs.",
+            `The MCP server docs couldn't start: it refused its login's token even after a refresh: log in again with bun run mcp login docs.\n${without('docs')}`,
         ]);
         expect(refreshes(guard.auth)).toHaveLength(1);
     });
@@ -769,7 +773,7 @@ describe('Pick and read the saved login', { timeout: 20_000 }, () => {
         const problems = await problemsOf(runOf('run-a'), guard.server.url);
 
         expect(problems).toEqual([
-            "The MCP server docs couldn't start: it needs a login: bun run mcp login docs.\nTo run without it: bun run mcp disable docs.",
+            `The MCP server docs couldn't start: it needs a login: bun run mcp login docs.\n${without('docs')}`,
         ]);
     });
 
@@ -785,7 +789,7 @@ describe('Pick and read the saved login', { timeout: 20_000 }, () => {
         const problems = await problemsOf(runOf('run-a'), guard.server.url);
 
         expect(problems).toEqual([
-            "The MCP server docs can't start. Its saved login can't be read, so it needs a new login: bun run mcp login docs. To run without it: bun run mcp disable docs.",
+            `The MCP server docs can't start. Its saved login can't be read, so it needs a new login: bun run mcp login docs. ${without('docs')}`,
         ]);
         expect(guard.server.requests).toEqual([]);
     });

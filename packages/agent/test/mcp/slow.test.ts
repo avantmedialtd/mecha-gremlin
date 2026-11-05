@@ -91,7 +91,9 @@ const connect = (url: string, entry: Readonly<Record<string, unknown>>) => {
         log: LOG,
     });
 
-    return mcp.connect([{ name: 'docs', prefix: 'docs', entry: { url, ...entry } }]);
+    return mcp.connect([
+        { name: 'docs', prefix: 'docs', disabled: false, entry: { url, ...entry } },
+    ]);
 };
 
 test('a slow start: answered after 61 seconds, within a startupTimeoutMs of 90000', async () => {
@@ -111,7 +113,7 @@ test('a slow start: answered after 61 seconds, within a startupTimeoutMs of 9000
     await until(() => requests.length > 0);
     await vi.advanceTimersByTimeAsync(61_000);
 
-    expect(await connecting).toEqual({ ok: true, value: [] });
+    expect(await connecting).toEqual({ ok: true, value: { tools: [], leftOut: [] } });
 });
 
 test('a slow call: answered after 61 seconds, within a toolTimeoutMs of 90000', async () => {
@@ -133,7 +135,7 @@ test('a slow call: answered after 61 seconds, within a toolTimeoutMs of 90000', 
         startupTimeoutMs: 30_000,
         toolTimeoutMs: 90_000,
     });
-    const [handler] = connected.ok ? connected.value : [];
+    const [handler] = connected.ok ? connected.value.tools : [];
     const before = requests.length;
 
     const calling = handler?.invoke('{}');

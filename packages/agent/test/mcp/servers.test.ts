@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { type ToolOutcome, toolJsonSchema } from '@mecha-gremlin/core/tools';
+import { withDataSource } from '@mecha-gremlin/store/connection';
+import { saveCredential } from '@mecha-gremlin/store/credential';
 import { type Store, closeStore, openStore } from '@mecha-gremlin/store/store';
 import { InMemoryTransport } from '@modelcontextprotocol/client';
 import { McpServer } from '@modelcontextprotocol/server';
@@ -110,6 +112,10 @@ const consoleCalls = (): unknown[] => {
     );
 };
 
+const without = (name: string): string => {
+    return `To run without it: bun run mcp disable ${name}, for every run, or an mcp list in the task's frontmatter that leaves it out, for one task.`;
+};
+
 const servers = (env: Readonly<Record<string, string>> = {}): McpServers => {
     const mcp = createMcpServers({
         parentEnv: { PATH: process.env.PATH ?? '/usr/bin:/bin', ...env },
@@ -132,15 +138,25 @@ type Stdio = {
     readonly results?: Readonly<Record<string, unknown>>;
     readonly env?: Readonly<Record<string, string>>;
     readonly entry?: Readonly<Record<string, unknown>>;
+    readonly disabled?: boolean;
 };
 
 const stdio = (
     name: string,
-    { mode = 'serve', tools = [], pages, results = {}, env = {}, entry = {} }: Stdio = {},
+    {
+        mode = 'serve',
+        tools = [],
+        pages,
+        results = {},
+        env = {},
+        entry = {},
+        disabled = false,
+    }: Stdio = {},
 ) => {
     return {
         name,
         prefix: prefixOf(name),
+        disabled,
         entry: {
             command: process.execPath,
             args: [FAKE, mode],
@@ -163,11 +179,10 @@ const tool = (
     return { name, description: `The ${name} tool.`, inputSchema };
 };
 
-const handlersOf = async (
-    mcp: McpServers,
-    rows: Parameters<McpServers['connect']>[0],
-): Promise<ToolHandler[]> => {
-    const connected = await mcp.connect(rows);
+type Rows = Parameters<McpServers['connect']>[0];
+
+const startedOf = async (mcp: McpServers, rows: Rows, list?: readonly string[]) => {
+    const connected = await mcp.connect(rows, list);
 
     if (!connected.ok) {
         throw new Error(connected.error.join('\n'));
@@ -176,16 +191,25 @@ const handlersOf = async (
     return connected.value;
 };
 
+const handlersOf = async (
+    mcp: McpServers,
+    rows: Rows,
+    list?: readonly string[],
+): Promise<readonly ToolHandler[]> => {
+    return (await startedOf(mcp, rows, list)).tools;
+};
+
 // A row as the store reads one back: TypeORM's simple-json column is JSON.parse's.
 const handWritten = (name: string, json: string) => {
-    return { name, prefix: prefixOf(name), entry: JSON.parse(json) };
+    return { name, prefix: prefixOf(name), disabled: false, entry: JSON.parse(json) };
 };
 
 const problemsOf = async (
     mcp: McpServers,
-    rows: Parameters<McpServers['connect']>[0],
+    rows: Rows,
+    list?: readonly string[],
 ): Promise<string[]> => {
-    const connected = await mcp.connect(rows);
+    const connected = await mcp.connect(rows, list);
 
     expect(connected.ok).toBe(false);
 
@@ -218,7 +242,40 @@ const hashed = (raw: string): string => {
     return `mcp__docs__get_user_${hash}`;
 };
 
-describe('Connect every enabled server before the session', { timeout: 20_000 }, () => {
+// Requests to the https origin go to the in-process server on 127.0.0.1: an entry whose header
+// holds a reference may not use plain http.
+const routeTo = (origin: string, target: string): void => {
+    vi.stubGlobal('fetch', (input: string | URL | Request, init?: RequestInit) => {
+        const url = input instanceof Request ? input.url : String(input);
+
+        return realFetch(
+            url.startsWith(origin) ? `${target}${url.slice(origin.length)}` : url,
+            init,
+        );
+    });
+};
+
+const httpServer = async (options: Parameters<typeof startHttpServer>[0] = {}) => {
+    const server = await startHttpServer(options);
+    cleanups.push(server.close);
+
+    return server;
+};
+
+const ORIGIN = 'https://docs.example.test';
+
+const httpRow = (name: string, url: string, entry: Readonly<Record<string, unknown>> = {}) => {
+    return { name, prefix: prefixOf(name), disabled: false, entry: { url, ...TIMEOUTS, ...entry } };
+};
+
+const search: FakeTool = {
+    name: 'search',
+    description: 'Search the docs.',
+    inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
+    call: () => ({ content: [{ type: 'text', text: 'found' }] }),
+};
+
+describe('Connect the servers a task chooses before the session', { timeout: 20_000 }, () => {
     test("two servers' tools, sorted by name, and their records in name order", async () => {
         const handlers = await handlersOf(servers(), [
             stdio('b', { tools: [tool('zeta')] }),
@@ -235,8 +292,277 @@ describe('Connect every enabled server before the session', { timeout: 20_000 },
     });
 
     test('no servers: no tools, and no record', async () => {
-        expect(await servers().connect([])).toEqual({ ok: true, value: [] });
+        expect(await servers().connect([])).toEqual({
+            ok: true,
+            value: { tools: [], leftOut: [] },
+        });
         expect(records).toEqual([]);
+    });
+
+    test('without a list, a disabled server is not started', async () => {
+        const handlers = await handlersOf(servers(), [
+            stdio('docs', { tools: [tool('search')] }),
+            stdio('off', { tools: [tool('x')], disabled: true }),
+        ]);
+
+        expect(names(handlers)).toEqual(['mcp__docs__search']);
+        expect(records.map((record) => record.name)).toEqual(['docs']);
+        expect(runProcesses()).toHaveLength(1);
+    });
+
+    test("a task's list: the servers it names, and no others", async () => {
+        const run = await startedOf(
+            servers(),
+            [
+                stdio('docs', { tools: [tool('search')] }),
+                stdio('github', { tools: [tool('issues')] }),
+                stdio('pw', { tools: [tool('click')] }),
+            ],
+            ['docs'],
+        );
+
+        expect(names(run.tools)).toEqual(['mcp__docs__search']);
+        expect(run.leftOut).toEqual([]);
+        expect(records.map((record) => [record.message, record.name])).toEqual([
+            ['mcp server', 'docs'],
+        ]);
+        expect(runProcesses()).toHaveLength(1);
+    });
+
+    test('an empty list: no server starts', async () => {
+        const rows = [stdio('docs', { tools: [tool('search')] })];
+
+        expect(await servers().connect(rows, [])).toEqual({
+            ok: true,
+            value: { tools: [], leftOut: [] },
+        });
+        expect(records).toEqual([]);
+        expect(runProcesses()).toEqual([]);
+    });
+
+    test("a listed name the store doesn't hold, ? or not, and a listed server that's disabled", async () => {
+        const problems = await problemsOf(
+            servers(),
+            [
+                stdio('docs', { disabled: true }),
+                stdio('opt', { env: { OPT: '${OPT_UNSET}' } }),
+                stdio('pw', { env: { PW: '${PW_UNSET}' } }),
+            ],
+            ['notes', 'docs', 'drafts?', 'opt?', 'pw'],
+        );
+
+        expect(problems).toEqual([
+            "The task's mcp list names notes, but there is no MCP server named notes: bun run mcp list shows them.",
+            "The task's mcp list names docs, which is disabled: runs won't start it until bun run mcp enable docs.",
+            "The task's mcp list names drafts, but there is no MCP server named drafts: bun run mcp list shows them.",
+            `The MCP server pw can't start. It refers to PW_UNSET, which is unset or blank: set it in .env. ${without('pw')}`,
+        ]);
+        expect(runProcesses()).toEqual([]);
+    });
+
+    test("an optional server that's disabled: not started, and left out", async () => {
+        const run = await startedOf(
+            servers(),
+            [stdio('github', { tools: [tool('issues')], disabled: true })],
+            ['github?'],
+        );
+
+        expect(run).toEqual({
+            tools: [],
+            leftOut: [{ name: 'github', reason: "it's disabled" }],
+        });
+        expect(records).toEqual([
+            {
+                level: 'warn',
+                message: 'mcp server left out',
+                name: 'github',
+                reason: "it's disabled",
+            },
+        ]);
+        expect(runProcesses()).toEqual([]);
+    });
+
+    test('an optional server with unset references: left out before any server starts, and the others go on', async () => {
+        const run = await startedOf(
+            servers(),
+            [
+                stdio('docs', { env: { DOCS_TOKEN: '${DOCS_TOKEN}', OTHER: '${OTHER_UNSET}' } }),
+                stdio('fine', { tools: [tool('x')] }),
+            ],
+            ['docs?', 'fine'],
+        );
+
+        expect(names(run.tools)).toEqual(['mcp__fine__x']);
+        expect(run.leftOut).toEqual([
+            {
+                name: 'docs',
+                reason: 'It refers to DOCS_TOKEN, which is unset or blank: set it in .env. It refers to OTHER_UNSET, which is unset or blank: set it in .env.',
+            },
+        ]);
+        expect(runProcesses()).toHaveLength(1);
+    });
+
+    test('an optional server whose login is spent: left out before any request', async () => {
+        const fetch = vi.fn<typeof globalThis.fetch>();
+        vi.stubGlobal('fetch', fetch);
+        await saveCredential(store, {
+            server: 'docs',
+            url: 'https://docs.example.com/mcp',
+            issuer: 'https://auth.example.com',
+            client: { client_id: 'client-1' },
+            tokens: { access_token: 'at1', refresh_token: 'rt1' },
+            discovery: { authorizationServerUrl: 'https://auth.example.com' },
+            expiresAt: null,
+        });
+        await withDataSource(store, 'spend the login', (dataSource) => {
+            return dataSource.query('UPDATE credential SET needs_login = 1');
+        });
+
+        const run = await startedOf(
+            servers(),
+            [httpRow('docs', 'https://docs.example.com/mcp')],
+            ['docs?'],
+        );
+
+        expect(run).toEqual({
+            tools: [],
+            leftOut: [
+                {
+                    name: 'docs',
+                    reason: 'Its login was refused when refreshed, so it needs a new login: bun run mcp login docs.',
+                },
+            ],
+        });
+        expect(fetch).not.toHaveBeenCalled();
+    });
+
+    test.each([
+        [
+            'exits at start',
+            { mode: 'exit', env: { FAKE_EXIT: '3', FAKE_STDERR: 'bad config\\n' } },
+            'it exited with code 3 before it was ready',
+        ],
+        [
+            "doesn't list a tool its includeTools names",
+            { tools: [tool('issues')], entry: { includeTools: ['missing'] } },
+            "it doesn't list missing, which its includeTools names",
+        ],
+    ])(
+        'an optional server that %s: closed alone, its reason without its stderr, and the others go on',
+        async (_what, options, reason) => {
+            const run = await startedOf(
+                servers(),
+                [stdio('docs', { tools: [tool('pids')] }), stdio('github', options)],
+                ['docs', 'github?'],
+            );
+            const outcome = await invoke(run.tools, 'mcp__docs__pids');
+            const { server } = JSON.parse(outcome.ok ? outcome.value : '{}') as { server: number };
+
+            expect(names(run.tools)).toEqual(['mcp__docs__pids']);
+            expect(run.leftOut).toEqual([{ name: 'github', reason }]);
+            expect(runProcesses()).toEqual([server]);
+        },
+    );
+
+    test('a required server that fails still fails the run, alone, and every server is closed', async () => {
+        const problems = await problemsOf(
+            servers(),
+            [
+                stdio('docs', { mode: 'exit', env: { FAKE_EXIT: '3' } }),
+                stdio('github', { mode: 'exit', env: { FAKE_EXIT: '4' } }),
+                stdio('fine', { tools: [tool('x')] }),
+            ],
+            ['docs', 'github?', 'fine?'],
+        );
+
+        expect(problems).toEqual([
+            `The MCP server docs couldn't start: it exited with code 3 before it was ready.\n${without('docs')}`,
+        ]);
+        expect(records).toEqual([]);
+        expect(runProcesses()).toEqual([]);
+    });
+
+    test("a secret in a left-out server's reason, and in its record", async () => {
+        const failing = await httpServer({
+            answer: () => new Response('broken by t0k', { status: 500 }),
+        });
+        routeTo(ORIGIN, failing.url.replace('/mcp', ''));
+
+        const run = await startedOf(
+            servers({ DOCS_TOKEN: 't0k' }),
+            [
+                httpRow('docs', `${ORIGIN}/mcp`, {
+                    headers: { Authorization: 'Bearer ${DOCS_TOKEN}' },
+                }),
+            ],
+            ['docs?'],
+        );
+        const [leftOut] = run.leftOut;
+
+        expect(leftOut?.reason).toContain('[redacted]');
+        expect(JSON.stringify([run, records])).not.toContain('t0k');
+        expect(records).toEqual([
+            {
+                level: 'warn',
+                message: 'mcp server left out',
+                name: 'docs',
+                reason: leftOut?.reason,
+            },
+        ]);
+    });
+
+    test("the left-out servers' records, in name order among the others'", async () => {
+        const run = await startedOf(
+            servers(),
+            [
+                stdio('c', { tools: [tool('z')] }),
+                stdio('b', { mode: 'exit', env: { FAKE_EXIT: '3' } }),
+                stdio('a', { tools: [tool('y')], env: { FAKE_LIST_DELAY: '300' } }),
+            ],
+            ['c', 'b?', 'a'],
+        );
+
+        expect(names(run.tools)).toEqual(['mcp__a__y', 'mcp__c__z']);
+        expect(records).toEqual([
+            expect.objectContaining({ level: 'info', message: 'mcp server', name: 'a' }),
+            {
+                level: 'warn',
+                message: 'mcp server left out',
+                name: 'b',
+                reason: 'it exited with code 3 before it was ready',
+            },
+            expect.objectContaining({ level: 'info', message: 'mcp server', name: 'c' }),
+        ]);
+    });
+
+    test('the servers left out, in name order, whenever each was left out', async () => {
+        const run = await startedOf(
+            servers(),
+            [
+                stdio('d', { disabled: true }),
+                stdio('c', { env: { C: '${C_UNSET}' } }),
+                stdio('b', { mode: 'exit', env: { FAKE_EXIT: '3' } }),
+                stdio('a', { mode: 'exit', env: { FAKE_EXIT: '4' } }),
+            ],
+            ['d?', 'c?', 'b?', 'a?'],
+        );
+
+        expect(run.leftOut.map(({ name }) => name)).toEqual(['a', 'b', 'c', 'd']);
+        expect(records.map(({ name }) => name)).toEqual(['a', 'b', 'c', 'd']);
+    });
+
+    test('both ways to run without a failing server: for every run, and for one task', async () => {
+        const [unresolved] = await problemsOf(servers(), [
+            stdio('docs', { env: { X: '${X_UNSET}' } }),
+        ]);
+        const [exited] = await problemsOf(servers(), [stdio('docs', { mode: 'exit' })]);
+
+        expect(unresolved).toMatch(
+            / To run without it: bun run mcp disable docs, for every run, or an mcp list in the task's frontmatter that leaves it out, for one task\.$/,
+        );
+        expect(exited?.split('\n').at(-1)).toBe(
+            "To run without it: bun run mcp disable docs, for every run, or an mcp list in the task's frontmatter that leaves it out, for one task.",
+        );
     });
 
     test('an unset reference fails before any server starts', async () => {
@@ -248,7 +574,7 @@ describe('Connect every enabled server before the session', { timeout: 20_000 },
         ]);
 
         expect(problems).toEqual([
-            "The MCP server docs can't start. It refers to DOCS_TOKEN, which is unset or blank: set it in .env. To run without it: bun run mcp disable docs.",
+            `The MCP server docs can't start. It refers to DOCS_TOKEN, which is unset or blank: set it in .env. ${without('docs')}`,
         ]);
         expect(runProcesses()).toEqual([]);
     });
@@ -261,9 +587,9 @@ describe('Connect every enabled server before the session', { timeout: 20_000 },
         ]);
 
         expect(problems).toEqual([
-            "The MCP server a can't start. The field colour isn't known. To run without it: bun run mcp disable a.",
-            "The MCP server b can't start. It refers to CWD, which is unset or blank: set it in .env. To run without it: bun run mcp disable b.",
-            "The MCP server c can't start. Its cwd, with its references resolved, must be an absolute path to a directory that exists. To run without it: bun run mcp disable c.",
+            `The MCP server a can't start. The field colour isn't known. ${without('a')}`,
+            `The MCP server b can't start. It refers to CWD, which is unset or blank: set it in .env. ${without('b')}`,
+            `The MCP server c can't start. Its cwd, with its references resolved, must be an absolute path to a directory that exists. ${without('c')}`,
         ]);
         expect(runProcesses()).toEqual([]);
     });
@@ -282,9 +608,9 @@ describe('Connect every enabled server before the session', { timeout: 20_000 },
         ]);
 
         expect(problems).toEqual([
-            "The MCP server a can't start. The field timeout isn't known: give startupTimeoutMs and toolTimeoutMs, in milliseconds. To run without it: bun run mcp disable a.",
-            `The MCP server b can't start. toolTimeoutMs is missing. Give both timeouts, in milliseconds, as in "startupTimeoutMs": 30000 and "toolTimeoutMs": 120000. To run without it: bun run mcp disable b.`,
-            "The MCP server c can't start. The field constructor isn't known. To run without it: bun run mcp disable c.",
+            `The MCP server a can't start. The field timeout isn't known: give startupTimeoutMs and toolTimeoutMs, in milliseconds. ${without('a')}`,
+            `The MCP server b can't start. toolTimeoutMs is missing. Give both timeouts, in milliseconds, as in "startupTimeoutMs": 30000 and "toolTimeoutMs": 120000. ${without('b')}`,
+            `The MCP server c can't start. The field constructor isn't known. ${without('c')}`,
         ]);
         expect(runProcesses()).toEqual([]);
     });
@@ -298,19 +624,19 @@ describe('Connect every enabled server before the session', { timeout: 20_000 },
         ]);
 
         expect(problems).toEqual([
-            "The MCP server docs couldn't start: it exited with code 3 before it was ready.\nIts stderr ended with:\nloading\nbad config\nTo run without it: bun run mcp disable docs.",
+            `The MCP server docs couldn't start: it exited with code 3 before it was ready.\nIts stderr ended with:\nloading\nbad config\n${without('docs')}`,
         ]);
     });
 
     test('a handshake the server refuses: its error, not the exit that the close caused', async () => {
         expect(await problemsOf(servers(), [stdio('docs', { mode: 'refusing' })])).toEqual([
-            "The MCP server docs couldn't start: no handshake today.\nTo run without it: bun run mcp disable docs.",
+            `The MCP server docs couldn't start: no handshake today.\n${without('docs')}`,
         ]);
     });
 
     test('a server that leaves while it lists its tools: its exit', async () => {
         expect(await problemsOf(servers(), [stdio('docs', { mode: 'vanishing' })])).toEqual([
-            "The MCP server docs couldn't start: it exited with code 4 before it was ready.\nTo run without it: bun run mcp disable docs.",
+            `The MCP server docs couldn't start: it exited with code 4 before it was ready.\n${without('docs')}`,
         ]);
     });
 
@@ -318,13 +644,13 @@ describe('Connect every enabled server before the session', { timeout: 20_000 },
         const pages = [{ tools: [], nextCursor: '1' }, { tools: [] }];
 
         expect(await problemsOf(servers(), [stdio('docs', { mode: 'deserting', pages })])).toEqual([
-            "The MCP server docs couldn't start: it exited with code 3 before it was ready.\nTo run without it: bun run mcp disable docs.",
+            `The MCP server docs couldn't start: it exited with code 3 before it was ready.\n${without('docs')}`,
         ]);
     });
 
     test('a line on stdout too long to read', async () => {
         expect(await problemsOf(servers(), [stdio('docs', { mode: 'huge' })])).toEqual([
-            "The MCP server docs couldn't start: Connection closed.\nTo run without it: bun run mcp disable docs.",
+            `The MCP server docs couldn't start: Connection closed.\n${without('docs')}`,
         ]);
     });
 
@@ -347,7 +673,7 @@ describe('Connect every enabled server before the session', { timeout: 20_000 },
         });
 
         expect(await problemsOf(servers(), [stdio('docs', { mode: 'mute' })])).toEqual([
-            "The MCP server docs couldn't start: Connection closed.\nTo run without it: bun run mcp disable docs.",
+            `The MCP server docs couldn't start: Connection closed.\n${without('docs')}`,
         ]);
     });
 
@@ -355,12 +681,13 @@ describe('Connect every enabled server before the session', { timeout: 20_000 },
         const killed = {
             name: 'docs',
             prefix: 'docs',
+            disabled: false,
             // A $ in an entry's value is written $$: the shell gets $$, its own pid.
             entry: { command: '/bin/sh', args: ['-c', 'kill -TERM $$$$'], ...TIMEOUTS },
         };
 
         expect(await problemsOf(servers(), [killed])).toEqual([
-            "The MCP server docs couldn't start: it was ended by SIGTERM before it was ready.\nTo run without it: bun run mcp disable docs.",
+            `The MCP server docs couldn't start: it was ended by SIGTERM before it was ready.\n${without('docs')}`,
         ]);
     });
 
@@ -376,7 +703,7 @@ describe('Connect every enabled server before the session', { timeout: 20_000 },
         expect(connected).toEqual({
             ok: false,
             error: [
-                "The MCP server silent couldn't start: it didn't finish starting within its startupTimeoutMs of 1000 ms.\nTo run without it: bun run mcp disable silent.",
+                `The MCP server silent couldn't start: it didn't finish starting within its startupTimeoutMs of 1000 ms.\n${without('silent')}`,
             ],
         });
         expect(runProcesses()).toEqual([]);
@@ -391,7 +718,7 @@ describe('Connect every enabled server before the session', { timeout: 20_000 },
         ]);
 
         expect(problems).toEqual([
-            "The MCP server docs couldn't start: it doesn't list search, read, which its includeTools names.\nTo run without it: bun run mcp disable docs.",
+            `The MCP server docs couldn't start: it doesn't list search, read, which its includeTools names.\n${without('docs')}`,
         ]);
     });
 
@@ -420,7 +747,7 @@ describe('Connect every enabled server before the session', { timeout: 20_000 },
         ]);
 
         expect(problems).toEqual([
-            "The MCP server docs couldn't start: it exited with code 1 before it was ready.\nIts stderr ended with:\nbad config\nTo run without it: bun run mcp disable docs.",
+            `The MCP server docs couldn't start: it exited with code 1 before it was ready.\nIts stderr ended with:\nbad config\n${without('docs')}`,
         ]);
     });
 
@@ -544,6 +871,68 @@ describe('Run stdio servers in a group of their own', { timeout: 20_000 }, () =>
         ]);
     });
 
+    test("no server that needs the run's directory: none is made", async () => {
+        const temporary = await mkdtemp(join(tmpdir(), 'mcp-tmp-'));
+        cleanups.push(() => rm(temporary, { recursive: true, force: true }));
+        vi.stubEnv('TMPDIR', temporary);
+        const server = await httpServer({ tools: [search] });
+
+        const handlers = await handlersOf(servers(), [
+            httpRow('docs', server.url),
+            stdio('own', { tools: [tool('cwd')], entry: { cwd: workDir } }),
+        ]);
+
+        expect(names(handlers)).toEqual(['mcp__docs__search', 'mcp__own__cwd']);
+        expect(await readdir(temporary)).toEqual([]);
+    });
+
+    test("a run's directory that can't be made: the optional servers that need one are left out, and the others go on", async () => {
+        const inside = join(workDir, 'tmp');
+        await mkdir(inside);
+        vi.stubEnv('TMPDIR', inside);
+        const server = await httpServer({ tools: [search] });
+
+        const run = await startedOf(
+            servers(),
+            [
+                stdio('local', { tools: [tool('x')] }),
+                httpRow('docs', server.url),
+                stdio('own', { tools: [tool('cwd')], entry: { cwd: workDir } }),
+            ],
+            ['local?', 'docs', 'own'],
+        );
+
+        expect(names(run.tools)).toEqual(['mcp__docs__search', 'mcp__own__cwd']);
+        expect(run.leftOut).toEqual([
+            {
+                name: 'local',
+                reason: `The temporary directory, ${inside}, is inside WORK_DIR or DATA_DIR, where the agent's tools could change what a stdio MCP server reads: set TMPDIR to a directory outside both.`,
+            },
+        ]);
+        expect(records.map((record) => [record.message, record.name])).toEqual([
+            ['mcp server', 'docs'],
+            ['mcp server left out', 'local'],
+            ['mcp server', 'own'],
+        ]);
+    });
+
+    test("a run's directory that can't be made, though a required server needs it too", async () => {
+        const inside = join(workDir, 'tmp');
+        await mkdir(inside);
+        vi.stubEnv('TMPDIR', inside);
+
+        const problems = await problemsOf(
+            servers(),
+            [stdio('local', { tools: [tool('x')] }), stdio('other', { tools: [tool('y')] })],
+            ['local?', 'other'],
+        );
+
+        expect(problems).toEqual([
+            `The temporary directory, ${inside}, is inside WORK_DIR or DATA_DIR, where the agent's tools could change what a stdio MCP server reads: set TMPDIR to a directory outside both.`,
+        ]);
+        expect(runProcesses()).toEqual([]);
+    });
+
     test('relative entries in PATH are skipped', async () => {
         // A name of its own, since one decoy goes in the agent's current directory, the repository.
         const name = `fake-mcp-${randomUUID().slice(0, 8)}`;
@@ -585,14 +974,14 @@ describe('Run stdio servers in a group of their own', { timeout: 20_000 }, () =>
                 stdio('docs', { entry: { command: 'fake-mcp-${X}' }, env: { PATH: '.:bin' } }),
             ]),
         ).toEqual([
-            "The MCP server docs can't start. It refers to X, which is unset or blank: set it in .env. To run without it: bun run mcp disable docs.",
+            `The MCP server docs can't start. It refers to X, which is unset or blank: set it in .env. ${without('docs')}`,
         ]);
         expect(
             await problemsOf(servers({ X: '1' }), [
                 stdio('docs', { entry: { command: 'fake-mcp-${X}' }, env: { PATH: '.:bin' } }),
             ]),
         ).toEqual([
-            "The MCP server docs can't start. Its command, fake-mcp-${X}, is in none of the absolute directories of its PATH: give the command's absolute path, or set PATH in its env. To run without it: bun run mcp disable docs.",
+            `The MCP server docs can't start. Its command, fake-mcp-\${X}, is in none of the absolute directories of its PATH: give the command's absolute path, or set PATH in its env. ${without('docs')}`,
         ]);
     });
 
@@ -602,7 +991,7 @@ describe('Run stdio servers in a group of their own', { timeout: 20_000 }, () =>
                 stdio('docs', { entry: { command: '${DIR}/server' } }),
             ]),
         ).toEqual([
-            "The MCP server docs can't start. Its command, with its references resolved, must be an absolute path, or a name without a slash. To run without it: bun run mcp disable docs.",
+            `The MCP server docs can't start. Its command, with its references resolved, must be an absolute path, or a name without a slash. ${without('docs')}`,
         ]);
     });
 
@@ -615,43 +1004,10 @@ describe('Run stdio servers in a group of their own', { timeout: 20_000 }, () =>
                 stdio('docs', { entry: { cwd: '${FILE}' } }),
             ]),
         ).toEqual([
-            "The MCP server docs can't start. Its cwd, with its references resolved, must be an absolute path to a directory that exists. To run without it: bun run mcp disable docs.",
+            `The MCP server docs can't start. Its cwd, with its references resolved, must be an absolute path to a directory that exists. ${without('docs')}`,
         ]);
     });
 });
-
-// Requests to the https origin go to the in-process server on 127.0.0.1: an entry whose header
-// holds a reference may not use plain http.
-const routeTo = (origin: string, target: string): void => {
-    vi.stubGlobal('fetch', (input: string | URL | Request, init?: RequestInit) => {
-        const url = input instanceof Request ? input.url : String(input);
-
-        return realFetch(
-            url.startsWith(origin) ? `${target}${url.slice(origin.length)}` : url,
-            init,
-        );
-    });
-};
-
-const httpServer = async (options: Parameters<typeof startHttpServer>[0] = {}) => {
-    const server = await startHttpServer(options);
-    cleanups.push(server.close);
-
-    return server;
-};
-
-const ORIGIN = 'https://docs.example.test';
-
-const httpRow = (name: string, url: string, entry: Readonly<Record<string, unknown>> = {}) => {
-    return { name, prefix: prefixOf(name), entry: { url, ...TIMEOUTS, ...entry } };
-};
-
-const search: FakeTool = {
-    name: 'search',
-    description: 'Search the docs.',
-    inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
-    call: () => ({ content: [{ type: 'text', text: 'found' }] }),
-};
 
 describe('Reach Streamable HTTP servers with their headers', { timeout: 20_000 }, () => {
     test('a server without references, on plain http', async () => {
@@ -724,7 +1080,7 @@ describe('Reach Streamable HTTP servers with their headers', { timeout: 20_000 }
         ]);
 
         expect(problems).toEqual([
-            "The MCP server docs can't start. The url, with its references resolved, has a fragment. To run without it: bun run mcp disable docs.",
+            `The MCP server docs can't start. The url, with its references resolved, has a fragment. ${without('docs')}`,
         ]);
         expect(problems.join()).not.toContain('a#b');
         expect(fetch).not.toHaveBeenCalled();
@@ -738,7 +1094,7 @@ describe('Reach Streamable HTTP servers with their headers', { timeout: 20_000 }
         ]);
 
         expect(problems).toEqual([
-            "The MCP server docs can't start. The header Authorization, with its references resolved, holds a control character, or a character beyond U+00FF. To run without it: bun run mcp disable docs.",
+            `The MCP server docs can't start. The header Authorization, with its references resolved, holds a control character, or a character beyond U+00FF. ${without('docs')}`,
         ]);
     });
 
@@ -748,7 +1104,7 @@ describe('Reach Streamable HTTP servers with their headers', { timeout: 20_000 }
         });
 
         expect(await problemsOf(servers(), [httpRow('docs', server.url)])).toEqual([
-            "The MCP server docs couldn't start: it needs a login: bun run mcp login docs.\nTo run without it: bun run mcp disable docs.",
+            `The MCP server docs couldn't start: it needs a login: bun run mcp login docs.\n${without('docs')}`,
         ]);
     });
 
@@ -966,7 +1322,7 @@ describe(
                 reason: 'its input schema has anyOf at its root, which providers refuse',
             });
             expect(problems).toEqual([
-                "The MCP server docs couldn't start: it can't offer either, which its includeTools names: its input schema has anyOf at its root, which providers refuse.\nTo run without it: bun run mcp disable docs.",
+                `The MCP server docs couldn't start: it can't offer either, which its includeTools names: its input schema has anyOf at its root, which providers refuse.\n${without('docs')}`,
             ]);
         });
 

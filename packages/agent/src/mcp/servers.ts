@@ -1,5 +1,6 @@
-// A run's MCP servers: every enabled one connects, in parallel, before the session, and a server
-// that fails, fails the run (D33). Their tools follow the built-in ones, sorted, and stay fixed
+// A run's MCP servers: those the task's mcp list names, or every enabled one without a list (D44),
+// connect in parallel before the session. A required server that fails, fails the run (D33), and
+// an optional one is left out (D49). Their tools follow the built-in ones, sorted, and stay fixed
 // for the session, for the prompt cache (Brief R3.4).
 import { createHash } from 'node:crypto';
 import { rm } from 'node:fs/promises';
@@ -25,10 +26,12 @@ import { withModelNames } from './names.ts';
 import { type Redact, redactor } from './redact.ts';
 import {
     type HttpConnection,
+    type Problem,
     type Row,
     type ServerConfig,
     type StdioConnection,
     resolveServer,
+    runWithout,
 } from './resolve.ts';
 import { capped, flatten } from './results.ts';
 import { makeRunDirectory } from './run-directory.ts';
@@ -52,9 +55,33 @@ export type McpOptions = {
     readonly limits?: CloseLimits;
 };
 
+/** A server as the store lists it. */
+export type ServerRow = Row & {
+    readonly disabled: boolean;
+};
+
+/** An optional server the run goes without, and why. */
+export type LeftOut = {
+    readonly name: string;
+    readonly reason: string;
+};
+
+export type Started = {
+    /** Sorted by name. */
+    readonly tools: readonly ToolHandler[];
+    /** In name order. */
+    readonly leftOut: readonly LeftOut[];
+};
+
 export type McpServers = {
-    /** The enabled servers' tools, sorted by name, or every problem, each a whole message. */
-    readonly connect: (rows: readonly Row[]) => Promise<Result<ToolHandler[], string[]>>;
+    /**
+     * The servers the task's list names, each with a ? optional, or every enabled one without a
+     * list: their tools and the optional ones left out, or every problem, each a whole message.
+     */
+    readonly connect: (
+        rows: readonly ServerRow[],
+        list?: readonly string[],
+    ) => Promise<Result<Started, string[]>>;
     /** Ends every connect and call, and closes every server, in parallel: one close, shared. */
     readonly close: () => Promise<void>;
     /** Removes the directory made for stdio servers, if one was. */
@@ -70,12 +97,20 @@ type Connection = {
     readonly stdio: StdioView | undefined;
     readonly bearer: Bearer | undefined;
     readonly redact: Redact;
+    /** Closes its client and its stdio transport, once however often it's called. */
+    readonly close: () => Promise<void>;
+};
+
+type Choice = {
+    readonly row: ServerRow;
+    readonly optional: boolean;
 };
 
 // A server whose references resolved, with the bearer of its saved login, if it has one.
 type Prepared = {
     readonly server: ServerConfig;
     readonly bearer: Bearer | undefined;
+    readonly optional: boolean;
 };
 
 type Connected = {
@@ -102,25 +137,58 @@ const CallResult = z.looseObject({});
 
 const STDERR_LINES = 10;
 
+// After a listed name, it marks a server the task can go without (D49).
+const OPTIONAL = '?';
+
 // Code-unit order, which no locale changes, as toSorted() gives strings. Names are unique, so no
 // two compare equal, and `<=` sorts as `<` does.
 // Stryker disable next-line EqualityOperator
 const inNameOrder = (first: string, second: string): number => (first < second ? -1 : 1);
 
-// Every value, or every error, in order.
-const collect = <T, E>(results: readonly Result<T, E>[]): Result<T[], E[]> => {
-    const values: T[] = [];
-    const errors: E[] = [];
+type Chosen = {
+    readonly choices: readonly Choice[];
+    /** The optional servers that are disabled. */
+    readonly disabled: readonly LeftOut[];
+    readonly problems: readonly string[];
+};
 
-    for (const result of results) {
-        if (result.ok) {
-            values.push(result.value);
+// Without a list, every enabled server is required, as before a task could choose. A listed name
+// the store doesn't hold fails the run, ? or not, and so does a disabled server the list
+// requires, since the task says it needs it (D46).
+const choose = (rows: readonly ServerRow[], list: readonly string[] | undefined): Chosen => {
+    if (list === undefined) {
+        return {
+            choices: rows.filter((row) => !row.disabled).map((row) => ({ row, optional: false })),
+            disabled: [],
+            problems: [],
+        };
+    }
+
+    const choices: Choice[] = [];
+    const disabled: LeftOut[] = [];
+    const problems: string[] = [];
+
+    for (const item of list) {
+        const optional = item.endsWith(OPTIONAL);
+        const name = optional ? item.slice(0, -1) : item;
+        const row = rows.find((each) => each.name === name);
+
+        if (row === undefined) {
+            problems.push(
+                `The task's mcp list names ${name}, but there is no MCP server named ${name}: bun run mcp list shows them.`,
+            );
+        } else if (!row.disabled) {
+            choices.push({ row, optional });
+        } else if (optional) {
+            disabled.push({ name, reason: "it's disabled" });
         } else {
-            errors.push(result.error);
+            problems.push(
+                `The task's mcp list names ${name}, which is disabled: runs won't start it until bun run mcp enable ${name}.`,
+            );
         }
     }
 
-    return errors.length > 0 ? err(errors) : ok(values);
+    return { choices, disabled, problems };
 };
 
 /**
@@ -185,7 +253,7 @@ const failureMessage = (failure: Failure): string => {
     return [
         `The MCP server ${server.name} couldn't start: ${startFailure(failure)}.`,
         ...(lines.length > 0 ? ['Its stderr ended with:', ...lines] : []),
-        `To run without it: bun run mcp disable ${server.name}.`,
+        runWithout(server.name),
     ].join('\n');
 };
 
@@ -232,12 +300,7 @@ export const createMcpServers = ({
     const close = (): Promise<void> => {
         closing ??= (async () => {
             controller.abort();
-            await Promise.all(
-                connections.map(async ({ client, stdio }) => {
-                    await client.close().catch(() => undefined);
-                    await stdio?.close();
-                }),
-            );
+            await Promise.all(connections.map((connection) => connection.close()));
         })();
 
         return closing;
@@ -312,7 +375,22 @@ export const createMcpServers = ({
             )(text);
         };
         const client = createClient();
-        const connection = { server, client, stdio, bearer, redact };
+        let closed: Promise<void> | undefined;
+        const connection: Connection = {
+            server,
+            client,
+            stdio,
+            bearer,
+            redact,
+            close: () => {
+                closed ??= (async () => {
+                    await client.close().catch(() => undefined);
+                    await stdio?.close();
+                })();
+
+                return closed;
+            },
+        };
 
         connections.push(connection);
         // The tools offered stay as they are for the session; the next run sees the change.
@@ -358,42 +436,58 @@ export const createMcpServers = ({
         }
     };
 
-    // Server by server in name order, once all have listed their tools, so that parallel
-    // connects give the same log every time.
+    const logConnected = (
+        { connection, listing }: Connected,
+        named: readonly (Offered & { readonly modelName: string })[],
+    ): void => {
+        const { name, connection: target } = connection.server;
+        const own = named.filter((each) => each.connection === connection);
+        const definitions = own.map(({ modelName, listed }) => ({
+            name: modelName,
+            description: listed.description,
+            parameters: listed.inputSchema,
+        }));
+
+        for (const { message, tool, reason } of listing.warnings) {
+            log.warn(message, { server: name, tool, reason });
+        }
+
+        log.info('mcp server', {
+            name,
+            transport: target.transport,
+            tools: own.map(({ modelName }) => modelName).toSorted(),
+            bytes: new TextEncoder().encode(JSON.stringify(definitions)).byteLength,
+            catalog: listing.catalog,
+        });
+    };
+
+    // Server by server in name order, once all have listed their tools or been left out, so that
+    // parallel connects give the same log every time.
     const logServers = (
         connected: readonly Connected[],
         named: readonly (Offered & { readonly modelName: string })[],
+        leftOut: readonly LeftOut[],
     ): void => {
-        const ordered = connected.toSorted((first, second) =>
-            inNameOrder(first.connection.server.name, second.connection.server.name),
-        );
-
-        for (const { connection, listing } of ordered) {
-            const { name, connection: target } = connection.server;
-            const own = named.filter((each) => each.connection === connection);
-            const definitions = own.map(({ modelName, listed }) => ({
-                name: modelName,
-                description: listed.description,
-                parameters: listed.inputSchema,
-            }));
-
-            for (const { message, tool, reason } of listing.warnings) {
-                log.warn(message, { server: name, tool, reason });
-            }
-
-            log.info('mcp server', {
+        const records = [
+            ...connected.map((each) => ({
+                name: each.connection.server.name,
+                write: () => logConnected(each, named),
+            })),
+            ...leftOut.map(({ name, reason }) => ({
                 name,
-                transport: target.transport,
-                tools: own.map(({ modelName }) => modelName).toSorted(),
-                bytes: new TextEncoder().encode(JSON.stringify(definitions)).byteLength,
-                catalog: listing.catalog,
-            });
+                write: () => log.warn('mcp server left out', { name, reason }),
+            })),
+        ];
+        const ordered = records.toSorted((first, second) => inNameOrder(first.name, second.name));
+
+        for (const { write } of ordered) {
+            write();
         }
     };
 
-    // A login that has to be given again fails the run as a reference that can't be resolved
-    // does, before any network request (D33).
-    const prepare = async (row: Row): Promise<Result<Prepared, string[]>> => {
+    // A login that has to be given again fails the run, or leaves an optional server out, as a
+    // reference that can't be resolved does, before any network request (D33, D49).
+    const prepare = async ({ row, optional }: Choice): Promise<Result<Prepared, Problem[]>> => {
         const resolved = resolveServer(row, parentEnv, runId);
 
         if (!resolved.ok) {
@@ -404,7 +498,7 @@ export const createMcpServers = ({
         const { connection } = server;
 
         if (connection.transport === 'stdio') {
-            return ok({ server, bearer: undefined });
+            return ok({ server, bearer: undefined, optional });
         }
 
         const found = await findLogin({
@@ -414,31 +508,54 @@ export const createMcpServers = ({
             owner: runId,
         });
 
-        return found.ok ? ok({ server, bearer: found.value }) : err([found.error]);
+        return found.ok ? ok({ server, bearer: found.value, optional }) : err([found.error]);
     };
 
-    const connect = async (rows: readonly Row[]): Promise<Result<ToolHandler[], string[]>> => {
-        const prepared = collect(await Promise.all(rows.map(prepare)));
+    const connect = async (
+        rows: readonly ServerRow[],
+        list?: readonly string[],
+    ): Promise<Result<Started, string[]>> => {
+        const chosen = choose(rows, list);
+        const prepared = await Promise.all(
+            chosen.choices.map(async (choice) => ({ choice, result: await prepare(choice) })),
+        );
+        const problems = [...chosen.problems];
+        const leftOut = [...chosen.disabled];
+        let servers: Prepared[] = [];
 
-        // Before any network request, and before any server starts.
-        if (!prepared.ok) {
-            return err(prepared.error.flat());
+        for (const { choice, result } of prepared) {
+            if (result.ok) {
+                servers.push(result.value);
+            } else if (choice.optional) {
+                const reason = result.error.map((problem) => problem.reason).join(' ');
+                leftOut.push({ name: choice.row.name, reason });
+            } else {
+                problems.push(...result.error.map((problem) => problem.message));
+            }
         }
 
-        const servers = prepared.value;
+        // Before any network request, and before any server starts.
+        if (problems.length > 0) {
+            return err(problems);
+        }
 
-        const needsDirectory = servers.some(({ server: { connection } }) => {
+        const needing = servers.filter(({ server: { connection } }) => {
             return connection.transport === 'stdio' && connection.cwd === undefined;
         });
 
-        if (needsDirectory) {
+        if (needing.length > 0) {
             const made = await makeRunDirectory(workDir, dataDir);
 
-            if (!made.ok) {
+            if (made.ok) {
+                directory = made.value;
+            } else if (needing.some(({ optional }) => !optional)) {
                 return err([made.error]);
+            } else {
+                leftOut.push(
+                    ...needing.map(({ server }) => ({ name: server.name, reason: made.error })),
+                );
+                servers = servers.filter((each) => !needing.includes(each));
             }
-
-            directory = made.value;
         }
 
         // Closing may have begun meanwhile: no server starts after it.
@@ -446,15 +563,44 @@ export const createMcpServers = ({
             return err([]);
         }
 
-        const results = collect(await Promise.all(servers.map(connectOne)));
+        const results = await Promise.all(
+            servers.map(async (each) => ({
+                optional: each.optional,
+                result: await connectOne(each),
+            })),
+        );
+        const connected: Connected[] = [];
+        const requiredFailures: Failure[] = [];
+        const optionalFailures: Failure[] = [];
 
-        if (!results.ok) {
-            await close();
-
-            return err(results.error.map(failureMessage));
+        for (const { optional, result } of results) {
+            if (result.ok) {
+                connected.push(result.value);
+            } else if (optional) {
+                optionalFailures.push(result.error);
+            } else {
+                requiredFailures.push(result.error);
+            }
         }
 
-        const connected = results.value;
+        if (requiredFailures.length > 0) {
+            await close();
+
+            return err(requiredFailures.map(failureMessage));
+        }
+
+        // Each closed alone, so that a stdio server's exit, read once it has closed, is the
+        // reason. The shared close then finds it closed.
+        const notStarted = await Promise.all(
+            optionalFailures.map(async (failure) => {
+                await failure.connection.close();
+
+                return { name: failure.connection.server.name, reason: startFailure(failure) };
+            }),
+        );
+        const ordered = [...leftOut, ...notStarted].toSorted((first, second) =>
+            inNameOrder(first.name, second.name),
+        );
 
         const named = withModelNames(
             connected.flatMap(({ connection, listing }) => {
@@ -468,25 +614,25 @@ export const createMcpServers = ({
             }),
         );
 
-        logServers(connected, named);
+        logServers(connected, named, ordered);
 
-        return ok(
-            named
-                .toSorted((first, second) => inNameOrder(first.modelName, second.modelName))
-                .map(({ modelName, tool, connection, listed }) => {
-                    // Not strict: Responses would otherwise try to make the server's schema
-                    // strict, and the model would send nulls that servers refuse (Brief R18.2).
-                    return defineTool(
-                        {
-                            name: modelName,
-                            description: listed.description,
-                            schema: listed.schema,
-                            strict: false,
-                        },
-                        (args) => call(connection, tool, args),
-                    );
-                }),
-        );
+        const tools = named
+            .toSorted((first, second) => inNameOrder(first.modelName, second.modelName))
+            .map(({ modelName, tool, connection, listed }) => {
+                // Not strict: Responses would otherwise try to make the server's schema strict,
+                // and the model would send nulls that servers refuse (Brief R18.2).
+                return defineTool(
+                    {
+                        name: modelName,
+                        description: listed.description,
+                        schema: listed.schema,
+                        strict: false,
+                    },
+                    (args) => call(connection, tool, args),
+                );
+            });
+
+        return ok({ tools, leftOut: ordered });
     };
 
     return {

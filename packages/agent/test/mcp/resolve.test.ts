@@ -20,8 +20,11 @@ const row = (entry: Readonly<Record<string, unknown>>) => {
     return { name: 'docs', prefix: 'docs', entry: { ...TIMEOUTS, ...entry } };
 };
 
-const problem = (text: string): string => {
-    return `The MCP server docs can't start. ${text} To run without it: bun run mcp disable docs.`;
+const problem = (reason: string) => {
+    return {
+        reason,
+        message: `The MCP server docs can't start. ${reason} To run without it: bun run mcp disable docs, for every run, or an mcp list in the task's frontmatter that leaves it out, for one task.`,
+    };
 };
 
 describe('Resolve a server before it starts', () => {

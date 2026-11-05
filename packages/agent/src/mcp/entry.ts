@@ -60,7 +60,7 @@ type Read<T> = {
 
 type Fields = ReadonlyMap<string, unknown>;
 
-const NAME = /^[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*$/;
+export const NAME = /^[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*$/;
 
 const NAME_LENGTH = 24;
 

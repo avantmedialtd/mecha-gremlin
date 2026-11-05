@@ -21,7 +21,7 @@ import {
 } from '@modelcontextprotocol/client';
 import { z } from 'zod';
 import { expiresAtOf } from './oauth-provider.ts';
-import { serverProblem } from './resolve.ts';
+import { type Problem, serverProblem } from './resolve.ts';
 
 export type Bearer = {
     readonly provider: AuthProvider;
@@ -274,16 +274,17 @@ const bearerOf = (
 
 /**
  * The bearer of the server's most recently saved login for its name and its URL as written, an
- * issuer having a row each, if it has one; or a whole message saying why that login can't serve.
+ * issuer having a row each, if it has one; or why that login can't serve.
  */
 export const findLogin = async (
     options: LoginOptions,
-): Promise<Result<Bearer | undefined, string>> => {
+): Promise<Result<Bearer | undefined, Problem>> => {
     const { store, name, url } = options;
     const found = await findCredentials(store, { server: name, url });
 
+    // The store's own failure, which no change to the server would mend, is reported as it is.
     if (!found.ok) {
-        return found;
+        return err({ reason: found.error, message: found.error });
     }
 
     const [row] = found.value;

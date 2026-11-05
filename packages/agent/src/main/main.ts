@@ -3,7 +3,7 @@ import { listMcpServers } from '@mecha-gremlin/store/mcp-server';
 import { closeStore, openStore } from '@mecha-gremlin/store/store';
 import { type FileTools, loadConfig, loadLogFormat } from '../config/config.ts';
 import { createLogger } from '../log/log.ts';
-import { createMcpServers } from '../mcp/servers.ts';
+import { type LeftOut, createMcpServers } from '../mcp/servers.ts';
 import { createSession } from '../session/session.ts';
 import { loadSkills } from '../skills/skills.ts';
 import { activateSkillTool } from '../tools/activate-skill.ts';
@@ -34,6 +34,15 @@ const instructions = (workDir: string, fileTools: FileTools): string => {
     return `You carry out tasks on this computer. ${tools} The working directory is ${workDir}, and paths that commands print are relative to it. Keep your final answer brief.`;
 };
 
+// Last in the instructions: the parts before it stay the same for a configuration, so the prompt
+// cache keeps them, and a run that left no server out sends the instructions it always did.
+const leftOutNote = (leftOut: readonly LeftOut[]): string => {
+    return [
+        "These MCP servers couldn't start, so their tools aren't available:",
+        ...leftOut.map(({ name, reason }) => `- ${name}: ${reason}`),
+    ].join('\n');
+};
+
 // The two sets are never offered together, and the order stays fixed for the prompt cache.
 const fileToolsFor = (fileTools: FileTools, workDir: string): ToolHandler[] => {
     return fileTools === 'apply-patch'
@@ -61,6 +70,11 @@ const run = async (args: readonly string[]): Promise<number> => {
         }
 
         return 1;
+    }
+
+    // A misspelt key, such as mcps, shows here, and a note's tags don't fail the run (D48).
+    for (const key of task.value.ignored) {
+        log.warn('frontmatter key ignored', { key });
     }
 
     const config = loaded.value;
@@ -158,8 +172,7 @@ const run = async (args: readonly string[]): Promise<number> => {
             return fail(listed.error);
         }
 
-        // A server's own flag alone decides whether it starts.
-        const connected = await mcp.connect(listed.value.filter((server) => !server.disabled));
+        const connected = await mcp.connect(listed.value, task.value.mcp);
 
         // Cut short by a signal: the handler exits once everything is stopped.
         if (interrupted !== undefined) {
@@ -174,15 +187,19 @@ const run = async (args: readonly string[]): Promise<number> => {
             return 1;
         }
 
-        const preamble = instructions(workDir, config.fileTools);
-        const developer = skills.length > 0 ? `${preamble}\n\n${renderCatalog(skills)}` : preamble;
+        const { tools, leftOut } = connected.value;
+        const developer = [
+            instructions(workDir, config.fileTools),
+            ...(skills.length > 0 ? [renderCatalog(skills)] : []),
+            ...(leftOut.length > 0 ? [leftOutNote(leftOut)] : []),
+        ].join('\n\n');
         const created = await createSession(config, {
             tools: [
                 readTool(workDir),
                 ...fileToolsFor(config.fileTools, workDir),
                 shell.handler,
                 ...(skills.length > 0 ? [activateSkillTool(skills)] : []),
-                ...connected.value,
+                ...tools,
             ],
             history: [
                 { kind: 'instruction', text: developer },
@@ -205,6 +222,7 @@ const run = async (args: readonly string[]): Promise<number> => {
             dataDir,
             task: task.value.text,
             taskFile: task.value.file,
+            mcp: task.value.mcp,
         });
 
         for await (const step of session.steps) {

@@ -74,7 +74,7 @@ Responses providers SHALL send the instructions as a developer item to the confi
 - **THEN** it exits with code 1, reports that the task is blank once its frontmatter is stripped, and makes no network call
 
 #### Scenario: Frontmatter in an inline task
-- **WHEN** the agent runs with `-p` and "---\nmcp: []\n---\nSay hi", and the server `docs` is enabled
+- **WHEN** the agent runs with the argument "--prompt=---\nmcp: []\n---\nSay hi", and the server `docs` is enabled
 - **THEN** the first request's user input is "Say hi", and `docs` isn't started
 
 #### Scenario: A task file that doesn't exist

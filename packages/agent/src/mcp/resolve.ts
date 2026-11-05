@@ -49,9 +49,24 @@ export type Row = {
     readonly entry: unknown;
 };
 
-/** The whole message for a server's problem, which says how to run without the server. */
-export const serverProblem = (name: string, problem: string): string => {
-    return `The MCP server ${name} can't start. ${problem} To run without it: bun run mcp disable ${name}.`;
+/** What an optional server is left out with, and what fails the run for a required one. */
+export type Problem = {
+    readonly reason: string;
+    readonly message: string;
+};
+
+// It ends every message about a server that fails the run: since a task can choose its servers,
+// one fix is for every run, and the other for one task (D44).
+export const runWithout = (name: string): string => {
+    return `To run without it: bun run mcp disable ${name}, for every run, or an mcp list in the task's frontmatter that leaves it out, for one task.`;
+};
+
+/** A problem of the server's own, whose message says how to run without the server. */
+export const serverProblem = (name: string, reason: string): Problem => {
+    return {
+        reason,
+        message: `The MCP server ${name} can't start. ${reason} ${runWithout(name)}`,
+    };
 };
 
 // The template as written, which holds no resolved value.
@@ -200,13 +215,13 @@ const httpConnection = (
 
 /**
  * Checks an enabled server's entry, resolves its references from the agent's environment, and
- * checks what they resolved to. Every problem is reported, each as a whole message.
+ * checks what they resolved to. Every problem is reported.
  */
 export const resolveServer = (
     { name, prefix, entry: stored }: Row,
     parentEnv: Env,
     runId: string,
-): Result<ServerConfig, string[]> => {
+): Result<ServerConfig, Problem[]> => {
     const checked = checkEntry(stored);
 
     if (!checked.ok) {

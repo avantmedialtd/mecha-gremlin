@@ -247,7 +247,11 @@ const login = async (store: Store, name: string, given: Login): Promise<number> 
     const resolved = resolveServer(server, process.env, crypto.randomUUID());
 
     if (!resolved.ok) {
-        return fail(transportOfEntry(server.entry) === 'stdio' ? [local(name)] : resolved.error);
+        return fail(
+            transportOfEntry(server.entry) === 'stdio'
+                ? [local(name)]
+                : resolved.error.map((problem) => problem.message),
+        );
     }
 
     const { connection } = resolved.value;

@@ -11,8 +11,15 @@ const REQUIRED = `A task is required. ${USAGE}`;
 
 const QUESTION = 'Which runtime does README.md describe?';
 
+const LIST_HINT =
+    'List each server once, as in mcp: [docs], or give mcp: [] for none; a ? after a name marks a server the task can go without.';
+
 const needs = (option: string): string => {
     return `The option ${option} needs a value; one that starts with - is given as --prompt=<value>. ${USAGE}`;
+};
+
+const noFrontmatter = (text: string, file?: string) => {
+    return { ok: true, value: { text, file, mcp: undefined, ignored: [] } };
 };
 
 // The directory a run starts in, as process.cwd() gives it.
@@ -23,10 +30,17 @@ beforeAll(async () => {
     await mkdir(join(directory, 'data'));
     await mkdir(join(directory, 'docs'));
     await writeFile(join(directory, 'task.md'), `\n  ${QUESTION}\n\n`);
+    await writeFile(join(directory, 'kept.txt'), 'Say hi\r\n\r\n  and bye\r\n');
     await writeFile(
-        join(directory, 'kept.txt'),
-        '---\ntags: [work]\n---\nSay hi\r\n\r\n  and bye\r\n',
+        join(directory, 'note.md'),
+        '\n---\ntags: [work]\nmcp: [docs, github?]\n---\nSay hi\r\n\r\n  and bye\r\n',
     );
+    await writeFile(join(directory, 'rule.md'), '---\nA rule above and below\n---\nSay hi\n');
+    await writeFile(join(directory, 'open.md'), '---\nSay hi\n');
+    await writeFile(join(directory, 'broken.md'), '---\ntitle: Meeting: Q3 plan\n---\nSay hi\n');
+    await writeFile(join(directory, 'one.md'), '---\nmcp: docs\n---\nSay hi\n');
+    await writeFile(join(directory, 'twice.md'), '---\nmcp: [docs, docs?]\n---\nSay hi\n');
+    await writeFile(join(directory, 'only.md'), '---\nmcp: [docs]\n---\n');
     await writeFile(join(directory, 'bom.md'), '﻿Say hi\n');
     await writeFile(join(directory, 'TASK'), 'Say hi');
     await writeFile(join(directory, 'latin1.txt'), new Uint8Array([0x63, 0x61, 0x66, 0xe9, 0x21]));
@@ -66,10 +80,7 @@ describe('Take the task from a file, or from --prompt', () => {
         expect(await taskOf()).toEqual({ ok: false, error: REQUIRED });
         expect(await taskOf('-p', ' \t\n ')).toEqual({ ok: false, error: REQUIRED });
         expect(await taskOf('--prompt=')).toEqual({ ok: false, error: REQUIRED });
-        expect(await taskOf('-p', 'What runs?')).toEqual({
-            ok: true,
-            value: { text: 'What runs?', file: undefined },
-        });
+        expect(await taskOf('-p', 'What runs?')).toEqual(noFrontmatter('What runs?'));
     });
 
     test.each([
@@ -78,19 +89,12 @@ describe('Take the task from a file, or from --prompt', () => {
         [['--prompt=Say hi']],
         [['-pSay hi']],
     ])('inline, trimmed: %j', async (args) => {
-        expect(await taskOf(...args)).toEqual({
-            ok: true,
-            value: { text: 'Say hi', file: undefined },
-        });
+        expect(await taskOf(...args)).toEqual(noFrontmatter('Say hi'));
     });
 
     test.each([
         ['its text, trimmed', 'task.md', QUESTION],
-        [
-            'its frontmatter, line endings and inner whitespace as written',
-            'kept.txt',
-            '---\ntags: [work]\n---\nSay hi\r\n\r\n  and bye',
-        ],
+        ['its line endings and inner whitespace as written', 'kept.txt', 'Say hi\r\n\r\n  and bye'],
         ['without its byte-order mark', 'bom.md', 'Say hi'],
         ['whatever its extension, or none', 'TASK', 'Say hi'],
         ['invalid UTF-8 replaced with U+FFFD', 'latin1.txt', 'caf�!'],
@@ -100,14 +104,11 @@ describe('Take the task from a file, or from --prompt', () => {
         ['through a link to an environment file', 'innocent.md', 'Say hi'],
         ['in a data folder', 'data/notes.md', 'Say hi'],
     ])('a task file: %s', async (_what, name, text) => {
-        expect(await taskOf(name)).toEqual({
-            ok: true,
-            value: { text, file: join(directory, name) },
-        });
+        expect(await taskOf(name)).toEqual(noFrontmatter(text, join(directory, name)));
     });
 
     test('a relative path resolves against the current directory, and an absolute one stays', async () => {
-        const read = { ok: true, value: { text: QUESTION, file: join(directory, 'task.md') } };
+        const read = noFrontmatter(QUESTION, join(directory, 'task.md'));
 
         expect(await taskOf('docs/../task.md')).toEqual(read);
         expect(await taskOf(join(directory, 'task.md'))).toEqual(read);
@@ -120,20 +121,84 @@ describe('Take the task from a file, or from --prompt', () => {
             error: needs('--prompt'),
         });
         expect(await taskOf('-p')).toEqual({ ok: false, error: needs('-p') });
-        expect(await taskOf('--prompt=-x')).toEqual({
-            ok: true,
-            value: { text: '-x', file: undefined },
-        });
-        expect(await taskOf('-p', '-')).toEqual({
-            ok: true,
-            value: { text: '-', file: undefined },
-        });
+        expect(await taskOf('--prompt=-x')).toEqual(noFrontmatter('-x'));
+        expect(await taskOf('-p', '-')).toEqual(noFrontmatter('-'));
     });
 
     test('a task file named like an option, after --', async () => {
         expect(await taskOf('--', '-p')).toEqual({
             ok: false,
             error: `No task file at ${nameOf('-p')}. ${USAGE}`,
+        });
+    });
+});
+
+describe("Read the task's frontmatter, from a file or inline", () => {
+    test('frontmatter is stripped from a task file, which keeps its own path', async () => {
+        expect(await taskOf('note.md')).toEqual({
+            ok: true,
+            value: {
+                text: 'Say hi\n\n  and bye',
+                file: join(directory, 'note.md'),
+                mcp: ['docs', 'github?'],
+                ignored: ['tags'],
+            },
+        });
+    });
+
+    test.each([
+        ["a block that isn't frontmatter", 'rule.md', '---\nA rule above and below\n---\nSay hi'],
+        ['an opening line that nothing closes', 'open.md', '---\nSay hi'],
+    ])('%s stays in the task', async (_what, name, text) => {
+        expect(await taskOf(name)).toEqual(noFrontmatter(text, join(directory, name)));
+    });
+
+    test("frontmatter that isn't valid YAML: the file, the block's line and the parser's reason", async () => {
+        const read = await taskOf('broken.md');
+        const error = read.ok ? '' : read.error;
+        const start = `The frontmatter of the task file ${nameOf('broken.md')}, on line 2, isn't valid YAML: `;
+
+        expect(error.slice(0, start.length)).toBe(start);
+        expect(error.slice(start.length)).not.toBe('');
+    });
+
+    test("an mcp value that isn't a list of names, and a server named twice", async () => {
+        expect(await taskOf('one.md')).toEqual({
+            ok: false,
+            error: `In the frontmatter of the task file ${nameOf('one.md')}, mcp isn't a list of MCP server names. ${LIST_HINT}`,
+        });
+        expect(await taskOf('twice.md')).toEqual({
+            ok: false,
+            error: `In the frontmatter of the task file ${nameOf('twice.md')}, mcp names docs twice. ${LIST_HINT}`,
+        });
+    });
+
+    test('a task file that is only frontmatter', async () => {
+        expect(await taskOf('only.md')).toEqual({
+            ok: false,
+            error: `The task file ${nameOf('only.md')} is blank once its frontmatter is stripped.`,
+        });
+    });
+
+    // -p refuses a value that starts with - from the next argument, which is most often an option.
+    test.each([[['--prompt=---\nmcp: []\n---\nSay hi']], [['-p---\nmcp: []\n---\nSay hi']]])(
+        'frontmatter in an inline task: %j',
+        async (args) => {
+            expect(await taskOf(...args)).toEqual({
+                ok: true,
+                value: { text: 'Say hi', file: undefined, mcp: [], ignored: [] },
+            });
+        },
+    );
+
+    test("an inline task's frontmatter problems name --prompt", async () => {
+        expect(await taskOf('--prompt=---\nmcp: []\n---\n')).toEqual({
+            ok: false,
+            error: 'The task given with --prompt is blank once its frontmatter is stripped.',
+        });
+        expect(await taskOf('--prompt=---\nmcp: docs\n---\nSay hi')).toEqual({
+            ok: false,
+            error: `In the frontmatter of the task given with --prompt, mcp isn't a list of MCP server names. ${LIST_HINT}`,
         });
     });
 });

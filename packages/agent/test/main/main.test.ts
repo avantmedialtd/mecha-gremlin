@@ -42,6 +42,10 @@ const TEST_TASK = 'Carry out the test task.';
 const USAGE =
     "Give the task as a file, as in bun run agent task.md, or inline after --prompt or -p, as in bun run agent -p 'Say hi'.";
 
+const without = (name: string): string => {
+    return `To run without it: bun run mcp disable ${name}, for every run, or an mcp list in the task's frontmatter that leaves it out, for one task.`;
+};
+
 /** Each test sets or clears all of these, so settings in your shell can't leak in. */
 const SETTINGS = [
     'LOG_FORMAT',
@@ -349,17 +353,39 @@ describe('Carry out a task through the agent loop, and log the answer', { timeou
             '\n  Which runtime does README.md describe?\n\n',
             'Which runtime does README.md describe?',
         ],
+        ['its frontmatter stripped', '---\ntags: [work]\n---\nSay hi\n', 'Say hi'],
         [
-            'its frontmatter included',
-            '---\ntags: [work]\n---\nSay hi\n',
-            '---\ntags: [work]\n---\nSay hi',
+            "a block that isn't frontmatter kept",
+            '---\nA rule above and below\n---\nSay hi\n',
+            '---\nA rule above and below\n---\nSay hi',
         ],
+        ['an opening line that nothing closes kept', '---\nSay hi\n', '---\nSay hi'],
     ])('a task from a file in the current directory: %s', async (_what, text, task) => {
         await writeFile(join(cwd, 'task.md'), text);
 
         const { modelCall } = await runAgent({}, {}, ['task.md']);
 
         expect(modelCall?.body?.input).toContainEqual({ role: 'user', content: task });
+    });
+
+    test("a task file whose frontmatter isn't valid YAML: no request, and the store stays closed", async () => {
+        const data = await mkdtemp(join(tmpdir(), 'agent-data-'));
+        await writeFile(join(cwd, 'task.md'), '---\ntitle: Meeting: Q3 plan\n---\nSay hi\n');
+
+        try {
+            const { code, records, requests } = await runAgent({ DATA_DIR: data }, {}, ['task.md']);
+
+            expect(code).toBe(1);
+            expect(errors(records)).toEqual([
+                expect.stringMatching(
+                    /^The frontmatter of the task file ".*\/task\.md", on line 2, isn't valid YAML: \S/,
+                ),
+            ]);
+            expect(requests).toHaveLength(0);
+            expect(existsSync(join(data, 'db.sqlite'))).toBe(false);
+        } finally {
+            await rm(data, { recursive: true, force: true });
+        }
     });
 
     test("a task file that doesn't exist: no request, and the store stays closed", async () => {
@@ -1050,6 +1076,29 @@ describe('Log each model call and tool call', () => {
             task: 'Say hi',
             taskFile: join(cwd, 'task.md'),
         });
+    });
+
+    test('the frontmatter keys the run ignores, in their order, before asking', async () => {
+        await writeFile(join(cwd, 'task.md'), '---\ntags: [work]\nmcps: [docs]\n---\nSay hi\n');
+
+        const { records } = await runAgent({}, {}, ['task.md']);
+
+        expect(records.slice(0, 3)).toEqual([
+            {
+                time: expect.any(String),
+                level: 'warn',
+                message: 'frontmatter key ignored',
+                key: 'tags',
+            },
+            {
+                time: expect.any(String),
+                level: 'warn',
+                message: 'frontmatter key ignored',
+                key: 'mcps',
+            },
+            expect.objectContaining({ message: 'asking', task: 'Say hi' }),
+        ]);
+        expect(find(records, 'asking')).not.toHaveProperty('mcp');
     });
 
     test('the migrated record, logged before asking, on the first run only', async () => {
@@ -1917,7 +1966,7 @@ describe('MCP servers in a run', { timeout: 20_000 }, () => {
 
         expect(code).toBe(1);
         expect(errors(records)).toEqual([
-            "The MCP server docs can't start. It refers to DOCS_TOKEN_NOT_SET, which is unset or blank: set it in .env. To run without it: bun run mcp disable docs.",
+            `The MCP server docs can't start. It refers to DOCS_TOKEN_NOT_SET, which is unset or blank: set it in .env. ${without('docs')}`,
         ]);
         expect(requests).toEqual([]);
         expect(existsSync(join(data, 'db.sqlite-wal'))).toBe(false);
@@ -1933,7 +1982,7 @@ describe('MCP servers in a run', { timeout: 20_000 }, () => {
 
         expect(code).toBe(1);
         expect(errors(records)).toEqual([
-            "The MCP server docs couldn't start: it exited with code 3 before it was ready.\nTo run without it: bun run mcp disable docs.",
+            `The MCP server docs couldn't start: it exited with code 3 before it was ready.\n${without('docs')}`,
         ]);
         expect(modelCalls).toEqual([]);
         expect(existsSync(join(data, 'db.sqlite-wal'))).toBe(false);
@@ -2155,7 +2204,7 @@ describe('MCP servers in a run', { timeout: 20_000 }, () => {
             expect(server.requests.at(-1)?.headers.authorization).toBe(`Bearer ${token}`);
             expect(spent.code).toBe(1);
             expect(errors(spent.records)).toEqual([
-                "The MCP server docs can't start. Its login was refused when refreshed, so it needs a new login: bun run mcp login docs. To run without it: bun run mcp disable docs.",
+                `The MCP server docs can't start. Its login was refused when refreshed, so it needs a new login: bun run mcp login docs. ${without('docs')}`,
             ]);
             expect(server.requests).toHaveLength(sent);
             expect(spent.output).not.toContain(String(token));
@@ -2163,5 +2212,148 @@ describe('MCP servers in a run', { timeout: 20_000 }, () => {
             await server.close();
             await auth.close();
         }
+    });
+
+    test('the servers a task file lists, and the asking record that names its list', async () => {
+        prepare();
+        const data = await tracked(
+            dataWithServers([
+                fakeMcp('docs', { tools: ['search'] }),
+                fakeMcp('github', { tools: ['issues'] }),
+                fakeMcp('pw', { tools: ['click'] }),
+            ]),
+        );
+        await writeFile(join(cwd, 'task.md'), '---\nmcp: [docs, github?]\n---\nSay hi\n');
+
+        const { code, records, modelCall } = await runAgent({ DATA_DIR: data }, {}, ['task.md']);
+
+        expect(code).toBe(0);
+        expect(toolNames(modelCall)).toEqual([
+            'read',
+            'write',
+            'edit',
+            'shell',
+            'mcp__docs__search',
+            'mcp__github__issues',
+        ]);
+        expect(find(records, 'asking')).toMatchObject({
+            task: 'Say hi',
+            taskFile: join(cwd, 'task.md'),
+            mcp: ['docs', 'github?'],
+        });
+    });
+
+    test('frontmatter in an inline task: an empty list starts no server', async () => {
+        prepare();
+        const data = await tracked(dataWithServers([fakeMcp('docs', { tools: ['search'] })]));
+
+        const { code, records, modelCall, runId } = await runAgent({ DATA_DIR: data }, {}, [
+            '--prompt=---\nmcp: []\n---\nSay hi',
+        ]);
+
+        expect(code).toBe(0);
+        expect(modelCall?.body?.input).toContainEqual({ role: 'user', content: 'Say hi' });
+        expect(toolNames(modelCall)).toEqual(['read', 'write', 'edit', 'shell']);
+        expect(find(records, 'mcp server')).toBeUndefined();
+        expect(find(records, 'asking')).toMatchObject({ task: 'Say hi', mcp: [] });
+        expect(processesOf(runId)).toEqual([]);
+    });
+
+    test('the servers left out end the instructions, after the skills, each with its reason', async () => {
+        prepare();
+        const url = 'https://github.example.test/mcp';
+        const data = await tracked(
+            dataWithServers([
+                fakeMcp('docs', { tools: ['search'] }),
+                {
+                    name: 'github',
+                    prefix: 'github',
+                    entry: { url, ...MCP_TIMEOUTS },
+                    disabled: false,
+                },
+                fakeMcp('notes', { tools: ['find'], disabled: true }),
+            ]),
+        );
+        const opened = await openStore(data);
+
+        if (!opened.ok) {
+            throw new Error(opened.error);
+        }
+
+        await saveCredential(opened.value.store, {
+            server: 'github',
+            url,
+            issuer: 'https://auth.example.test',
+            client: { client_id: 'client-1' },
+            tokens: { access_token: 'at1', refresh_token: 'rt1' },
+            discovery: { authorizationServerUrl: 'https://auth.example.test' },
+            expiresAt: null,
+        });
+        await withDataSource(opened.value.store, 'spend the login', (dataSource) => {
+            return dataSource.query('UPDATE credential SET needs_login = 1');
+        });
+        await closeStore(opened.value.store);
+        await writeFile(join(cwd, 'task.md'), '---\nmcp: [notes?, docs, github?]\n---\nSay hi\n');
+        const spent =
+            'Its login was refused when refreshed, so it needs a new login: bun run mcp login github.';
+
+        const { code, records, modelCall, requests } = await runAgent(
+            { DATA_DIR: data, SKILLS_PATH: skillsRoot },
+            {},
+            ['task.md'],
+        );
+
+        expect(code).toBe(0);
+        expect(developerItem(modelCall)).toMatch(
+            /^You carry out tasks on this computer\..*Keep your final answer brief\.\n\nSkills give you instructions.*<\/available_skills>\n\nThese MCP servers couldn't start, so their tools aren't available:\n- github: Its login was refused when refreshed, so it needs a new login: bun run mcp login github\.\n- notes: it's disabled$/s,
+        );
+        expect(toolNames(modelCall)).toEqual([
+            'read',
+            'write',
+            'edit',
+            'shell',
+            'activate_skill',
+            'mcp__docs__search',
+        ]);
+        expect(records.slice(1, 5)).toEqual([
+            expect.objectContaining({ level: 'info', message: 'mcp server', name: 'docs' }),
+            {
+                time: expect.any(String),
+                level: 'warn',
+                message: 'mcp server left out',
+                name: 'github',
+                reason: spent,
+            },
+            {
+                time: expect.any(String),
+                level: 'warn',
+                message: 'mcp server left out',
+                name: 'notes',
+                reason: "it's disabled",
+            },
+            expect.objectContaining({ message: 'asking' }),
+        ]);
+        expect(requests.filter((request) => request.url.startsWith(url))).toEqual([]);
+    });
+
+    test('when every server starts, the instructions are those of a list without a ?', async () => {
+        prepare();
+        const data = await tracked(
+            dataWithServers([
+                fakeMcp('docs', { tools: ['search'] }),
+                fakeMcp('github', { tools: ['issues'] }),
+            ]),
+        );
+        await writeFile(join(cwd, 'optional.md'), '---\nmcp: [docs, github?]\n---\nSay hi\n');
+        await writeFile(join(cwd, 'required.md'), '---\nmcp: [docs, github]\n---\nSay hi\n');
+
+        const optional = await runAgent({ DATA_DIR: data }, {}, ['optional.md']);
+        const required = await runAgent({ DATA_DIR: data }, {}, ['required.md']);
+
+        expect(developerItem(optional.modelCall)).toBe(
+            `You carry out tasks on this computer. You have a shell, read for reading text files, write for creating or replacing a file, and edit for changing part of one. The working directory is ${realCwd}, and paths that commands print are relative to it. Keep your final answer brief.`,
+        );
+        expect(developerItem(required.modelCall)).toBe(developerItem(optional.modelCall));
+        expect(toolNames(optional.modelCall)).toEqual(toolNames(required.modelCall));
     });
 });

@@ -295,7 +295,12 @@ describe('Log in to a Streamable HTTP server with OAuth', { timeout: 20_000 }, (
         });
         cleanups.push(mcp.close);
         const connected = await mcp.connect([
-            { name: 'docs', prefix: 'docs', entry: { url: guard.server.url, ...TIMEOUTS } },
+            {
+                name: 'docs',
+                prefix: 'docs',
+                disabled: false,
+                entry: { url: guard.server.url, ...TIMEOUTS },
+            },
         ]);
         const sent = guard.server.requests.at(-1)?.headers.authorization;
 
