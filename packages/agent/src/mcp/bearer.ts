@@ -21,7 +21,6 @@ import {
 } from '@modelcontextprotocol/client';
 import { z } from 'zod';
 import { expiresAtOf } from './oauth-provider.ts';
-import { type Problem, serverProblem } from './resolve.ts';
 
 export type Bearer = {
     readonly provider: AuthProvider;
@@ -29,6 +28,13 @@ export type Bearer = {
     readonly prepare: () => Promise<Result<undefined, string>>;
     /** The login's tokens, all it has held, and its client secret: no text may show them. */
     readonly secrets: () => readonly string[];
+};
+
+/** Why a saved login can't serve, or how the store failed as it was read. */
+export type LoginProblem = {
+    readonly reason: string;
+    /** The store failed, which no change to the server would mend. */
+    readonly fromStore: boolean;
 };
 
 export type LoginOptions = {
@@ -278,13 +284,12 @@ const bearerOf = (
  */
 export const findLogin = async (
     options: LoginOptions,
-): Promise<Result<Bearer | undefined, Problem>> => {
+): Promise<Result<Bearer | undefined, LoginProblem>> => {
     const { store, name, url } = options;
     const found = await findCredentials(store, { server: name, url });
 
-    // The store's own failure, which no change to the server would mend, is reported as it is.
     if (!found.ok) {
-        return err({ reason: found.error, message: found.error });
+        return err({ reason: found.error, fromStore: true });
     }
 
     const [row] = found.value;
@@ -300,7 +305,7 @@ export const findLogin = async (
             ? 'Its login was refused when refreshed'
             : "Its saved login can't be read";
 
-        return err(serverProblem(name, `${why}, so ${newLogin(name)}.`));
+        return err({ reason: `${why}, so ${newLogin(name)}.`, fromStore: false });
     }
 
     return ok(bearer);

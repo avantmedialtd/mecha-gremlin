@@ -26,12 +26,10 @@ import { withModelNames } from './names.ts';
 import { type Redact, redactor } from './redact.ts';
 import {
     type HttpConnection,
-    type Problem,
     type Row,
     type ServerConfig,
     type StdioConnection,
     resolveServer,
-    runWithout,
 } from './resolve.ts';
 import { capped, flatten } from './results.ts';
 import { makeRunDirectory } from './run-directory.ts';
@@ -41,6 +39,7 @@ import {
     type StdioTransport,
     createStdioTransport,
 } from './stdio.ts';
+import { OPTIONAL, parseListItem } from './task-list.ts';
 import { type ListedTool, type Listing, listTools, silentValidator } from './tools.ts';
 
 export type McpOptions = {
@@ -129,6 +128,30 @@ type Failure = {
     readonly gone: StdioView | undefined;
 };
 
+/** Why a chosen server can't be used. */
+type Problem = {
+    /** What an optional server is left out with. */
+    readonly reason: string;
+    /** What fails the run for a required server. */
+    readonly message: string;
+    /** It fails the run for an optional server too. */
+    readonly fatal: boolean;
+};
+
+/** What became of a chosen server at one step. */
+type Outcome<T> = {
+    readonly name: string;
+    readonly optional: boolean;
+    readonly result: Result<T, readonly Problem[]>;
+};
+
+type Sorted<T> = {
+    readonly values: readonly T[];
+    readonly leftOut: readonly LeftOut[];
+    /** The messages that fail the run. */
+    readonly failures: string[];
+};
+
 /** What each server is told the client is. */
 export const CLIENT = { name: 'mecha-gremlin', version: '0.0.0' };
 
@@ -137,19 +160,63 @@ const CallResult = z.looseObject({});
 
 const STDERR_LINES = 10;
 
-// After a listed name, it marks a server the task can go without (D49).
-const OPTIONAL = '?';
-
 // Code-unit order, which no locale changes, as toSorted() gives strings. Names are unique, so no
 // two compare equal, and `<=` sorts as `<` does.
 // Stryker disable next-line EqualityOperator
 const inNameOrder = (first: string, second: string): number => (first < second ? -1 : 1);
 
+// It ends a message about a server that fails the run. With a list, every chosen server is a
+// listed one, and a disabled server the list requires fails the run too (D46), so disabling it
+// is no way out.
+const runWithout = (name: string, hasList: boolean): string => {
+    return hasList
+        ? `To run without it: leave it out of the task's mcp list, or write ${name}${OPTIONAL} there, which marks a server the task can go without.`
+        : `To run without it: bun run mcp disable ${name}, for every run, or an mcp list in the task's frontmatter that leaves it out, for one task.`;
+};
+
+// A problem of the server's own, found before any network request.
+const serverProblem = (name: string, reason: string, hasList: boolean): Problem => {
+    return {
+        reason,
+        message: `The MCP server ${name} can't start. ${reason} ${runWithout(name, hasList)}`,
+        fatal: false,
+    };
+};
+
+// No change to the server would mend it: it fails the run as it is, for an optional server too.
+const fatalProblem = (message: string): Problem => {
+    return { reason: message, message, fatal: true };
+};
+
+// An optional server whose problems all leave it out is left out, with their reasons; any other
+// problem fails the run.
+const sortOutcomes = <T>(outcomes: readonly Outcome<T>[]): Sorted<T> => {
+    const values: T[] = [];
+    const leftOut: LeftOut[] = [];
+    const failures: string[] = [];
+
+    for (const { name, optional, result } of outcomes) {
+        if (result.ok) {
+            values.push(result.value);
+            continue;
+        }
+
+        const failing = result.error.filter(({ fatal }) => fatal || !optional);
+
+        if (failing.length > 0) {
+            failures.push(...failing.map(({ message }) => message));
+        } else {
+            leftOut.push({ name, reason: result.error.map(({ reason }) => reason).join(' ') });
+        }
+    }
+
+    return { values, leftOut, failures };
+};
+
 type Chosen = {
     readonly choices: readonly Choice[];
-    /** The optional servers that are disabled. */
-    readonly disabled: readonly LeftOut[];
-    readonly problems: readonly string[];
+    /** The listed servers that can't be chosen. */
+    readonly refused: readonly Outcome<never>[];
 };
 
 // Without a list, every enabled server is required, as before a task could choose. A listed name
@@ -159,36 +226,35 @@ const choose = (rows: readonly ServerRow[], list: readonly string[] | undefined)
     if (list === undefined) {
         return {
             choices: rows.filter((row) => !row.disabled).map((row) => ({ row, optional: false })),
-            disabled: [],
-            problems: [],
+            refused: [],
         };
     }
 
     const choices: Choice[] = [];
-    const disabled: LeftOut[] = [];
-    const problems: string[] = [];
+    const refused: Outcome<never>[] = [];
 
     for (const item of list) {
-        const optional = item.endsWith(OPTIONAL);
-        const name = optional ? item.slice(0, -1) : item;
+        const { name, optional } = parseListItem(item);
         const row = rows.find((each) => each.name === name);
 
         if (row === undefined) {
-            problems.push(
+            const problem = fatalProblem(
                 `The task's mcp list names ${name}, but there is no MCP server named ${name}: bun run mcp list shows them.`,
             );
-        } else if (!row.disabled) {
-            choices.push({ row, optional });
-        } else if (optional) {
-            disabled.push({ name, reason: "it's disabled" });
+            refused.push({ name, optional, result: err([problem]) });
+        } else if (row.disabled) {
+            const problem = {
+                reason: "it's disabled",
+                message: `The task's mcp list names ${name}, which is disabled: runs won't start it until bun run mcp enable ${name}.`,
+                fatal: false,
+            };
+            refused.push({ name, optional, result: err([problem]) });
         } else {
-            problems.push(
-                `The task's mcp list names ${name}, which is disabled: runs won't start it until bun run mcp enable ${name}.`,
-            );
+            choices.push({ row, optional });
         }
     }
 
-    return { choices, disabled, problems };
+    return { choices, refused };
 };
 
 /**
@@ -243,7 +309,7 @@ const startFailure = ({ connection, error, gone }: Failure): string => {
 
 // The stderr tail is complete only once the server has closed, since it lags stdout (Brief
 // R18.3), and it is redacted before its last lines are taken.
-const failureMessage = (failure: Failure): string => {
+const failureMessage = (failure: Failure, hasList: boolean): string => {
     const { server, stdio, redact } = failure.connection;
     const lines = redact(stdio?.stderrTail() ?? '')
         .split('\n')
@@ -253,8 +319,16 @@ const failureMessage = (failure: Failure): string => {
     return [
         `The MCP server ${server.name} couldn't start: ${startFailure(failure)}.`,
         ...(lines.length > 0 ? ['Its stderr ended with:', ...lines] : []),
-        runWithout(server.name),
+        runWithout(server.name, hasList),
     ].join('\n');
+};
+
+const connectProblem = (failure: Failure, hasList: boolean): Problem => {
+    return {
+        reason: startFailure(failure),
+        message: failureMessage(failure, hasList),
+        fatal: false,
+    };
 };
 
 const callFailure = (
@@ -487,11 +561,14 @@ export const createMcpServers = ({
 
     // A login that has to be given again fails the run, or leaves an optional server out, as a
     // reference that can't be resolved does, before any network request (D33, D49).
-    const prepare = async ({ row, optional }: Choice): Promise<Result<Prepared, Problem[]>> => {
+    const prepare = async (
+        { row, optional }: Choice,
+        hasList: boolean,
+    ): Promise<Result<Prepared, readonly Problem[]>> => {
         const resolved = resolveServer(row, parentEnv, runId);
 
         if (!resolved.ok) {
-            return resolved;
+            return err(resolved.error.map((reason) => serverProblem(row.name, reason, hasList)));
         }
 
         const server = resolved.value;
@@ -508,98 +585,96 @@ export const createMcpServers = ({
             owner: runId,
         });
 
-        return found.ok ? ok({ server, bearer: found.value, optional }) : err([found.error]);
+        if (found.ok) {
+            return ok({ server, bearer: found.value, optional });
+        }
+
+        const { reason, fromStore } = found.error;
+
+        return err([
+            fromStore ? fatalProblem(reason) : serverProblem(server.name, reason, hasList),
+        ]);
     };
 
     const connect = async (
         rows: readonly ServerRow[],
         list?: readonly string[],
     ): Promise<Result<Started, string[]>> => {
+        const hasList = list !== undefined;
         const chosen = choose(rows, list);
         const prepared = await Promise.all(
-            chosen.choices.map(async (choice) => ({ choice, result: await prepare(choice) })),
+            chosen.choices.map(async (choice) => ({
+                name: choice.row.name,
+                optional: choice.optional,
+                result: await prepare(choice, hasList),
+            })),
         );
-        const problems = [...chosen.problems];
-        const leftOut = [...chosen.disabled];
-        let servers: Prepared[] = [];
-
-        for (const { choice, result } of prepared) {
-            if (result.ok) {
-                servers.push(result.value);
-            } else if (choice.optional) {
-                const reason = result.error.map((problem) => problem.reason).join(' ');
-                leftOut.push({ name: choice.row.name, reason });
-            } else {
-                problems.push(...result.error.map((problem) => problem.message));
-            }
-        }
+        const ready = sortOutcomes([...chosen.refused, ...prepared]);
 
         // Before any network request, and before any server starts.
-        if (problems.length > 0) {
-            return err(problems);
+        if (ready.failures.length > 0) {
+            return err(ready.failures);
         }
 
-        const needing = servers.filter(({ server: { connection } }) => {
+        const needing = ready.values.filter(({ server: { connection } }) => {
             return connection.transport === 'stdio' && connection.cwd === undefined;
         });
+        const made = needing.length > 0 ? await makeRunDirectory(workDir, dataDir) : ok(undefined);
 
-        if (needing.length > 0) {
-            const made = await makeRunDirectory(workDir, dataDir);
-
-            if (made.ok) {
-                directory = made.value;
-            } else if (needing.some(({ optional }) => !optional)) {
-                return err([made.error]);
-            } else {
-                leftOut.push(
-                    ...needing.map(({ server }) => ({ name: server.name, reason: made.error })),
-                );
-                servers = servers.filter((each) => !needing.includes(each));
-            }
+        if (made.ok) {
+            directory = made.value;
+        } else if (needing.some(({ optional }) => !optional)) {
+            return err([made.error]);
         }
+
+        // Only optional servers need the directory that couldn't be made, and they go without it.
+        const homeless = made.ok
+            ? []
+            : needing.map(({ server }) => ({ name: server.name, reason: made.error }));
+        const starting = made.ok
+            ? ready.values
+            : ready.values.filter((each) => !needing.includes(each));
 
         // Closing may have begun meanwhile: no server starts after it.
         if (controller.signal.aborted) {
             return err([]);
         }
 
-        const results = await Promise.all(
-            servers.map(async (each) => ({
+        const attempts = await Promise.all(
+            starting.map(async (each) => ({
+                name: each.server.name,
                 optional: each.optional,
                 result: await connectOne(each),
             })),
         );
-        const connected: Connected[] = [];
-        const requiredFailures: Failure[] = [];
-        const optionalFailures: Failure[] = [];
+        const failed = attempts.flatMap(({ optional, result }) => {
+            return result.ok ? [] : [{ optional, failure: result.error }];
+        });
 
-        for (const { optional, result } of results) {
-            if (result.ok) {
-                connected.push(result.value);
-            } else if (optional) {
-                optionalFailures.push(result.error);
-            } else {
-                requiredFailures.push(result.error);
-            }
-        }
-
-        if (requiredFailures.length > 0) {
+        // Closed before their reasons are read, since a stdio server's exit is read once it has
+        // closed: every server when a required one failed, or else each optional one alone, which
+        // the shared close then finds closed.
+        if (failed.some(({ optional }) => !optional)) {
             await close();
-
-            return err(requiredFailures.map(failureMessage));
+        } else {
+            await Promise.all(failed.map(({ failure }) => failure.connection.close()));
         }
 
-        // Each closed alone, so that a stdio server's exit, read once it has closed, is the
-        // reason. The shared close then finds it closed.
-        const notStarted = await Promise.all(
-            optionalFailures.map(async (failure) => {
-                await failure.connection.close();
-
-                return { name: failure.connection.server.name, reason: startFailure(failure) };
-            }),
+        const started = sortOutcomes(
+            attempts.map(({ name, optional, result }) => ({
+                name,
+                optional,
+                result: result.ok ? result : err([connectProblem(result.error, hasList)]),
+            })),
         );
-        const ordered = [...leftOut, ...notStarted].toSorted((first, second) =>
-            inNameOrder(first.name, second.name),
+
+        if (started.failures.length > 0) {
+            return err(started.failures);
+        }
+
+        const connected = started.values;
+        const ordered = [...ready.leftOut, ...homeless, ...started.leftOut].toSorted(
+            (first, second) => inNameOrder(first.name, second.name),
         );
 
         const named = withModelNames(

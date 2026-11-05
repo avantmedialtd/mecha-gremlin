@@ -116,6 +116,10 @@ const without = (name: string): string => {
     return `To run without it: bun run mcp disable ${name}, for every run, or an mcp list in the task's frontmatter that leaves it out, for one task.`;
 };
 
+const withoutListed = (name: string): string => {
+    return `To run without it: leave it out of the task's mcp list, or write ${name}? there, which marks a server the task can go without.`;
+};
+
 const servers = (env: Readonly<Record<string, string>> = {}): McpServers => {
     const mcp = createMcpServers({
         parentEnv: { PATH: process.env.PATH ?? '/usr/bin:/bin', ...env },
@@ -355,7 +359,7 @@ describe('Connect the servers a task chooses before the session', { timeout: 20_
             "The task's mcp list names notes, but there is no MCP server named notes: bun run mcp list shows them.",
             "The task's mcp list names docs, which is disabled: runs won't start it until bun run mcp enable docs.",
             "The task's mcp list names drafts, but there is no MCP server named drafts: bun run mcp list shows them.",
-            `The MCP server pw can't start. It refers to PW_UNSET, which is unset or blank: set it in .env. ${without('pw')}`,
+            `The MCP server pw can't start. It refers to PW_UNSET, which is unset or blank: set it in .env. ${withoutListed('pw')}`,
         ]);
         expect(runProcesses()).toEqual([]);
     });
@@ -476,7 +480,7 @@ describe('Connect the servers a task chooses before the session', { timeout: 20_
         );
 
         expect(problems).toEqual([
-            `The MCP server docs couldn't start: it exited with code 3 before it was ready.\n${without('docs')}`,
+            `The MCP server docs couldn't start: it exited with code 3 before it was ready.\n${withoutListed('docs')}`,
         ]);
         expect(records).toEqual([]);
         expect(runProcesses()).toEqual([]);
@@ -563,6 +567,53 @@ describe('Connect the servers a task chooses before the session', { timeout: 20_
         expect(exited?.split('\n').at(-1)).toBe(
             "To run without it: bun run mcp disable docs, for every run, or an mcp list in the task's frontmatter that leaves it out, for one task.",
         );
+    });
+
+    test('running without a server the list requires: leave it out of the list, or mark it with ?', async () => {
+        const [unresolved] = await problemsOf(
+            servers(),
+            [stdio('docs', { env: { X: '${X_UNSET}' } })],
+            ['docs'],
+        );
+        const [exited] = await problemsOf(
+            servers(),
+            [stdio('docs', { mode: 'exit', env: { FAKE_EXIT: '3' } })],
+            ['docs'],
+        );
+
+        expect(unresolved).toBe(
+            "The MCP server docs can't start. It refers to X_UNSET, which is unset or blank: set it in .env. To run without it: leave it out of the task's mcp list, or write docs? there, which marks a server the task can go without.",
+        );
+        expect(exited).toBe(
+            "The MCP server docs couldn't start: it exited with code 3 before it was ready.\nTo run without it: leave it out of the task's mcp list, or write docs? there, which marks a server the task can go without.",
+        );
+        expect([unresolved, exited].join()).not.toContain('bun run mcp disable');
+    });
+
+    test("a store that fails as a listed optional server's login is read fails the run, as it is", async () => {
+        const fetch = vi.fn<typeof globalThis.fetch>();
+        vi.stubGlobal('fetch', fetch);
+        await withDataSource(store, 'drop the table', (dataSource) => {
+            return dataSource.query('DROP TABLE credential');
+        });
+
+        const problems = await problemsOf(
+            servers(),
+            [
+                httpRow('docs', 'https://docs.example.com/mcp'),
+                stdio('fine', { tools: [tool('x')] }),
+            ],
+            ['docs?', 'fine'],
+        );
+
+        expect(problems).toEqual([
+            expect.stringMatching(
+                /^Can't find the credentials in the database at .*: SqliteError: no such table: credential$/,
+            ),
+        ]);
+        expect(records).toEqual([]);
+        expect(fetch).not.toHaveBeenCalled();
+        expect(runProcesses()).toEqual([]);
     });
 
     test('an unset reference fails before any server starts', async () => {

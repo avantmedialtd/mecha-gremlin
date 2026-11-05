@@ -42,32 +42,36 @@ const CATALOG_INSTRUCTION =
 const PATHS_NOTE =
     "Paths to this skill's own files, such as references/…, are relative to the skill directory.";
 
-export const findFrontmatter = (text: string): SplitText | undefined => {
-    const [first, ...lines] = text.split(LINE_BREAK);
-    const end = lines.indexOf(DELIMITER);
+const blockOf = (lines: readonly string[]): SplitText | undefined => {
+    const [first, ...rest] = lines;
+    const end = rest.indexOf(DELIMITER);
 
     if (first !== DELIMITER || end === -1) {
         return undefined;
     }
 
     return {
-        frontmatter: lines.slice(0, end).join('\n'),
-        body: lines
+        frontmatter: rest.slice(0, end).join('\n'),
+        body: rest
             .slice(end + 1)
             .join('\n')
             .trim(),
     };
 };
 
+export const findFrontmatter = (text: string): SplitText | undefined => {
+    return blockOf(text.split(LINE_BREAK));
+};
+
 // A SKILL.md must have frontmatter, where a task file may not.
 export const splitFrontmatter = (text: string): Result<SplitText, string> => {
-    const [first] = text.split(LINE_BREAK);
+    const lines = text.split(LINE_BREAK);
 
-    if (first !== DELIMITER) {
+    if (lines[0] !== DELIMITER) {
         return err('it has no frontmatter: SKILL.md must start with a --- line');
     }
 
-    const found = findFrontmatter(text);
+    const found = blockOf(lines);
 
     return found === undefined
         ? err("its frontmatter doesn't end: no --- line closes it")

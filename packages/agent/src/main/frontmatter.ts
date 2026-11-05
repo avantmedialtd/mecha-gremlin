@@ -2,6 +2,7 @@ import { type Result, err, ok } from '@mecha-gremlin/core/result';
 import { findFrontmatter } from '@mecha-gremlin/core/skills';
 import { parseYaml } from '@mecha-gremlin/yaml/parse';
 import { NAME } from '../mcp/entry.ts';
+import { parseListItem } from '../mcp/task-list.ts';
 
 export type TaskText = {
     /** Without its frontmatter. */
@@ -14,9 +15,6 @@ export type TaskText = {
 
 type Block = Readonly<Record<string, unknown>>;
 
-// It marks a server the task can go without (D49). No server's name holds one.
-const OPTIONAL = '?';
-
 const HINT =
     'List each server once, as in mcp: [docs], or give mcp: [] for none; a ? after a name marks a server the task can go without.';
 
@@ -24,10 +22,6 @@ const HINT =
 // such as a sentence between two horizontal rules, isn't frontmatter (D45).
 const isFrontmatter = (value: unknown): value is Block | null => {
     return typeof value === 'object' && !Array.isArray(value);
-};
-
-const nameOf = (item: string): string => {
-    return item.endsWith(OPTIONAL) ? item.slice(0, -1) : item;
 };
 
 // Counted in the trimmed task, whose line 1 is the opening ---, so that both runtimes give the
@@ -44,7 +38,7 @@ const namesOf = (value: unknown): string[] | undefined => {
     }
 
     const names = value.filter((item): item is string => {
-        return typeof item === 'string' && NAME.test(nameOf(item));
+        return typeof item === 'string' && NAME.test(parseListItem(item).name);
     });
 
     return names.length === value.length ? names : undefined;
@@ -60,7 +54,7 @@ const mcpOf = (value: unknown, where: string): Result<readonly string[], string>
         );
     }
 
-    const bare = names.map(nameOf);
+    const bare = names.map((item) => parseListItem(item).name);
     const repeated = bare.find((name, index) => bare.indexOf(name) !== index);
 
     return repeated === undefined

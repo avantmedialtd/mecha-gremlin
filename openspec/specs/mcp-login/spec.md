@@ -5,7 +5,7 @@
 ## Requirements
 ### Requirement: Log in to a Streamable HTTP server with OAuth
 `bun run mcp login <name>` SHALL log in to the Streamable HTTP server it names, with OAuth's authorization code flow and PKCE (S256):
-1. It SHALL check the server's entry and resolve its references as a run does (`mcp-client`), failing as a run would.
+1. It SHALL check the server's entry and resolve its references as a run does (`mcp-client`), failing on the same problems. It SHALL print each as `The login to the MCP server <name> can't start.` and the problem, without a run's ways to run without the server.
 2. It SHALL first send the server, at its own URL alone, the `initialize` a run sends, with the entry's headers and no token, following no redirect.
    - On a 401 whose `WWW-Authenticate` names `resource_metadata`, it SHALL read the server's protected-resource metadata from that URL, and ask for the challenge's `scope` unless `--scope` is given.
    - On a 2xx, or a 401 that names no such URL, it SHALL try the well-known URLs.
@@ -34,6 +34,10 @@
 #### Scenario: A local server
 - **WHEN** `login playwright` runs, and `playwright` is a stdio server
 - **THEN** it's refused, with an error saying a local server has no OAuth login
+
+#### Scenario: An unset reference
+- **WHEN** `login docs` runs, and `docs`'s entry refers to `DOCS_TOKEN`, which is unset
+- **THEN** it exits with 1, with an error saying that the login to `docs` can't start and naming `DOCS_TOKEN`, and no way to run without `docs`
 
 #### Scenario: Metadata named by the challenge
 - **WHEN** the server answers the token-less `initialize` with a 401 whose `resource_metadata` names a URL, and both well-known URLs answer 404

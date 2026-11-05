@@ -49,26 +49,6 @@ export type Row = {
     readonly entry: unknown;
 };
 
-/** What an optional server is left out with, and what fails the run for a required one. */
-export type Problem = {
-    readonly reason: string;
-    readonly message: string;
-};
-
-// It ends every message about a server that fails the run: since a task can choose its servers,
-// one fix is for every run, and the other for one task (D44).
-export const runWithout = (name: string): string => {
-    return `To run without it: bun run mcp disable ${name}, for every run, or an mcp list in the task's frontmatter that leaves it out, for one task.`;
-};
-
-/** A problem of the server's own, whose message says how to run without the server. */
-export const serverProblem = (name: string, reason: string): Problem => {
-    return {
-        reason,
-        message: `The MCP server ${name} can't start. ${reason} ${runWithout(name)}`,
-    };
-};
-
 // The template as written, which holds no resolved value.
 const asWritten = (template: Template): string => {
     return render(template, (variable) => `\${${variable}}`);
@@ -215,17 +195,18 @@ const httpConnection = (
 
 /**
  * Checks an enabled server's entry, resolves its references from the agent's environment, and
- * checks what they resolved to. Every problem is reported.
+ * checks what they resolved to. Every problem is reported, as a reason that a run and a login each
+ * word in a message of their own.
  */
 export const resolveServer = (
     { name, prefix, entry: stored }: Row,
     parentEnv: Env,
     runId: string,
-): Result<ServerConfig, Problem[]> => {
+): Result<ServerConfig, string[]> => {
     const checked = checkEntry(stored);
 
     if (!checked.ok) {
-        return err(checked.error.map((problem) => serverProblem(name, problem)));
+        return checked;
     }
 
     const { entry } = checked.value;
@@ -235,17 +216,11 @@ export const resolveServer = (
             ? stdioConnection(entry, resolver, parentEnv, runId)
             : httpConnection(entry, resolver);
     const missing = resolver.missing().map((variable) => {
-        return serverProblem(
-            name,
-            `It refers to ${variable}, which is unset or blank: set it in .env.`,
-        );
+        return `It refers to ${variable}, which is unset or blank: set it in .env.`;
     });
 
     if (!connection.ok) {
-        return err([
-            ...missing,
-            ...connection.error.map((problem) => serverProblem(name, problem)),
-        ]);
+        return err([...missing, ...connection.error]);
     }
 
     return ok({

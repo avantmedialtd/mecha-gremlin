@@ -20,13 +20,6 @@ const row = (entry: Readonly<Record<string, unknown>>) => {
     return { name: 'docs', prefix: 'docs', entry: { ...TIMEOUTS, ...entry } };
 };
 
-const problem = (reason: string) => {
-    return {
-        reason,
-        message: `The MCP server docs can't start. ${reason} To run without it: bun run mcp disable docs, for every run, or an mcp list in the task's frontmatter that leaves it out, for one task.`,
-    };
-};
-
 describe('Resolve a server before it starts', () => {
     test('its secrets are exactly the values its references resolved to, in order', () => {
         const stdio = resolveServer(
@@ -52,7 +45,7 @@ describe('Resolve a server before it starts', () => {
             resolveServer(row({ url: 'https://docs.example.com/${MISSING}/mcp' }), {}, 'run00000'),
         ).toEqual({
             ok: false,
-            error: [problem('It refers to MISSING, which is unset or blank: set it in .env.')],
+            error: ['It refers to MISSING, which is unset or blank: set it in .env.'],
         });
     });
 
@@ -60,9 +53,7 @@ describe('Resolve a server before it starts', () => {
         expect(resolveServer(row({ command: 'sh' }), {}, 'run00000')).toEqual({
             ok: false,
             error: [
-                problem(
-                    "Its command, sh, is in none of the absolute directories of its PATH: give the command's absolute path, or set PATH in its env.",
-                ),
+                "Its command, sh, is in none of the absolute directories of its PATH: give the command's absolute path, or set PATH in its env.",
             ],
         });
     });
@@ -102,9 +93,7 @@ describe('Resolve a server before it starts', () => {
         ).toEqual({
             ok: false,
             error: [
-                problem(
-                    'Its cwd, with its references resolved, must be an absolute path to a directory that exists.',
-                ),
+                'Its cwd, with its references resolved, must be an absolute path to a directory that exists.',
             ],
         });
     });

@@ -18,15 +18,15 @@ The agent SHALL NOT start a server it didn't choose, or a disabled one.
   - check that a resolved stdio `command` is either an absolute path or a name without a slash, and find a name in the absolute entries of the server's `PATH`;
   - check that a resolved `cwd` is an absolute path to an existing directory.
 
-  An unset or blank variable, or any other problem with a required server, SHALL fail the run. The agent SHALL log an `error` record for each problem of every required server, before any network request and before any server starts. A problem with an optional server SHALL leave it out instead.
+  An unset or blank variable, or any other problem with a required server, SHALL fail the run, with an error that names the server and the problem and ends with the ways to run without it ("Failing"). The agent SHALL log an `error` record for each problem of every required server, before any network request and before any server starts. A problem with an optional server SHALL leave it out instead.
 - **Connecting.** It SHALL connect to every chosen server in parallel, each within its own `startupTimeoutMs`, which SHALL cover the start, the handshake and the whole tool list.
   - A client SHALL use the 2025-11-25 handshake, announce no capabilities, and request a server's tools only when the server announces them.
   - The handshake and each `tools/list` request SHALL be sent with a `timeout` of what is left of `startupTimeoutMs`, so that the SDK's own 60-second default never applies.
 - **Failing.** When a required server can't start, answer, or list a tool its `includeTools` names, the agent SHALL close every server and fail the run before the first model call. The error SHALL:
   - name the server and the reason;
   - give the last lines of the server's stderr, read once it has closed;
-  - end by naming two ways to run without it: `bun run mcp disable <name>`, for every run, and a task `mcp` list that leaves it out, for one task.
-- **Leaving out.** When an optional server is disabled, or can't be used for a reason that would fail the run for a required one, the agent SHALL close that server alone, if it started, and go on with the others. It SHALL keep the server's name and a reason: the problem, or the failure's reason without the stderr lines, or that it's disabled. The run SHALL log a `warn` record for it ("Log each server, and never its secrets"), and its starting instructions SHALL name it with that reason (`agent`).
+  - end by naming the ways to run without it. For a task without a list, they SHALL be `bun run mcp disable <name>`, for every run, and a task `mcp` list that leaves it out, for one task. For a task whose list names the server, they SHALL be leaving it out of the list and writing `<name>?` there, and SHALL NOT include `disable`, since a disabled server that the list requires fails the run too.
+- **Leaving out.** When an optional server is disabled, or can't be used for a reason that would fail the run for a required one, the agent SHALL close that server alone, if it started, and go on with the others. It SHALL keep the server's name and a reason: the problem, or the failure's reason without the stderr lines, or that it's disabled. A failure of the store itself SHALL fail the run instead ("Use a server's login in a run"). The run SHALL log a `warn` record for it ("Log each server, and never its secrets"), and its starting instructions SHALL name it with that reason (`agent`).
 - **Redacting.** A text SHALL be redacted before it's cut: each non-empty value that one of the server's references resolved to SHALL be replaced by `[redacted]`, longest first. This SHALL apply to every text that comes from a server, or from an error in reaching it, and goes into a record, a tool's outcome or the starting instructions. That covers:
   - the failure's reason and the stderr lines;
   - a left-out server's reason;
@@ -109,6 +109,10 @@ The agent SHALL NOT start a server it didn't choose, or a disabled one.
 #### Scenario: A secret in a left-out server's reason
 - **WHEN** the optional server `docs`, whose header resolves to `t0k`, answers its first request with 500 and a body holding `t0k`
 - **THEN** `t0k` appears in no record and not in the starting instructions, and `[redacted]` appears where it was
+
+#### Scenario: Running without a server the list requires
+- **WHEN** the task's list is `[docs]`, and the stdio server `docs` exits with code 3 before answering
+- **THEN** the run fails, with an error that ends by naming the task's `mcp` list and `docs?`, and doesn't name `bun run mcp disable`
 
 ### Requirement: Run stdio servers in a group of their own
 A stdio server SHALL be started through `@mecha-gremlin/process` with `stdin: 'pipe'`, detached, so that it leads a process group of its own.
@@ -344,6 +348,7 @@ No record SHALL hold a resolved reference, a header value or a token. Nothing ot
 For a Streamable HTTP server with a saved login (`mcp-login`), a run SHALL use the server's most recently saved row for its name and its URL as written.
 - **The token.** Every request SHALL carry the row's access token as a bearer token, in place of any `Authorization` header in the entry.
 - **A spent login.** A row marked `needs_login` SHALL fail the run before any network request, with an error naming the server and `bun run mcp login <name>`. For an optional server, it SHALL leave the server out instead, with that reason ("Connect the servers a task chooses before the session").
+- **A store that fails.** When the store fails as the run reads the server's login, the run SHALL fail before any network request with the store's own error, for an optional server too: no change to the server would mend it.
 - **Refreshing.** The run SHALL refresh the token before the server's first request when it expires within 5 minutes, and once after a 401, after which it SHALL send the request once more. A refresh SHALL:
   - take the row's lease for 30 seconds, and send the refresh request outside any transaction, cancelling it after 25 seconds;
   - save the new tokens only while it still holds the lease, which saving them releases;
@@ -384,4 +389,8 @@ For a Streamable HTTP server with a saved login (`mcp-login`), a run SHALL use t
 #### Scenario: An optional server's spent login
 - **WHEN** `docs`'s row is marked `needs_login`, and the task's list is `[docs?]`
 - **THEN** `docs` is left out before any network request, with a reason naming `bun run mcp login docs`, and the run goes on
+
+#### Scenario: A store that fails for an optional server
+- **WHEN** the task's list is `[docs?]`, and the store fails as the run reads `docs`'s login
+- **THEN** the run fails before any network request, with the store's error, and `docs` isn't left out
 

@@ -250,7 +250,9 @@ const login = async (store: Store, name: string, given: Login): Promise<number> 
         return fail(
             transportOfEntry(server.entry) === 'stdio'
                 ? [local(name)]
-                : resolved.error.map((problem) => problem.message),
+                : resolved.error.map((reason) => {
+                      return `The login to the MCP server ${name} can't start. ${reason}`;
+                  }),
         );
     }
 

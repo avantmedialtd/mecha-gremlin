@@ -1026,17 +1026,26 @@ describe('Log in to a Streamable HTTP server with OAuth', { timeout: 20_000 }, (
         ]);
     });
 
-    test("a remote server whose references don't resolve fails as a run would", async () => {
+    test("a remote server whose references don't resolve: the login can't start, for the run's reasons", async () => {
         await freshFolder();
-        await mcp(['add', 'docs', 'https://docs.example.test/mcp?key=${DOCS_KEY_UNSET}']);
+        await mcp([
+            'add',
+            'docs',
+            'https://docs.example.test/${DOCS_PATH_UNSET}/mcp?key=${DOCS_KEY_UNSET}',
+        ]);
 
         const result = await startMcp(['login', 'docs']).done;
 
         expect(result).toEqual({
             code: 1,
             stdout: '',
-            stderr: `error: The MCP server docs can't start. It refers to DOCS_KEY_UNSET, which is unset or blank: set it in .env. ${without('docs')}\n`,
+            stderr: [
+                "error: The login to the MCP server docs can't start. It refers to DOCS_PATH_UNSET, which is unset or blank: set it in .env.",
+                "error: The login to the MCP server docs can't start. It refers to DOCS_KEY_UNSET, which is unset or blank: set it in .env.",
+                '',
+            ].join('\n'),
         });
+        expect(result.stderr).not.toContain('To run without it');
     });
 
     test('nothing secret printed: the code, the tokens, the verifier and the client secret', async () => {
