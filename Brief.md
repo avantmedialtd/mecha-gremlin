@@ -34,6 +34,7 @@
 > - **2026-11-01, late night:** R20 records where the file tools' fence came from and what each of its rules stops, given the shell that every run has. C20 proposes that no file tool refuse a path for where it is, while the refusals that don't depend on where a file is stay. D41 and D42 are decided as asked: the file tools refuse nothing by path, and no setting brings the fence back, since "if we need sandboxing, we will use containers". D43 is decided too, as recommended: a task file refuses neither `.env` files nor the data folder. Q26 asks whether the file tools should expand `~`. The change `remove-file-tool-fence` proposes all three decisions.
 > - **2026-11-02:** the change `remove-file-tool-fence` carries out D41, D42 and D43. `read`, `write`, `edit` and `apply_patch` resolve a relative path against the working directory, take an absolute one as it is, and refuse no path for where it is: outside the working directory, through a link, in a skill's directory or the data folder, or named like an `.env` file. What doesn't depend on where a file is stays refused, with the same messages: a directory, a binary file, a file too large to replace whole or to edit, text that isn't UTF-8, and a patch that names a file twice or doesn't apply whole. A task file may be any text file, `DATA_DIR` may be or contain `WORK_DIR`, and no setting brings the fence back.
 > - **2026-11-05:** R21 records how a run chooses its MCP servers: every enabled server connects for every run, so under D33 a server that can't start fails tasks that never use it, and the only fix the error offers, `disable`, takes the server from every task. C21 proposes that a task file's frontmatter name the servers the task needs, in an `mcp` list, as 4.7's `skills:` list names its skills, with every enabled server when it names none. D44–D46 are open, and Q27 asks whether a task should narrow a server's tools too.
+> - **2026-11-05, later:** R22 records how twelve other harnesses let a definition file or a run choose MCP servers. Only Claude Code's sub-agents name configured servers in their frontmatter; elsewhere a file narrows tools by server pattern or brings servers of its own, a run's own choice is a flag, and no harness chooses servers one by one through an environment variable. Every harness but Codex, whose servers can be `required`, carries on without a server that fails, only Claude Code tells the model, and every harness strips a definition file's frontmatter from the prompt.
 
 ---
 
@@ -1498,6 +1499,44 @@ Researched on 2026-11-05 for C21, from this repository's code and README, and fr
 
 **Sources:** this repository's `packages/agent/src/main/{main,args}.ts`, `mcp/{servers,resolve}.ts` and `config/config.ts`; `packages/core/src/skills.ts`; `packages/yaml/src/parse.ts`; `packages/store/src/mcp-server.ts`; the README; Part 1, C6, 4.1, 4.7, 4.8, 4.12, D33, D34, D40 and Q21.
 
+## R22. How other harnesses let a task or an agent choose its MCP servers
+
+Read on 2026-11-05 for C21, from each harness's docs and, where named, its source. None was run, and no independent fact-check re-read them. **[H]** unless marked. Goose, Crush and pi rest on search summaries and one issue, so they are **[M]** unless marked, and Cursor's and Amp's docs carry no versions.
+
+**R22.1 What a definition file can choose.**
+
+| Harness | File | What it chooses | Without it | A name that matches nothing |
+|---|---|---|---|---|
+| Claude Code 2.1.318 | a sub-agent, `.claude/agents/*.md` | `mcpServers`: a string that "reuses an already-configured server", or an inline entry that connects for the sub-agent alone. `tools` and `disallowedTools`, with `mcp__<server>__*` | every tool, MCP included | `tools` that resolve to nothing refuse the launch: "would be spawned with zero tools — refusing". A server that a policy blocks is skipped "with a warning naming the blocked servers". A name no server has isn't documented |
+| VS Code, Copilot chat | `.prompt.md`, `.agent.md` | `tools`, with `<server>/*` or `<server>/<tool>` | the tools picker's choice | "it is ignored", and the editor hints "It is likely to be a missing MCP server" |
+| GitHub Copilot coding agent | `.github/agents/*.agent.md` | `tools`, with `server/*`, where `[]` means none; `mcp-servers` adds inline servers | every tool | "All unrecognized tool names are ignored" |
+| Gemini CLI 0.67.0 | a sub-agent, `.gemini/agents/*.md` | `tools`, with `mcp_<server>_*`; `mcp_servers`, inline and the sub-agent's own, with no way to name a configured server | every tool of the session | skipped silently |
+| Codex CLI 0.166.0 | a custom agent, in TOML | nothing: an agent's `mcp_servers` "don't override the parent configuration" | — | — |
+| opencode 1.19.5 | an agent, in Markdown | `permission` globs, or the deprecated `tools`, over `<server>_<tool>` names. Servers connect for every agent | every server and tool | matches nothing, silently **[M]** |
+| Goose 1.57.0 | a recipe, in YAML | `extensions`, each a whole inline configuration: "only the listed extensions are available" **[M]** | the user's extensions **[M]** | not found |
+| Amp | a skill | `mcpServers` in its frontmatter, inline, whose tools stay hidden until the skill loads | — | — |
+| Zed 1.27.0 | an agent profile, in settings | each server's tools by name, or all of them. Servers start whatever the profile | the Write profile offers every server, and Ask and Minimal none | not consulted **[M]** |
+
+Cursor CLI's sub-agents "inherit all tools from the parent, including MCP tools", pi's core has no agents, and Crush's per-agent list is internal **[M]**.
+
+**R22.2 What a run's flags and variables can choose.**
+- **Flags choose for one run.** Claude Code's `--mcp-config` with `--strict-mcp-config`: "Only use MCP servers from `--mcp-config`, ignoring all other MCP configurations". Gemini CLI's `--allowed-mcp-server-names a,b` keeps the configured servers it names, ignores names it doesn't know, and replaces the settings' lists. Codex turns off one server at a time with `-c mcp_servers.<name>.enabled=false`, or layers a profile with `--profile`. pi has `--no-mcp`, and `--tools 'mcp__<server>__*'` **[M]**. Goose's `--with-extension` adds a server **[M]**, and opencode's `--agent` picks an agent.
+- **No harness chooses servers one by one through an environment variable.** The variables that exist turn MCP off, as Claude Code's `CLAUDE_CODE_SAFE_MODE` does, or claude.ai's connectors alone; move the configuration, as `CODEX_HOME`, `GEMINI_CLI_HOME`, `COPILOT_HOME` and pi's `PI_CODING_AGENT_DIR` **[M]** do; or carry a whole configuration, as opencode's `OPENCODE_CONFIG_CONTENT` does **[M]**.
+- **Settings hold standing lists:** Gemini CLI's `mcp.allowed` and `mcp.excluded`, Claude Code's approved and rejected project servers, and its managed `allowedMcpServers` and `deniedMcpServers`, which "aren't a registry".
+
+**R22.3 A server that fails to start.**
+- **Every harness but Codex carries on without it,** with a status or a warning for the user. Claude Code's `claude -p` "continues without the server's tools". Gemini CLI logs it and hints "MCP issues detected. Run /mcp list for status." opencode logs "server unavailable". pi reports failures once start-up is over **[M]**. Goose 1.56.0's `goose run` printed "Failed to start extension … HTTP 401 Unauthorized", went on and exited with 0, and the open issue asks for a failing exit "when the explicitly requested extension cannot start" (#13119).
+- **Codex lets a server require it.** `required` is false by default, and "When `true`, `codex exec` exits with an error if this MCP server fails to initialize." A server that isn't required gets a warning, "MCP startup incomplete (failed: …)", and the session goes on.
+- **No harness has a `required` or optional flag for a task or an agent.** Gemini CLI's admin `requiredConfig` keeps a server configured, not started.
+- **Only Claude Code tells the model,** and only with tool search on, its default: it "tells Claude which server failed and its connection error". Without tool search, it "doesn't report failed server connections to Claude".
+
+**R22.4 Frontmatter in definition files.**
+- **The body is the prompt.** Claude Code's and Gemini CLI's sub-agents ("The body becomes the system prompt"), opencode's agents and GitHub's custom agents strip the frontmatter. None was found that sends it to the model.
+- **Unknown keys are mostly ignored:** silently by Claude Code, which names them in its debug log since 2.1.296, and by Codex's skills; passed on as provider options by opencode; marked with a hint in VS Code's editor. Gemini CLI's sub-agents are the exception: "Unrecognized key(s) in object", and the file isn't loaded.
+- **Frontmatter that isn't valid YAML** skips a Claude Code sub-agent, with an error only in the debug log, and loads a Claude Code skill "with empty metadata". It rejects a Gemini CLI sub-agent with "YAML frontmatter parsing failed", shown while the other agents load. opencode retries once after rewriting values with unquoted colons ("Other coding agents accept unquoted colons…"), then skips the file without a log.
+
+**Sources:** Claude Code's docs at code.claude.com (`cli-reference`, `sub-agents`, `errors`, `skills`, `mcp`, `managed-mcp`, `env-vars`, `agent-sdk/mcp` and `agent-sdk/typescript`), at changelog head 2.1.318; VS Code's docs (`copilot/customization/prompt-files`, `agents/reference/custom-agent-file-reference`, `agents/run/tools`, `agents/run/manage-mcp-servers` and `copilot/customization/mcp-servers`), updated 2026-11-04, and `promptValidator.ts`; GitHub's `copilot/reference/custom-agents-configuration` and `extend-coding-agent-with-mcp`; Gemini CLI 0.67.0's docs and its `config.ts`, `mcp-client-manager.ts`, `local-executor.ts`, `agentLoader.ts` and `registry.ts`; Codex `rust-v0.166.0`'s `config/src/mcp_types.rs`, `codex-mcp/src/`, `agent-roles/src/` and `skills/src/parser.rs`, and OpenAI's Codex docs; opencode `v1.19.5`'s `packages/core/src/v1/config/agent.ts` and `packages/opencode/src/{mcp,permission,config}/`, and opencode.ai's docs; Cursor's `cli/mcp`, `cli/reference/permissions` and `context/subagents` docs; Amp's `customize/mcp`, `customize/skills` and `manual/plugin-api` docs; Zed 1.27.0's `ai/agent-profiles` and `ai/mcp` docs, `agent_profile.rs`, `context_server_store.rs` and `assets/settings/default.json`; Goose's recipe reference and issue #13119; Crush's README and pull requests #2800 and #3355; pi's `mcp` and `cli` docs.
+
 ---
 
 # Part 3: Where the brief stands, and challenges
@@ -1966,11 +2005,12 @@ These are **proposals, not decisions**. Each links to a decision in Part 5. "Bri
 ### C21. A task names the MCP servers it needs
 - **Brief says:** "A task gets the relevant subset, not every skill, because too many tools degrade the model's choices." (Part 1). 4.7 gives a task its skills through TASK.md's `skills:` list, but every run connects every enabled MCP server (4.12, D33).
 - **Asked (2026-11-05):** "It's good that by default we expose all MCPs to the task, but we should have a way to limit the MCPs for a given task that does not need all of them, I was wondering if we could or should encode it into the prompt markdown or use env vars instead."
-- **Finding (R21):**
+- **Finding (R21, R22):**
   - **Every task depends on every server.** A server that can't start fails tasks that never call it, and the only fix the error offers, `disable`, takes it from the tasks that do (R21.2).
   - **The definitions cost** about 21,900 tokens for the 15 servers measured, against about 700 for the built-in tools (Q21).
   - **The Brief already puts a task's choices in its frontmatter:** its skills (4.7), and its model profile and budgets (C6).
   - **An environment variable can't choose for one task** from `.env`, which every run reads, and can't differ by task in 4.8's one daemon (R21.4).
+  - **Elsewhere, a run's own choice is a flag, and no harness chooses servers one by one through an environment variable.** A definition file narrows tools by server pattern while every server still connects, or brings servers of its own; only Claude Code's sub-agents name a configured server (R22.1, R22.2).
 - **Proposal:**
   - **A task file's frontmatter names its servers,** in a top-level `mcp` list of the names `bun run mcp list` shows:
     ```markdown
@@ -1981,6 +2021,7 @@ These are **proposals, not decisions**. Each links to a decision in Part 5. "Bri
     ```
   - **No list means every enabled server,** as now, and `mcp: []` means none.
   - **A list is exact.** The run connects the servers it names and no others, so a server added later reaches only the tasks without a list.
+  - **Servers, not tool patterns.** Elsewhere a pattern hides a server's tools while the server still connects (R22.1). Here a server that connects can fail the run (D33), so the list names servers, and only those connect.
   - **A name the store doesn't hold fails the run** before any network request, pointing to `bun run mcp list`. **So does a disabled one,** pointing to `bun run mcp enable <name>`, since the task says it needs it (D46).
   - **The text still goes to the model verbatim,** the list included, so D40 holds. Other keys are ignored, so a note runs as it does now (D45).
   - **A record names the servers the task chose,** or says that it named none, so that a misspelt key, which leaves every server on, shows in the log.
@@ -1993,6 +2034,7 @@ These are **proposals, not decisions**. Each links to a decision in Part 5. "Bri
   - **A misspelt key (`mcps`) is ignored,** and the run gets every server, as today. Only the record shows it.
   - **The text and the list can disagree.** A task that mentions a server it doesn't list gets none of its tools, and the model reports that it can't reach the server, or works around it through the shell.
   - **Only the file given to the run chooses.** A task that has the model `read` another task file follows that file's text, not its list.
+  - **It's stricter than the harnesses surveyed,** which mostly ignore a name that matches nothing (R22.1). A task file copied to a machine whose servers have other names fails until it's edited.
   - **An inline task can't choose** until a flag exists.
 - **Decision:** D44 for where the choice lives, D45 for what the frontmatter means, and D46 for a listed server that's disabled. Q27 asks whether a task should narrow a server's tools as well.
 
@@ -2749,9 +2791,9 @@ A draft for the change that gives the agent MCP servers ahead of OAuth (C16, D35
 | D41 | What the file tools refuse by path | as now: outside the working directory (for `read`, outside it and the skill directories), `.env*` names and the data folder · `read` alone, refusing `.env*` names and the data folder · nothing (R20) | **Nothing:** the refusals that don't depend on where a file is stay, and a container is the only sandbox (C20) | **decided 2026-11-01: nothing,** as asked: "This harness should not worry about this type of safety, if we need sandboxing, we will use containers." The change `remove-file-tool-fence` carries it out |
 | D42 | A setting that brings the fence back | a setting, off by default · none | **None:** with a shell in every run, the setting would only look like a sandbox (C20) | **decided 2026-11-01: none,** as asked. The change `remove-file-tool-fence` carries it out |
 | D43 | What a task file refuses by path | `.env*` names and the data folder, as C19 proposed against a slip of the shell's completion · nothing, as with the file tools (D41) | **Nothing:** C19 tied the rule to what the file tools refuse, and the harness guards no paths (C20). A binary or blank file still fails, since neither holds a task | **decided 2026-11-01: nothing,** as recommended. The change `remove-file-tool-fence` carries it out |
-| D44 | Where a task's choice of MCP servers lives | nowhere: every enabled server for every task, as now · a list in the task file's frontmatter · an environment variable set for the run · a flag | **The frontmatter, with every enabled server when it names none:** the choice stays beside the text that relies on it, as 4.7's `skills:` list does, and an environment variable can't choose for one task from `.env` or in 4.8's one daemon (C21, R21) | open |
+| D44 | Where a task's choice of MCP servers lives | nowhere: every enabled server for every task, as now · a list in the task file's frontmatter · an environment variable set for the run · a flag | **The frontmatter, with every enabled server when it names none:** the choice stays beside the text that relies on it, as 4.7's `skills:` list does. An environment variable can't choose for one task from `.env` or in 4.8's one daemon, and no harness surveyed chooses servers through one (C21, R21, R22) | open |
 | D45 | What a task file's frontmatter means once a key in it is read | read the keys it knows, and still send the whole text verbatim · strip it, so that the body is the prompt, as C6 says of TASK.md · read only a `gremlin` mapping inside it | **Read the known keys, and send the text verbatim:** D40 holds, a note's own keys are ignored, and C6's keys stay at the top level. Frontmatter that isn't valid YAML fails the run (C21) | open |
-| D46 | A server the task lists that's disabled | fail the run, pointing to `bun run mcp enable` · skip it with a warning | **Fail the run:** the task says it needs the server, as D33 fails one that can't start (C21) | open |
+| D46 | A server the task lists that's disabled | fail the run, pointing to `bun run mcp enable` · skip it with a warning, as Claude Code does a server that a policy blocks (R22.1) | **Fail the run:** the task says it needs the server, as D33 fails one that can't start (C21) | open |
 
 ## Open questions
 
