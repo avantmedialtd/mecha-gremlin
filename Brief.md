@@ -34,7 +34,7 @@
 > - **2026-11-01, late night:** R20 records where the file tools' fence came from and what each of its rules stops, given the shell that every run has. C20 proposes that no file tool refuse a path for where it is, while the refusals that don't depend on where a file is stay. D41 and D42 are decided as asked: the file tools refuse nothing by path, and no setting brings the fence back, since "if we need sandboxing, we will use containers". D43 is decided too, as recommended: a task file refuses neither `.env` files nor the data folder. Q26 asks whether the file tools should expand `~`. The change `remove-file-tool-fence` proposes all three decisions.
 > - **2026-11-02:** the change `remove-file-tool-fence` carries out D41, D42 and D43. `read`, `write`, `edit` and `apply_patch` resolve a relative path against the working directory, take an absolute one as it is, and refuse no path for where it is: outside the working directory, through a link, in a skill's directory or the data folder, or named like an `.env` file. What doesn't depend on where a file is stays refused, with the same messages: a directory, a binary file, a file too large to replace whole or to edit, text that isn't UTF-8, and a patch that names a file twice or doesn't apply whole. A task file may be any text file, `DATA_DIR` may be or contain `WORK_DIR`, and no setting brings the fence back.
 > - **2026-11-05:** R21 records how a run chooses its MCP servers: every enabled server connects for every run, so under D33 a server that can't start fails tasks that never use it, and the only fix the error offers, `disable`, takes the server from every task. C21 proposes that a task file's frontmatter name the servers the task needs, in an `mcp` list, as 4.7's `skills:` list names its skills, with every enabled server when it names none. D44–D46 are open, and Q27 asks whether a task should narrow a server's tools too.
-> - **2026-11-05, later:** R22 records how twelve other harnesses let a definition file or a run choose MCP servers. Only Claude Code's sub-agents name configured servers in their frontmatter; elsewhere a file narrows tools by server pattern or brings servers of its own, a run's own choice is a flag, and no harness chooses servers one by one through an environment variable. Every harness but Codex, whose servers can be `required`, carries on without a server that fails, only Claude Code tells the model, and every harness strips a definition file's frontmatter from the prompt.
+> - **2026-11-05, later:** R22 records how twelve other harnesses let a definition file or a run choose MCP servers. Only Claude Code's sub-agents name configured servers in their frontmatter; elsewhere a file narrows tools by server pattern or brings servers of its own, a run's own choice is a flag, and no harness chooses servers one by one through an environment variable. Every harness but Codex, whose servers can be `required`, carries on without a server that fails, only Claude Code tells the model, and every harness strips a definition file's frontmatter from the prompt. R23 records how the two YAML parsers read the frontmatter notes hold, some of which neither accepts. D45 now recommends stripping the block from the prompt, and D47 and D48 ask about frontmatter that isn't valid YAML and keys the run doesn't read.
 
 ---
 
@@ -1537,6 +1537,38 @@ Cursor CLI's sub-agents "inherit all tools from the parent, including MCP tools"
 
 **Sources:** Claude Code's docs at code.claude.com (`cli-reference`, `sub-agents`, `errors`, `skills`, `mcp`, `managed-mcp`, `env-vars`, `agent-sdk/mcp` and `agent-sdk/typescript`), at changelog head 2.1.318; VS Code's docs (`copilot/customization/prompt-files`, `agents/reference/custom-agent-file-reference`, `agents/run/tools`, `agents/run/manage-mcp-servers` and `copilot/customization/mcp-servers`), updated 2026-11-04, and `promptValidator.ts`; GitHub's `copilot/reference/custom-agents-configuration` and `extend-coding-agent-with-mcp`; Gemini CLI 0.67.0's docs and its `config.ts`, `mcp-client-manager.ts`, `local-executor.ts`, `agentLoader.ts` and `registry.ts`; Codex `rust-v0.166.0`'s `config/src/mcp_types.rs`, `codex-mcp/src/`, `agent-roles/src/` and `skills/src/parser.rs`, and OpenAI's Codex docs; opencode `v1.19.5`'s `packages/core/src/v1/config/agent.ts` and `packages/opencode/src/{mcp,permission,config}/`, and opencode.ai's docs; Cursor's `cli/mcp`, `cli/reference/permissions` and `context/subagents` docs; Amp's `customize/mcp`, `customize/skills` and `manual/plugin-api` docs; Zed 1.27.0's `ai/agent-profiles` and `ai/mcp` docs, `agent_profile.rs`, `context_server_store.rs` and `assets/settings/default.json`; Goose's recipe reference and issue #13119; Crush's README and pull requests #2800 and #3355; pi's `mcp` and `cli` docs.
 
+## R23. What a task file's frontmatter holds, and how the parsers read it
+
+Measured on 2026-11-05 for D45, D47 and D48, with this repository's `parseYamlWithBun`, through `Bun.YAML` on Bun 1.4.4, and `parseYamlWithPackage`, through the `yaml` package, which agreed on every case. **[H]** unless marked.
+
+**R23.1 What both parsers make of frontmatter that notes hold.**
+
+| Frontmatter | Both parsers give |
+|---|---|
+| `tags: [work]` | a mapping, `{"tags": ["work"]}` |
+| `date: 2026-11-05` | the text `"2026-11-05"`, not a date |
+| `related: [[Other note]]`, a wiki link left unquoted | a list inside a list |
+| `title: Meeting: Q3 plan` | an error: a colon and a space in a plain value |
+| `author: @someone` | an error: a plain value can't start with `@` |
+| an indent made with a tab | an error |
+| the same key twice | the last value |
+| nothing between the two `---` lines | `null` |
+| a sentence, as when a file opens with a horizontal rule | the sentence, as text |
+
+- **Notes do hold frontmatter that isn't valid YAML.** opencode retries such a file once after rewriting values with unquoted colons, since "Other coding agents accept unquoted colons" (R22.4).
+
+**R23.2 What they make of an `mcp` key.**
+- `mcp: [docs, github]`, and the same list written one item a line, give a list of names, and `mcp: []` an empty one.
+- `mcp: docs` gives the text `"docs"`, `mcp:` gives `null`, and `mcp: [1, 2]` a list of numbers.
+
+**R23.3 Where the block sits now.**
+- **The task is trimmed first.** The trim removes a byte-order mark and blank lines, so a block counts when `---` is the trimmed text's first line (the archived change `read-task-file`).
+- **`splitFrontmatter` wants `---` alone on its line,** opening and closing the block, and refuses a text without one, with a message about SKILL.md (R21.5).
+- **The `agent` spec pins D40** in its scenario "Frontmatter is part of the task": a file holding `---\ntags: [work]\n---\nSay hi\n` reaches the model as `---\ntags: [work]\n---\nSay hi`.
+- **Elsewhere the body is the prompt.** Every harness surveyed strips a definition file's frontmatter, and most ignore the keys they don't know (R22.4).
+
+**Sources:** a scratch script calling `packages/yaml/src/parse.ts` on Bun 1.4.4; `packages/core/src/skills.ts`; the `agent` spec; the archived change `read-task-file`'s design; R22.4.
+
 ---
 
 # Part 3: Where the brief stands, and challenges
@@ -2005,12 +2037,13 @@ These are **proposals, not decisions**. Each links to a decision in Part 5. "Bri
 ### C21. A task names the MCP servers it needs
 - **Brief says:** "A task gets the relevant subset, not every skill, because too many tools degrade the model's choices." (Part 1). 4.7 gives a task its skills through TASK.md's `skills:` list, but every run connects every enabled MCP server (4.12, D33).
 - **Asked (2026-11-05):** "It's good that by default we expose all MCPs to the task, but we should have a way to limit the MCPs for a given task that does not need all of them, I was wondering if we could or should encode it into the prompt markdown or use env vars instead."
-- **Finding (R21, R22):**
+- **Finding (R21–R23):**
   - **Every task depends on every server.** A server that can't start fails tasks that never call it, and the only fix the error offers, `disable`, takes it from the tasks that do (R21.2).
   - **The definitions cost** about 21,900 tokens for the 15 servers measured, against about 700 for the built-in tools (Q21).
   - **The Brief already puts a task's choices in its frontmatter:** its skills (4.7), and its model profile and budgets (C6).
   - **An environment variable can't choose for one task** from `.env`, which every run reads, and can't differ by task in 4.8's one daemon (R21.4).
   - **Elsewhere, a run's own choice is a flag, and no harness chooses servers one by one through an environment variable.** A definition file narrows tools by server pattern while every server still connects, or brings servers of its own; only Claude Code's sub-agents name a configured server (R22.1, R22.2).
+  - **Both parsers refuse frontmatter that notes do hold,** such as `title: Meeting: Q3 plan` (R23.1).
 - **Proposal:**
   - **A task file's frontmatter names its servers,** in a top-level `mcp` list of the names `bun run mcp list` shows:
     ```markdown
@@ -2023,20 +2056,23 @@ These are **proposals, not decisions**. Each links to a decision in Part 5. "Bri
   - **A list is exact.** The run connects the servers it names and no others, so a server added later reaches only the tasks without a list.
   - **Servers, not tool patterns.** Elsewhere a pattern hides a server's tools while the server still connects (R22.1). Here a server that connects can fail the run (D33), so the list names servers, and only those connect.
   - **A name the store doesn't hold fails the run** before any network request, pointing to `bun run mcp list`. **So does a disabled one,** pointing to `bun run mcp enable <name>`, since the task says it needs it (D46).
-  - **The text still goes to the model verbatim,** the list included, so D40 holds. Other keys are ignored, so a note runs as it does now (D45).
-  - **A record names the servers the task chose,** or says that it named none, so that a misspelt key, which leaves every server on, shows in the log.
+  - **The block is stripped, and the body is the prompt** (D45), as every harness surveyed does (R22.4). A block counts when the trimmed text opens with a `---` line, a later `---` line closes it, and what lies between parses as a mapping or is empty. A block that parses as plain text, as after a horizontal rule, stays in the prompt.
+  - **Frontmatter that isn't valid YAML fails the run,** with the parser's reason and line (D47): a broken block can be neither read nor safely sent, and notes do hold them (R23.1).
+  - **A key the run doesn't read gets a warning,** and is ignored (D48), so that a misspelt `mcps` shows in the log, and a note's `tags` don't fail it.
+  - **The list's shape is checked.** `mcp: docs`, `mcp:` and a list that holds anything but names fail the run, with a hint showing `mcp: [docs]` or `mcp: []` (R23.2). So does a name given twice.
+  - **The `asking` record names the servers the task chose,** or says that it named none.
   - **D33's error gains a fix for one task:** give the task an `mcp` list without the server, beside `bun run mcp disable <name>`.
-  - **An inline task (`-p`) gets every enabled server** for now. A flag can follow if one-off runs need a choice.
+  - **An inline task's text is read the same way,** so `-p` needs no flag of its own.
   - **When TASK.md arrives (D5),** it reads the same key, and `gremlin apply` rejects unknown names, as for skills (4.7).
   - **It isn't a boundary.** The list narrows what the model is offered, for cost, relevance and reliability. The shell still reaches every server's API and the store (C20).
 - **Against:**
-  - **A `---` block gains a meaning** four days after D40 kept it verbatim. A note whose frontmatter isn't valid YAML, which runs today, would fail (D45).
-  - **A misspelt key (`mcps`) is ignored,** and the run gets every server, as today. Only the record shows it.
+  - **It reverses D40, four days on.** A note's frontmatter no longer reaches the model, so whatever the model needs from it moves to the body, and a note whose frontmatter isn't valid YAML, which runs today, fails (D45, D47).
+  - **A misspelt key (`mcps`) is ignored,** and the run gets every server, as today; only its warning shows it (D48).
   - **The text and the list can disagree.** A task that mentions a server it doesn't list gets none of its tools, and the model reports that it can't reach the server, or works around it through the shell.
   - **Only the file given to the run chooses.** A task that has the model `read` another task file follows that file's text, not its list.
   - **It's stricter than the harnesses surveyed,** which mostly ignore a name that matches nothing (R22.1). A task file copied to a machine whose servers have other names fails until it's edited.
-  - **An inline task can't choose** until a flag exists.
-- **Decision:** D44 for where the choice lives, D45 for what the frontmatter means, and D46 for a listed server that's disabled. Q27 asks whether a task should narrow a server's tools as well.
+  - **Prose can pass for frontmatter.** A file that opens with a horizontal rule, a line such as `Note: call Ann` and another rule loses that line from the prompt, since it parses as a mapping.
+- **Decision:** D44 for where the choice lives, D45 for what the frontmatter means, D46 for a listed server that's disabled, D47 for frontmatter that isn't valid YAML, and D48 for a key the run doesn't read. Q27 asks whether a task should narrow a server's tools as well.
 
 ---
 
@@ -2792,8 +2828,10 @@ A draft for the change that gives the agent MCP servers ahead of OAuth (C16, D35
 | D42 | A setting that brings the fence back | a setting, off by default · none | **None:** with a shell in every run, the setting would only look like a sandbox (C20) | **decided 2026-11-01: none,** as asked. The change `remove-file-tool-fence` carries it out |
 | D43 | What a task file refuses by path | `.env*` names and the data folder, as C19 proposed against a slip of the shell's completion · nothing, as with the file tools (D41) | **Nothing:** C19 tied the rule to what the file tools refuse, and the harness guards no paths (C20). A binary or blank file still fails, since neither holds a task | **decided 2026-11-01: nothing,** as recommended. The change `remove-file-tool-fence` carries it out |
 | D44 | Where a task's choice of MCP servers lives | nowhere: every enabled server for every task, as now · a list in the task file's frontmatter · an environment variable set for the run · a flag | **The frontmatter, with every enabled server when it names none:** the choice stays beside the text that relies on it, as 4.7's `skills:` list does. An environment variable can't choose for one task from `.env` or in 4.8's one daemon, and no harness surveyed chooses servers through one (C21, R21, R22) | open |
-| D45 | What a task file's frontmatter means once a key in it is read | read the keys it knows, and still send the whole text verbatim · strip it, so that the body is the prompt, as C6 says of TASK.md · read only a `gremlin` mapping inside it | **Read the known keys, and send the text verbatim:** D40 holds, a note's own keys are ignored, and C6's keys stay at the top level. Frontmatter that isn't valid YAML fails the run (C21) | open |
+| D45 | What a task file's frontmatter means once a key in it is read | read the keys it knows, and still send the whole text verbatim · strip it, so that the body is the prompt, as C6 says of TASK.md · read only a `gremlin` mapping inside it | **Strip it:** the keys are configuration, which every harness surveyed keeps out of the prompt (R22.4), and C6 already reads TASK.md so. A block that parses as plain text stays in the prompt (C21, R23) | open |
 | D46 | A server the task lists that's disabled | fail the run, pointing to `bun run mcp enable` · skip it with a warning, as Claude Code does a server that a policy blocks (R22.1) | **Fail the run:** the task says it needs the server, as D33 fails one that can't start (C21) | open |
+| D47 | Frontmatter that isn't valid YAML | fail the run, with the parser's reason and line · warn, and send the block as text with every enabled server | **Fail the run:** stripped, a broken block can be neither read nor safely sent, and notes do hold such blocks (C21, R23.1) | open |
+| D48 | A key in the frontmatter that the run doesn't read | warn and ignore it · fail the run, as Gemini CLI's sub-agents do · ignore it silently, as Claude Code does (R22.4) | **Warn and ignore it:** a misspelt `mcps` shows in the log, and a note's `tags` don't fail it (C21) | open |
 
 ## Open questions
 
