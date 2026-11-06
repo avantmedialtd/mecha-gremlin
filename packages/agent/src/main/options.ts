@@ -28,15 +28,23 @@ const refusalsOf = (
     }
 
     if (type === 'boolean') {
-        return value === undefined ? [] : [`The option ${rawName} takes no value. ${hints.value}`];
+        if (value === undefined) {
+            return [];
+        }
+
+        return [`The option ${rawName} takes no value. ${hints.value}`];
     }
 
-    return value === undefined ||
+    if (
+        value === undefined ||
         (inlineValue === false && value.length > 1 && value.startsWith('-'))
-        ? [
-              `The option ${rawName} needs a value; one that starts with - is given as --${name}=<value>. ${hints.value}`,
-          ]
-        : [];
+    ) {
+        return [
+            `The option ${rawName} needs a value; one that starts with - is given as --${name}=<value>. ${hints.value}`,
+        ];
+    }
+
+    return [];
 };
 
 // Strict parsing names the argument it can't read only in its error's text, so a lenient reading of
@@ -59,10 +67,16 @@ export const parse = <T extends ParseArgsOptionsConfig>(
         return Object.entries(options).find(([option]) => option === name)?.[1].type;
     };
     const [refusal] = tokens.flatMap((token) => {
-        return token.kind === 'option' ? refusalsOf(typeOf(token.name), hints, token) : [];
+        if (token.kind !== 'option') {
+            return [];
+        }
+
+        return refusalsOf(typeOf(token.name), hints, token);
     });
 
-    return refusal === undefined
-        ? ok(parseArgs({ args, options, allowPositionals: true, tokens: true }))
-        : err(refusal);
+    if (refusal !== undefined) {
+        return err(refusal);
+    }
+
+    return ok(parseArgs({ args, options, allowPositionals: true, tokens: true }));
 };

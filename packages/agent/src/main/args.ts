@@ -23,7 +23,11 @@ const HINTS = { unknown: USAGE, value: USAGE };
 const taskOf = (text: string, file: string | undefined, where: string): Result<Task, string> => {
     const read = readFrontmatter(text, where);
 
-    return read.ok ? ok({ ...read.value, file }) : read;
+    if (!read.ok) {
+        return read;
+    }
+
+    return ok({ ...read.value, file });
 };
 
 const fromFile = async (path: string): Promise<Result<Task, string>> => {
@@ -43,15 +47,17 @@ const fromFile = async (path: string): Promise<Result<Task, string>> => {
 
         const text = new TextDecoder().decode(bytes).trim();
 
-        return text
-            ? taskOf(text, file, `task file ${name}`)
-            : err(`The task file ${name} is blank.`);
+        if (!text) {
+            return err(`The task file ${name} is blank.`);
+        }
+
+        return taskOf(text, file, `task file ${name}`);
     } catch (error) {
-        return err(
-            errorCode(error) === 'ENOENT'
-                ? `No task file at ${name}. ${USAGE}`
-                : `Can't read the task file ${name}: ${reasonOf(error)}`,
-        );
+        if (errorCode(error) === 'ENOENT') {
+            return err(`No task file at ${name}. ${USAGE}`);
+        }
+
+        return err(`Can't read the task file ${name}: ${reasonOf(error)}`);
     }
 };
 
@@ -79,7 +85,11 @@ export const readTask = async (args: readonly string[]): Promise<Result<Task, st
     }
 
     if (values.prompt === undefined) {
-        return path === undefined ? err(REQUIRED) : fromFile(path);
+        if (path === undefined) {
+            return err(REQUIRED);
+        }
+
+        return fromFile(path);
     }
 
     if (path !== undefined) {
@@ -88,5 +98,9 @@ export const readTask = async (args: readonly string[]): Promise<Result<Task, st
 
     const text = values.prompt.trim();
 
-    return text ? taskOf(text, undefined, 'task given with --prompt') : err(REQUIRED);
+    if (!text) {
+        return err(REQUIRED);
+    }
+
+    return taskOf(text, undefined, 'task given with --prompt');
 };

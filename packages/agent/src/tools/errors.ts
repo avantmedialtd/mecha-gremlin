@@ -4,5 +4,9 @@ export const errorCode = (error: unknown): unknown => {
 };
 
 export const reasonOf = (error: unknown): string => {
-    return error instanceof Error ? error.message : String(error);
+    if (error instanceof Error) {
+        return error.message;
+    }
+
+    return String(error);
 };

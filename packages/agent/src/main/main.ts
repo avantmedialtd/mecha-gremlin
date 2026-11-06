@@ -45,9 +45,11 @@ const leftOutNote = (leftOut: readonly LeftOut[]): string => {
 
 // The two sets are never offered together, and the order stays fixed for the prompt cache.
 const fileToolsFor = (fileTools: FileTools, workDir: string): ToolHandler[] => {
-    return fileTools === 'apply-patch'
-        ? [applyPatchTool(workDir)]
-        : [writeTool(workDir), editTool(workDir)];
+    if (fileTools === 'apply-patch') {
+        return [applyPatchTool(workDir)];
+    }
+
+    return [writeTool(workDir), editTool(workDir)];
 };
 
 const run = async (args: readonly string[]): Promise<number> => {

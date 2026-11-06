@@ -252,10 +252,11 @@ const routeTo = (origin: string, target: string): void => {
     vi.stubGlobal('fetch', (input: string | URL | Request, init?: RequestInit) => {
         const url = input instanceof Request ? input.url : String(input);
 
-        return realFetch(
-            url.startsWith(origin) ? `${target}${url.slice(origin.length)}` : url,
-            init,
-        );
+        if (url.startsWith(origin)) {
+            return realFetch(`${target}${url.slice(origin.length)}`, init);
+        }
+
+        return realFetch(url, init);
     });
 };
 

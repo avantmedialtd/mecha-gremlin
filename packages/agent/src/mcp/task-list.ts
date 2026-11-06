@@ -8,7 +8,9 @@ export type ListItem = {
 };
 
 export const parseListItem = (item: string): ListItem => {
-    const optional = item.endsWith(OPTIONAL);
+    if (item.endsWith(OPTIONAL)) {
+        return { name: item.slice(0, -1), optional: true };
+    }
 
-    return { name: optional ? item.slice(0, -1) : item, optional };
+    return { name: item, optional: false };
 };

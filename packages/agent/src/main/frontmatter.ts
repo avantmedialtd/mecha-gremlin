@@ -29,7 +29,11 @@ const isFrontmatter = (value: unknown): value is Block | null => {
 const linesOf = (frontmatter: string): string => {
     const last = frontmatter.split('\n').length + 1;
 
-    return last === 2 ? 'line 2' : `lines 2 to ${last}`;
+    if (last === 2) {
+        return 'line 2';
+    }
+
+    return `lines 2 to ${last}`;
 };
 
 const namesOf = (value: unknown): string[] | undefined => {
@@ -41,7 +45,11 @@ const namesOf = (value: unknown): string[] | undefined => {
         return typeof item === 'string' && NAME.test(parseListItem(item).name);
     });
 
-    return names.length === value.length ? names : undefined;
+    if (names.length !== value.length) {
+        return undefined;
+    }
+
+    return names;
 };
 
 // `mcp: docs` is refused, not read as a list of one: a second way to write the same list.
@@ -57,9 +65,11 @@ const mcpOf = (value: unknown, where: string): Result<readonly string[], string>
     const bare = names.map((item) => parseListItem(item).name);
     const repeated = bare.find((name, index) => bare.indexOf(name) !== index);
 
-    return repeated === undefined
-        ? ok(names)
-        : err(`In the frontmatter of the ${where}, mcp names ${repeated} twice. ${HINT}`);
+    if (repeated !== undefined) {
+        return err(`In the frontmatter of the ${where}, mcp names ${repeated} twice. ${HINT}`);
+    }
+
+    return ok(names);
 };
 
 /** `where` names the task in the errors, as in `task file "/tasks/daily.md"`. */

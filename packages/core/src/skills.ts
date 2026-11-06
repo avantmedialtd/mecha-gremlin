@@ -73,9 +73,11 @@ export const splitFrontmatter = (text: string): Result<SplitText, string> => {
 
     const found = blockOf(lines);
 
-    return found === undefined
-        ? err("its frontmatter doesn't end: no --- line closes it")
-        : ok(found);
+    if (found === undefined) {
+        return err("its frontmatter doesn't end: no --- line closes it");
+    }
+
+    return ok(found);
 };
 
 const isMapping = (value: unknown): value is Readonly<Record<string, unknown>> => {

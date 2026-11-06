@@ -169,9 +169,11 @@ const inNameOrder = (first: string, second: string): number => (first < second ?
 // listed one, and a disabled server the list requires fails the run too (D46), so disabling it
 // is no way out.
 const runWithout = (name: string, hasList: boolean): string => {
-    return hasList
-        ? `To run without it: leave it out of the task's mcp list, or write ${name}${OPTIONAL} there, which marks a server the task can go without.`
-        : `To run without it: bun run mcp disable ${name}, for every run, or an mcp list in the task's frontmatter that leaves it out, for one task.`;
+    if (hasList) {
+        return `To run without it: leave it out of the task's mcp list, or write ${name}${OPTIONAL} there, which marks a server the task can go without.`;
+    }
+
+    return `To run without it: bun run mcp disable ${name}, for every run, or an mcp list in the task's frontmatter that leaves it out, for one task.`;
 };
 
 // A problem of the server's own, found before any network request.
@@ -315,12 +317,15 @@ const failureMessage = (failure: Failure, hasList: boolean): string => {
         .split('\n')
         .filter((line) => line.trim() !== '')
         .slice(-STDERR_LINES);
+    const message = [`The MCP server ${server.name} couldn't start: ${startFailure(failure)}.`];
 
-    return [
-        `The MCP server ${server.name} couldn't start: ${startFailure(failure)}.`,
-        ...(lines.length > 0 ? ['Its stderr ended with:', ...lines] : []),
-        runWithout(server.name, hasList),
-    ].join('\n');
+    if (lines.length > 0) {
+        message.push('Its stderr ended with:', ...lines);
+    }
+
+    message.push(runWithout(server.name, hasList));
+
+    return message.join('\n');
 };
 
 const connectProblem = (failure: Failure, hasList: boolean): Problem => {
@@ -591,9 +596,11 @@ export const createMcpServers = ({
 
         const { reason, fromStore } = found.error;
 
-        return err([
-            fromStore ? fatalProblem(reason) : serverProblem(server.name, reason, hasList),
-        ]);
+        if (fromStore) {
+            return err([fatalProblem(reason)]);
+        }
+
+        return err([serverProblem(server.name, reason, hasList)]);
     };
 
     const connect = async (
@@ -648,7 +655,11 @@ export const createMcpServers = ({
             })),
         );
         const failed = attempts.flatMap(({ optional, result }) => {
-            return result.ok ? [] : [{ optional, failure: result.error }];
+            if (result.ok) {
+                return [];
+            }
+
+            return [{ optional, failure: result.error }];
         });
 
         // Closed before their reasons are read, since a stdio server's exit is read once it has
@@ -661,11 +672,13 @@ export const createMcpServers = ({
         }
 
         const started = sortOutcomes(
-            attempts.map(({ name, optional, result }) => ({
-                name,
-                optional,
-                result: result.ok ? result : err([connectProblem(result.error, hasList)]),
-            })),
+            attempts.map(({ name, optional, result }): Outcome<Connected> => {
+                if (result.ok) {
+                    return { name, optional, result };
+                }
+
+                return { name, optional, result: err([connectProblem(result.error, hasList)]) };
+            }),
         );
 
         if (started.failures.length > 0) {

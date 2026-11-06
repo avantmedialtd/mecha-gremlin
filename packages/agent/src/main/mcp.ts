@@ -247,12 +247,14 @@ const login = async (store: Store, name: string, given: Login): Promise<number> 
     const resolved = resolveServer(server, process.env, crypto.randomUUID());
 
     if (!resolved.ok) {
+        if (transportOfEntry(server.entry) === 'stdio') {
+            return fail([local(name)]);
+        }
+
         return fail(
-            transportOfEntry(server.entry) === 'stdio'
-                ? [local(name)]
-                : resolved.error.map((reason) => {
-                      return `The login to the MCP server ${name} can't start. ${reason}`;
-                  }),
+            resolved.error.map((reason) => {
+                return `The login to the MCP server ${name} can't start. ${reason}`;
+            }),
         );
     }
 
