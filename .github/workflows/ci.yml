@@ -93,9 +93,9 @@ jobs:
         name: Mutation testing
         needs: check
         runs-on: ubuntu-latest
-        # A full run of 7414 mutants needed about 3h35m on 2026-11-06, by Stryker's estimate after
-        # an hour; GitHub-hosted runners allow at most 360.
-        timeout-minutes: 300
+        # A full run of 7414 mutants took 4h33m on 2026-11-07, and GitHub-hosted runners allow at
+        # most 360 minutes, all of which the job gets.
+        timeout-minutes: 360
         steps:
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
