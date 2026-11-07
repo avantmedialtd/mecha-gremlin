@@ -25,7 +25,7 @@ Inside `packages/agent/src`, the code is grouped by concern:
 
 `yaml` and `process` choose their implementation once, when each module loads, from the global object: Bun's when `globalThis.Bun` is defined, the other one otherwise. The agent reads the frontmatter of skills and tasks with `yaml`, and runs commands and `ps` with `process`.
 
-At the top, [`test`](test) holds the signal guard, a Vitest setup file for every package's tests (see Develop).
+At the top, [`test`](test) holds the signal guard, a Vitest setup file for every package's tests, and the memory guard that mutation testing runs under (see Develop).
 
 No package has index files: every import names the file it uses. The `package.json` of `core`, `yaml`, `process` and `store` exports each module by name, so the agent imports `@mecha-gremlin/core/model-call`, `@mecha-gremlin/store/store` and so on. The tests mirror the folders.
 
@@ -366,6 +366,9 @@ bun run mutation       # Stryker mutation testing on Bun, which fails below 100%
   - Where the code can't reasonably change, a `// Stryker disable next-line` comment turns the mutant off, with the reason on the line above. There are ten: `main.ts`' final `throw`; the `yaml` package's log level, where `''` behaves exactly like `'error'`; two for the sweep's `ps`: its process group, since it lists the same processes from any group, and its working directory, since `''` means the current one, which works the same while it exists; the check that narrows an MCP tool's input schema to an object, which `isSpecType.Tool` has already made; the sort of MCP servers and tools by name, where `<=` sorts as `<` does, since no two names are equal; the empty fallback for a stdio MCP server's working directory, never used, since the run's directory is made before such a server starts; the readers a stdio server's close waits for, which have ended by then, since cancelling a reader settles its read at once; how much of a file `read` reads for its binary test, since the test looks at the first 8 KiB alone, and reading more would only take longer; and the login's closing of its listener's connections, which only Node's `close()` needs, since Bun's ends them itself and mutation testing runs on Bun.
 - **Tests fake the app's globals.** The app reads the environment, `fetch`, the clock and `console` directly, with nothing injected. Tests fake them with `vi.stubEnv`, `vi.stubGlobal` and `vi.spyOn`, and Vitest undoes every fake after each test. Importing `main.ts` runs it, so its tests import it only after faking, and never statically.
 - **Tests start real processes, and a guard checks every signal they send.** The shell's and the sweep's tests run real commands, on Bun and on Node, and assert outcomes and signals, never elapsed time. [`test/signal-guard.ts`](test/signal-guard.ts), a Vitest setup file that Stryker never mutates, wraps `process.kill`. It refuses, and fails the test for, a signal that could reach pid 0, -1 or 1, the test process or its parent, or a process the test file can't vouch for: one it started, one carrying a run ID it registered, or a descendant of either. So even a mutant that widens the sweep's match can't reach your own processes. Processes a test leaves carry a fresh random run ID, and end on their own after 30 seconds at most.
+- **Mutation testing runs under a memory guard.** A mutant can make a loop endless, and Stryker's hit limit can't end one that catches the error the limit throws, as the stdio transport's `drain` does. Such a loop that keeps what each turn makes grows by hundreds of megabytes a second, since Bun's heap has no limit. Stryker's timeout gives a mutant that slow tests cover minutes, so two or three such mutants side by side filled CI's runner and took it down.
+  - `bun run mutation` therefore starts Stryker through [`test/memory-guard.ts`](test/memory-guard.ts). Every half second, it lists Stryker and the processes under it, and kills any that holds more than 2 GiB. `MEMORY_LIMIT_MIB` sets another limit.
+  - Stryker restarts a test runner killed this way and tries its mutant once more, then reports a runtime error, which the mutation score leaves out.
 
 ## CI
 
@@ -376,6 +379,6 @@ GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) builds e
    - the tests on Bun (failures are annotated on the PR), then the whole suite again on Node;
    - the agent, started on Node against a port where nothing listens, with a data folder in the runner's temporary directory. It opens the store and runs the migrations first, then must exit with 1, saying it can't reach LM Studio. The tests load the code through Vite, so this is the one check that Node itself loads it;
    - `bun audit`, report only: the step shows as failed when there are advisories, but the job still passes.
-2. **Mutation testing:** once the checks pass, Stryker runs on Bun and uploads its HTML report as the `mutation-report` artifact. The job fails if any mutant survives. It sets up only Bun, not Node.
+2. **Mutation testing:** once the checks pass, Stryker runs on Bun, under the memory guard, and uploads its HTML report as the `mutation-report` artifact. The job fails if any mutant survives. It sets up only Bun, not Node.
 
 Actions are pinned to commit SHAs, and there is deliberately no dependency cache shared between builds.

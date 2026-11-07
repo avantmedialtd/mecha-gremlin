@@ -13,7 +13,7 @@
         "test": "TEST_RUNTIME=bun bunx --bun vitest run",
         "test:watch": "TEST_RUNTIME=bun bunx --bun vitest",
         "test:node": "TEST_RUNTIME=node vitest run",
-        "mutation": "TEST_RUNTIME=bun bun --bun --preload ./stryker.preload.ts node_modules/.bin/stryker run",
+        "mutation": "TEST_RUNTIME=bun bun ./test/memory-guard.ts bun --bun --preload ./stryker.preload.ts node_modules/.bin/stryker run",
         "typecheck": "tsc --noEmit",
         "lint": "oxlint --deny-warnings",
         "spellcheck": "cspell --no-progress .",
