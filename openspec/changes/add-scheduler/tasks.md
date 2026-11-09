@@ -1,0 +1,58 @@
+## 1. The package and its toolchain
+
+- [ ] 1.1 Create `packages/scheduler` with a `Cargo.toml` for the binary `gremlin-scheduler` (edition 2024, `publish = false`, `clippy::mod_module_files` denied under `[lints.clippy]`), a `rust-toolchain.toml` pinning the newest stable Rust with `rustfmt` and `clippy` in the minimal profile, and `src/main.rs`. Commit the `Cargo.lock` the first build writes.
+- [ ] 1.2 Add the newest releases of the crates of design decision 12 through `cargo add`, with only the features it names: croner with `jiff` and without its default `chrono`; jiff with `std`, `tz-system` and `tzdb-zoneinfo`; toml; serde with `derive`; serde_json; signal-hook; rustix with `process` and `std`; and `mutants`. Add a `deny.toml` for `cargo deny check advisories`.
+- [ ] 1.3 Add `packages/scheduler/package.json` as `@mecha-gremlin/scheduler`, private, with the `check`, `mutation` and `build` scripts of design decision 13, and a `.cargo/mutants.toml` with a `minimum_test_timeout` above the tests' longest bounded wait. Run `bun install`, so that `bun.lock` lists the workspace package.
+- [ ] 1.4 Add `target/` and `mutants.out*/` to `.gitignore`, and `ignorePatterns: ['/packages/scheduler']` to `stryker.config.mjs`, each with a comment saying why (design decision 13). Check with `bun run mutation --mutate <one file>` that Stryker still kills mutants. Check that oxlint, `tsc` and Vitest leave the package alone, that `bun run format:check` passes over its `package.json` and TOML files, and that CSpell passes over its files, adding words to `cspell.json` as needed.
+
+## 2. The command line and the config
+
+- [ ] 2.1 Parse `--config`, `--data-dir`, `--help` and `--version` by hand in `main.rs`: each option once, and anything else exiting 1 with the usage on stderr.
+- [ ] 2.2 Write `config.rs`: the TOML structs with `deny_unknown_fields`; the defaults; a file that is missing, unreadable or not TOML; durations (a positive whole number with `s`, `m` or `h`); names (ASCII letters, digits, `-` and `_`, at least one, unique); a non-empty `command` from the job or the top; a `keep_runs` of at least 1; a relative `working_dir` resolved against the config file's folder, with `command` and `args` left as written; no jobs allowed; and the `env` merge. Every error names the file, and its key and line when there is one.
+- [ ] 2.3 Check that the data directory exists and is a directory, failing with its path.
+
+## 3. Schedules, the zone and the wait
+
+- [ ] 3.1 Write `schedule.rs`: map the nicknames to five fields, `@midnight` included; refuse other `@` words, `?`, `L`, `W`, `#`, a `+` before the day of week, full names, and six or seven fields; parse with croner through `CronParser::builder()` and `Seconds::Disallowed`; refuse a schedule with no next fire; look up `timezone` with jiff, or read the system's zone at each wake from `TZ` or the `/etc/localtime` link, using jiff's `TimeZone::system()` only where that is a plain file.
+- [ ] 3.2 Write the due computation as a pure function of a job's schedule, the zone, its last look, now and whether its run is going: the latest fire after the last look and at or before now, on time when seen less than 90 s after it and missed otherwise; `running`, `missed` or a start; and a last look that becomes now unless now is earlier.
+- [ ] 3.3 Write `events.rs`: one `mpsc` channel fed by a signal-hook thread for SIGTERM, SIGINT and SIGHUP and by one waiter thread per run, and the loop's `recv_timeout` on the earliest of the next fire, the nearest signal due to a run (its deadline or its SIGKILL) and 60 s. Count fires on the wall clock and deadlines on `Instant`s. Decide once at the start, before the first wait, and record `clock stepped back` when the wall clock reads earlier than at the previous wake.
+
+## 4. Runs, logs and the lock
+
+- [ ] 4.1 Take the lock: create `<data-dir>/lock` with mode 0600 and hold `File::try_lock` for the process's life; a held lock exits 1, naming the data directory.
+- [ ] 4.2 Write `log.rs`: append JSON lines to `scheduler.log`, created with mode 0600, holding `time` (ISO 8601 UTC), `level`, `message` and the fields of design decision 11's records, with U+007F to U+009F escaped and times in fields written as `time` is; write errors to stderr until the log is open.
+- [ ] 4.3 Write `runs.rs`: start a run with `Command` (the command and `args`, `working_dir`, the merged environment, `process_group(0)`, stdin from `/dev/null`, stdout and stderr appended to `jobs/<name>/<start>.log` in a folder with mode 0700, the log with mode 0600); record `started`, and `exited` from its waiter with the code or signal and the seconds; record `error` when it can't start.
+- [ ] 4.4 Act on 3.2's decision: start the job, record `skipped` with the reason `running`, or catch a missed fire up once, or record `skipped` with the reason `missed` when the job sets `catch_up = false`. At the start, read each job's last look from its newest log's name, or take the start time.
+- [ ] 4.5 Enforce timeouts: at a run's deadline, SIGTERM to its process group through rustix, SIGKILL `stop_grace` later, and a `timed out` record. A run keeps the `timeout` and `stop_grace` it started with. Keep each run's group as the `Pid` from `Pid::from_child`, never as an integer a function returns, and send nothing to a group below 2; 5.2's stop sends through the same function.
+- [ ] 4.6 After each start, delete the job's oldest logs beyond `keep_runs`, never a running run's.
+
+## 5. The start and the signals
+
+- [ ] 5.1 Record `ready` at the start, with the `zone` and each job's `name` and `next` fire.
+- [ ] 5.2 On SIGTERM or SIGINT: record `stopping` with the signal, start nothing more, send SIGTERM to every run's group, wait up to `stop_grace`, send SIGKILL to the rest, record `stopped` and exit 0, ignoring further signals.
+- [ ] 5.3 On SIGHUP: read and check the config again. Swap it in and record `config reloaded`, letting running runs end with their own deadlines, dropping removed jobs, keeping kept jobs' last looks and giving new ones a last look of now; or record `config refused` with the reason and keep the old one.
+
+## 6. Tests and mutation testing
+
+- [ ] 6.1 Unit-test every check and default of the config, a file that isn't TOML, durations, names, no jobs, relative paths and the `env` merge.
+- [ ] 6.2 Unit-test schedules and due fires on fixed timestamps: the nicknames and the refused syntax; either day field, `*/2` included; the config's zone and the system's from `TZ` and from `/etc/localtime`; Europe/London and America/New_York at their 2026 and 2027 transitions, for fixed-time and interval schedules; the 90 s boundary; several missed fires giving one run; `catch_up = false`; a missed fire while a run is going; the backward and forward steps; the newest-log start and a new job.
+- [ ] 6.3 Test the loop in-process with an injected clock and a fake that starts runs: overlap, timeouts and the grace, a run that keeps its timeout across a reload, the stop, a valid and a refused reload, retention, the records' JSON and escaping, and the refusal to signal a group below 2.
+- [ ] 6.4 Test the built binary in `tests/`, starting runs at once by seeding a job's folder with a log older than its latest fire: missing, unknown and repeated options; `--help` and `--version`; a bad config and a missing data directory; a held lock, and a start after SIGKILL; a run's output, environment and records; a timeout and a run that ignores SIGTERM; SIGTERM while idle and with a run going; and SIGHUP with a valid and a broken config. Bound every wait, killing the binary when it passes.
+- [ ] 6.5 Run `bun run mutation:scheduler` until no mutant survives or times out. Turn off only equivalent or unreachable mutants, by `exclude_re` for one or `#[mutants::skip]` for a whole function, each with its reason above it.
+
+## 7. The repository's checks and CI
+
+- [ ] 7.1 Add the root scripts: `check` runs the scheduler's `check` after the TypeScript checks, and `mutation:scheduler` runs its `mutation`.
+- [ ] 7.2 Add a `Scheduler` job to `.github/workflows/ci.yml`, beside `Check and test`, keeping the workflow's rules: the same `if:`, so that a same-repository PR is built only by its branch's push; `persist-credentials: false` on checkout; actions pinned to SHAs; no cache; and a `timeout-minutes` of its own. Its steps run in `packages/scheduler` (`defaults.run.working-directory`). On `ubuntu-latest` and `macos-latest`: the format check, clippy and the tests. On `ubuntu-latest` only, with both tools installed by a SHA-pinned `taiki-e/install-action`: cargo-mutants under the memory guard, which fails the job on a mutant that survives or times out, and `cargo deny check advisories`, report only, with `continue-on-error: true` as `bun audit` has.
+- [ ] 7.3 Push the branch through gh's credential (`git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push`), since the keychain's token can't push workflow files.
+- [ ] 7.4 See CI pass on the branch, the `Scheduler` job's both legs included.
+
+## 8. Documentation and the Brief
+
+- [ ] 8.1 Document the scheduler in the README: a row in the layout table; rustup, and `cargo install --locked cargo-mutants` for mutation testing, in the prerequisites; a Scheduler section with the command line, the config's keys and defaults, schedules and zones, catch-up, overlap, timeouts, the data directory, its records and the signals; keeping it running with a LaunchAgent (`KeepAlive`, `WorkingDirectory`, `ProcessType`, `PATH`, `LANG`, and an `ExitTimeOut` above `stop_grace`), a systemd user service, or a container (`init: true`, a `stop_grace_period` above `stop_grace`, and `TZ`); the macOS privacy limit; the warning about runs started together on a fresh data folder; and the Develop and CI sections.
+- [ ] 8.2 Update the Brief, describing the host by category only: a line in its log saying that `add-scheduler` carries out D6, D12 and D50–D54; "The change `add-scheduler` carries it out" in their statuses; and D12 decided as recommended, croner-rust.
+
+## 9. Verify
+
+- [ ] 9.1 With the CPU cool (`uptime`), run `bun run check` and `bun run mutation:scheduler`, and see both pass.
+- [ ] 9.2 Run `openspec validate add-scheduler --strict`.
