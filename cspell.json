@@ -134,7 +134,6 @@
         "libfaketime",
         "libgcc",
         "libicucore",
-        "libnode",
         "libpq",
         "libsqlite",
         "libsystemd",
