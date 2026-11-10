@@ -1,18 +1,22 @@
 ## ADDED Requirements
 
 ### Requirement: Start with a config and a data directory
-The scheduler SHALL be a binary, `gremlin-scheduler`, started as `gremlin-scheduler --config <file> --data-dir <dir>`, each option given exactly once, or as `gremlin-scheduler --config <file> --check` (Requirement: --check prints each job's next fires). `--help` SHALL print the usage to stdout and `--version` the version, each exiting 0. A missing option, a missing value, a repeated option, `--check` with `--data-dir`, or any other argument SHALL exit 1 with the usage on stderr. The data directory SHALL exist and be a directory, or the start SHALL exit 1 naming it. The scheduler SHALL check the config (Requirement: The config is checked before anything runs), take the lock (Requirement: One scheduler per data directory), open its log, record `ready`, and then decide at once what fell due (Requirement: A missed fire runs once), before its first wait.
+The scheduler SHALL be a binary, `gremlin-scheduler`, with four subcommands: `run --config <file> --data-dir <dir>`, the scheduler itself; `check --config <file>` (Requirement: check prints each job's next fires); `install --config <file> --data-dir <dir>` (Requirement: install sets up the LaunchAgent); and `uninstall` (Requirement: uninstall removes the LaunchAgent). Each option SHALL be given exactly once. `--help` SHALL print the usage to stdout and `--version` the version, each exiting 0. A missing or unknown subcommand, a missing option, a missing value, a repeated option, an option the subcommand doesn't take, or any other argument SHALL exit 1 with the usage on stderr. For `run`, the data directory SHALL exist and be a directory, or the start SHALL exit 1 naming it. `run` SHALL check the config (Requirement: The config is checked before anything runs), take the lock (Requirement: One scheduler per data directory), open its log, record `ready`, and then decide at once what fell due (Requirement: A missed fire runs once), before its first wait.
 
 #### Scenario: A clean start
-- **WHEN** the scheduler starts with a valid config and an existing data directory
+- **WHEN** `run` starts with a valid config and an existing data directory
 - **THEN** `scheduler.log` gains a `ready` record whose `zone` names the zone and whose `jobs` give each job's `name` and `next` fire, and the scheduler keeps running
 
 #### Scenario: A missing option
-- **WHEN** the scheduler starts with `--config` and no `--data-dir`
+- **WHEN** `run` starts with `--config` and no `--data-dir`
 - **THEN** it exits 1, and stderr holds the usage, naming both options
 
 #### Scenario: An unknown or repeated option
-- **WHEN** the scheduler starts with `--verbose`, or with `--config` given twice
+- **WHEN** `run` starts with `--verbose`, or with `--config` given twice
+- **THEN** it exits 1 with the usage on stderr, and starts no run
+
+#### Scenario: A missing or unknown subcommand
+- **WHEN** the scheduler starts with only `--config <file> --data-dir <dir>`, or with the subcommand `start`
 - **THEN** it exits 1 with the usage on stderr, and starts no run
 
 #### Scenario: Help and version
@@ -20,22 +24,22 @@ The scheduler SHALL be a binary, `gremlin-scheduler`, started as `gremlin-schedu
 - **THEN** it prints the usage, or its version, to stdout and exits 0
 
 #### Scenario: A data directory that doesn't exist
-- **WHEN** `--data-dir` names a path that doesn't exist, or a file
+- **WHEN** `run`'s `--data-dir` names a path that doesn't exist, or a file
 - **THEN** the scheduler exits 1, and stderr names the path
 
-### Requirement: --check prints each job's next fires
-`gremlin-scheduler --config <file> --check` SHALL check the config as a start does (Requirement: The config is checked before anything runs), print to stdout the zone, as the `ready` record names it, and then, for each job in the config's order, its name and its next 5 fires after now, each in ISO 8601 with the zone's UTC offset, and exit 0. A config that fails its check SHALL exit 1, with the check's message on stderr. `--check` SHALL need no data directory, take no lock, write no file and start no run.
+### Requirement: check prints each job's next fires
+`gremlin-scheduler check --config <file>` SHALL check the config as `run` does (Requirement: The config is checked before anything runs), print to stdout the zone, as the `ready` record names it, and then, for each job in the config's order, its name and its next 5 fires after now, each in ISO 8601 with the zone's UTC offset, and exit 0. A config that fails its check SHALL exit 1, with the check's message on stderr. `check` SHALL need no data directory, take no lock, write no file and start no run.
 
 #### Scenario: Checking a config
-- **WHEN** a config whose `timezone` is America/New_York has one job, named `daily`, with the schedule `0 7 * * *`, and `--check` runs at 2026-11-10T13:00Z
+- **WHEN** a config whose `timezone` is America/New_York has one job, named `daily`, with the schedule `0 7 * * *`, and `check` runs at 2026-11-10T13:00Z
 - **THEN** stdout names `America/New_York` and `daily`, and gives the fires from `2026-11-11T07:00:00-05:00` to `2026-11-15T07:00:00-05:00`, one per day; the scheduler exits 0 and writes no file
 
 #### Scenario: Checking a broken config
-- **WHEN** `--check` runs on a config whose job holds `schedul = "0 7 * * *"`
+- **WHEN** `check` runs on a config whose job holds `schedul = "0 7 * * *"`
 - **THEN** it exits 1, and stderr names `schedul` and its line
 
-#### Scenario: --check with a data directory
-- **WHEN** the scheduler starts with `--config`, `--check` and `--data-dir`
+#### Scenario: check with a data directory
+- **WHEN** the scheduler starts with `check`, `--config` and `--data-dir`
 - **THEN** it exits 1 with the usage on stderr
 
 ### Requirement: The config is checked before anything runs
@@ -342,3 +346,55 @@ On SIGHUP the scheduler SHALL read and check the config again. A config that pas
 #### Scenario: A broken config
 - **WHEN** the config gains a key it doesn't know, and the scheduler gets SIGHUP
 - **THEN** a `config refused` record's `reason` names the key, and the jobs of the old config keep firing
+
+### Requirement: install sets up the LaunchAgent
+On macOS, `gremlin-scheduler install --config <file> --data-dir <dir>` SHALL, in this order: check the config as `check` does; create the data directory with mode 0700 if it doesn't exist, and `stderr.log` in it with mode 0600; boot out an agent already loaded as `local.gremlin-scheduler`, and then wait, up to `stop_grace` plus 15 s, until the data directory's lock is free; write `~/Library/LaunchAgents/local.gremlin-scheduler.plist`; load it with `launchctl bootstrap gui/<uid>`; and wait up to 10 s for a `ready` record written after the load, then print the plist's path and each job's next fire, and exit 0. The plist SHALL hold:
+- `Label`: `local.gremlin-scheduler`;
+- `ProgramArguments`: the absolute path of the binary `install` runs as, then `run`, `--config` and `--data-dir`, with absolute paths;
+- `KeepAlive`: true;
+- `ProcessType`: `Interactive`;
+- `WorkingDirectory`: the data directory;
+- `EnvironmentVariables`: the `PATH` and `LANG`, and `LC_ALL` when set, that `install` runs with;
+- `StandardErrorPath`: `stderr.log` in the data directory;
+- `ExitTimeOut`: `stop_grace` plus 15 s, in seconds.
+
+Its values SHALL be written with `&`, `<` and `>` as `&amp;`, `&lt;` and `&gt;`. When a plist is already there, `install` SHALL say that it replaces it. A config that fails its check SHALL exit 1 before any file is written or `launchctl` runs. A lock held when no agent was loaded, or still held after the wait, SHALL exit 1, naming the data directory, before the plist is loaded. No `ready` record within 10 s SHALL exit 1, printing the end of `stderr.log`. On any system but macOS, `install` SHALL exit 1, saying that it needs macOS, and change nothing.
+
+#### Scenario: A first install
+- **WHEN** `install` runs on macOS with a valid config, and no agent is loaded
+- **THEN** the data directory, its `stderr.log` and the plist exist, with the plist's keys as above; `launchctl bootstrap gui/<uid>` loads the plist; and `install` prints each job's next fire and exits 0
+
+#### Scenario: Installing again
+- **WHEN** `install` runs while the agent is loaded
+- **THEN** it boots the agent out, waits until the data directory's lock is free, says that it replaces the plist, writes the new one and loads it
+
+#### Scenario: A config that fails its check
+- **WHEN** `install` runs with a config whose job holds `schedul = "0 7 * * *"`
+- **THEN** it exits 1, naming `schedul`, writes no file and runs no `launchctl`
+
+#### Scenario: Another scheduler holds the data directory
+- **WHEN** a scheduler that launchd didn't start holds the data directory's lock, and no agent is loaded
+- **THEN** `install` exits 1 at once, naming the data directory, and loads no plist
+
+#### Scenario: A path that needs escaping
+- **WHEN** the config's path holds `&`
+- **THEN** the plist writes it as `&amp;`
+
+#### Scenario: No ready record
+- **WHEN** the loaded agent writes no `ready` record within 10 s
+- **THEN** `install` prints the end of `stderr.log` and exits 1
+
+#### Scenario: Not macOS
+- **WHEN** `install` runs on Linux
+- **THEN** it exits 1, saying that it needs macOS, and writes no file and runs no `launchctl`
+
+### Requirement: uninstall removes the LaunchAgent
+On macOS, `gremlin-scheduler uninstall` SHALL boot out the agent loaded as `local.gremlin-scheduler`, if one is, delete `~/Library/LaunchAgents/local.gremlin-scheduler.plist`, if it exists, print what it removed, and exit 0, leaving the config and the data directory. With neither, it SHALL say that nothing is installed and exit 0. On any system but macOS, it SHALL exit 1, saying that it needs macOS.
+
+#### Scenario: Uninstalling
+- **WHEN** `uninstall` runs while the agent is loaded
+- **THEN** `launchctl bootout gui/<uid>/local.gremlin-scheduler` runs, the plist is deleted, the data directory stays, and `uninstall` exits 0
+
+#### Scenario: Nothing installed
+- **WHEN** `uninstall` runs with no agent loaded and no plist
+- **THEN** it says that nothing is installed, runs no `bootout`, and exits 0

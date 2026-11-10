@@ -9,10 +9,11 @@ The agent is a one-shot CLI: from the repository's root, `bun run agent <task fi
 - **D53:** schedules follow the system's zone unless the config names a `timezone`.
 - **D54:** it sleeps at most 60 s between looks at the wall clock.
 
-The answers of 2026-11-10 settle the rest:
+The answers and the decision of 2026-11-10 settle the rest:
 - **Q28:** it runs on the Mac host first, under a LaunchAgent (decision 16).
 - **Q29:** each run is told its job, its slot and whether it catches up, through its environment (decision 7).
 - **Q30:** a failed run starts the job's `on_failure` command (decision 17).
+- **D55:** `gremlin-scheduler install` writes and loads its LaunchAgent, and `uninstall` removes it (decision 16).
 
 Constraints: the scheduler stays small ("its functionality will be limited"), runs first on a Mac host under a LaunchAgent and later in Linux containers (Q28), and meets the repository's bar in Rust's tools (C24). It knows nothing of the agent: a job is a command.
 
@@ -30,7 +31,7 @@ Constraints: the scheduler stays small ("its functionality will be limited"), ru
 **Non-Goals:**
 - Knowing the agent: its store, task files, frontmatter or `.env` beyond starting in the folder that holds it.
 - The store's migration race when runs start together (R25.5, S13), which a store change fixes.
-- The Docker image and compose file (none exist yet), and installing a LaunchAgent or systemd unit from code: the README shows them.
+- The Docker image and compose file (none exist yet), and installing a systemd unit from code: the README shows one.
 - The operating system's exact wall-clock timers (D54, S15), a zone per job, overlap's `queue` (D16), retries, dependencies between jobs, the agent's own alerts and where its results go (Q1), and showing a run's slot to the model, which the agent would do (Q29).
 
 ## Decisions
@@ -46,8 +47,9 @@ packages/scheduler/
 ├── deny.toml             cargo-deny: advisories
 ├── .cargo/mutants.toml   cargo-mutants: timeouts, and single-mutant exclusions
 ├── src/
-│   ├── main.rs           the command line, the start, the lock and the loop
+│   ├── main.rs           the subcommands, the start, the lock and the loop
 │   ├── config.rs         reading and checking the TOML config
+│   ├── install.rs        install and uninstall: the LaunchAgent's plist, and launchctl
 │   ├── schedule.rs       schedules, the zone, and what fell due
 │   ├── runs.rs           starting runs, their logs, timeouts and retention
 │   ├── events.rs         the channel that signals, run exits and the capped wait share
@@ -63,11 +65,22 @@ Alternatives: `crates/` beside `packages/` with a root Cargo workspace, as Turbo
 
 ### 2. The command line
 
-`gremlin-scheduler --config <file> --data-dir <dir>`, both required, each given once. `--help` prints the usage and `--version` the version, each exiting 0. Any other argument, a missing value, a repeated option or `--check` with `--data-dir` exits 1 with the usage on stderr. The arguments are parsed by hand; a parser crate isn't worth it for three options.
+Four subcommands, each option given once:
 
-`gremlin-scheduler --config <file> --check` checks the config as a start does, prints the zone and each job's next 5 fires in ISO 8601 with the zone's offset, and exits 0, or 1 with the check's message on stderr. It takes no data directory and no lock, writes no file and starts no run, so it can run beside a running scheduler: before a reload, whose refusal otherwise shows only in `scheduler.log`, and to see what a schedule means across DST and the either-day rule (decision 4). supercronic's `-test` only says that a crontab is valid (R26.2), and R25.2 read calendars with `systemd-analyze calendar`.
+```
+gremlin-scheduler run --config <file> --data-dir <dir>
+gremlin-scheduler check --config <file>
+gremlin-scheduler install --config <file> --data-dir <dir>
+gremlin-scheduler uninstall
+```
 
-The start, in order, each failure exiting 1 with its reason on stderr: read and check the config (decision 3); check that the data directory exists and is a directory; take the lock (decision 10); open `scheduler.log`; record `ready` with the zone and each job's next fire; decide at once what fell due (decision 6); then enter the loop. Errors go to stderr until the log is open, and to the log after.
+`--help` prints the usage and `--version` the version, each exiting 0. A missing or unknown subcommand, a missing option or value, a repeated option, an option the subcommand doesn't take, or any other argument exits 1 with the usage on stderr. With four forms, subcommands keep each form's options apart, as the agent's `bun run mcp` does (D55). The arguments are parsed by hand; a parser crate isn't worth it for two options.
+
+`check` checks the config as `run` does, prints the zone and each job's next 5 fires in ISO 8601 with the zone's offset, and exits 0, or 1 with the check's message on stderr. It takes no data directory and no lock, writes no file and starts no run, so it can run beside a running scheduler: before a reload, whose refusal otherwise shows only in `scheduler.log`, and to see what a schedule means across DST and the either-day rule (decision 4). supercronic's `-test` only says that a crontab is valid (R26.2), and R25.2 read calendars with `systemd-analyze calendar`.
+
+`install` and `uninstall` set the scheduler up under launchd and remove it (decision 16).
+
+`run` is the scheduler itself. Its start, in order, each failure exiting 1 with its reason on stderr: read and check the config (decision 3); check that the data directory exists and is a directory; take the lock (decision 10); open `scheduler.log`; record `ready` with the zone and each job's next fire; decide at once what fell due (decision 6); then enter the loop. Errors go to stderr until the log is open, and to the log after.
 
 ### 3. The config
 
@@ -197,7 +210,7 @@ A thread holds signal-hook's iterator for SIGTERM, SIGINT and SIGHUP, and sends 
 - **SIGTERM or SIGINT:** record `stopping`, stop starting runs and `on_failure` commands, send SIGTERM to every running group, theirs included, wait up to `stop_grace` for them to exit, send SIGKILL to the rest, record `stopped` and exit 0. Signals that arrive meanwhile are ignored.
 - **SIGHUP:** read and check the config again. A config that passes replaces the old one and records `config reloaded`: running runs go on to their end with their own deadlines, a removed job starts nothing more, a kept job keeps its last look, and a new job's last look is the time of the reload. One that fails records `config refused`, with its reason, and the old one stays.
 
-What stops the scheduler must wait longer than `stop_grace`. launchd sends SIGKILL `ExitTimeOut` seconds after SIGTERM, 20 s by default in its last open-source release, and Docker sends it after its stop grace, 10 s by default (R25.4, R25.5). So the README's LaunchAgent sets `ExitTimeOut`, and its compose example `stop_grace_period`, above `stop_grace`. Under Docker the scheduler would be the main process. It handles SIGTERM itself, and compose's `init: true` reaps orphaned grandchildren.
+What stops the scheduler must wait longer than `stop_grace`. launchd sends SIGKILL `ExitTimeOut` seconds after SIGTERM, 20 s by default in its last open-source release and "system-defined" in macOS 27.2's launchd.plist(5), and Docker sends it after its stop grace, 10 s by default (R25.4, R25.5). So the plist `install` writes sets `ExitTimeOut` 15 s above `stop_grace` (decision 16), and the README's compose example sets `stop_grace_period` above it. Under Docker the scheduler would be the main process. It handles SIGTERM itself, and compose's `init: true` reaps orphaned grandchildren.
 
 ### 10. One scheduler per data directory
 
@@ -246,7 +259,7 @@ The package's `package.json` scripts:
 
 The root's `check` runs the scheduler's `check` after the TypeScript checks, and the root gains `mutation:scheduler`, which runs its `mutation`. `rust-toolchain.toml` pins the newest stable Rust with rustfmt and clippy. rustup installs it on first use, from the folder cargo runs in (R26.4), and it moves with the repository's newest-version rule. cargo-mutants itself is installed with `cargo install --locked cargo-mutants`.
 
-`.cargo/mutants.toml` sets a `minimum_test_timeout` well above the tests' longest bounded wait. cargo-mutants times a mutant's tests out at 5 times the baseline's, at least 20 s, and counts a timeout as a failure. As with Stryker now, only an equivalent or unreachable mutant may be turned off. Stable Rust has no line-level skip (R26.4), so one mutant is excluded by an `exclude_re` entry in `.cargo/mutants.toml` that matches it alone, with the reason in a comment above it. `#[mutants::skip]` turns off every mutant of a function, so it goes only where all of them are equivalent or unreachable, with the reason on the line above.
+`.cargo/mutants.toml` sets a `minimum_test_timeout` well above the tests' longest bounded wait. cargo-mutants times a mutant's tests out at 5 times the baseline's, at least 20 s, and counts a timeout as a failure. As with Stryker now, only an equivalent or unreachable mutant may be turned off. Stable Rust has no line-level skip (R26.4), so one mutant is excluded by an `exclude_re` entry in `.cargo/mutants.toml` that matches it alone, with the reason in a comment above it. `#[mutants::skip]` turns off every mutant of a function, so it goes only where all of them are equivalent or unreachable, with the reason on the line above. The one exception is the two functions that hand `install` and `uninstall` the real `launchctl` and home directory: a test that called them would change the launchd of the machine running it, so no test does, and they carry `#[mutants::skip]` with that reason (decision 16).
 
 `target/` and `mutants.out*/`, cargo-mutants' reports, go into `.gitignore`: the reports fail oxfmt and CSpell, and `lock.json` records the host's name and user. Stryker copies every file it doesn't ignore into its sandbox, `.gitignore` or not, so `stryker.config.mjs` ignores `/packages/scheduler`, where a build leaves over 100 MB in `target/`. oxfmt formats the package's `package.json` and TOML files as it does the other packages' files, and CSpell checks its Rust; it treats `Cargo.lock` as a generated lock file.
 
@@ -266,12 +279,13 @@ It keeps the workflow's rules: the `if:` that builds a same-repository PR only t
   - due and missed fires on fixed timestamps, in Europe/London and America/New_York at their 2026 and 2027 transitions, for fixed-time and interval schedules;
   - the 90 s boundary, the backward step, the start from the newest log and a new job;
   - the zone read from `TZ` and from `/etc/localtime`;
-  - `--check`'s fires at a fixed time;
-  - retention, log names, the records' JSON, and the refusal to signal a group below 2.
+  - `check`'s fires at a fixed time;
+  - retention, log names, the records' JSON, and the refusal to signal a group below 2;
+  - `install` and `uninstall` against a temporary home and a fake runner, on any system: a first install, installing again, a broken config, a held lock, no `ready` record, a system that isn't macOS, the plist's keys and escaping, and `uninstall` with and without an agent.
 - **The loop** is tested in-process with an injected clock and a fake that stands in for starting runs: overlap, timeouts, the `on_failure` command and its 60 s limit, the stop sequence and reload, with no real waiting.
 - **The binary's tests** run it for real. A run starts at once, with no wait for a minute, when a test seeds a job's folder with a log whose start is older than the job's latest fire: the start's decision catches it up. They cover:
-  - missing, unknown and repeated options, `--help` and `--version`;
-  - `--check` on a valid and a broken config, writing nothing;
+  - missing and unknown subcommands, missing, unknown and repeated options, `--help` and `--version`;
+  - `check` on a valid and a broken config, writing nothing;
   - a bad config and a missing data directory;
   - a held lock, and a start after SIGKILL;
   - a run's output, environment, `GREMLIN_` variables and records;
@@ -279,21 +293,41 @@ It keeps the workflow's rules: the `if:` that builds a same-repository PR only t
   - a timeout, and a run that ignores SIGTERM;
   - SIGTERM while idle and with a run going;
   - SIGHUP with a valid and a broken config.
+
+  They never run `install` or `uninstall`, which would change the launchd of the machine running them (decision 16).
 - **Every wait in a test is bounded.** A test that waits for a record or an exit gives up after a deadline and kills the binary. A mutant that hangs the scheduler then fails a test rather than timing out.
 - **Mutation testing** must catch every mutant. cargo-mutants makes fewer mutants than Stryker (R26.4), so the tests check literals and whole conditions by hand.
 
-### 16. Where it runs first
+### 16. Where it runs first, and `install`
 
-On the Mac host, under a LaunchAgent (Q28): the agent runs there today (D18), and the repository has no Docker image yet. The README leads with the plist, loaded with `launchctl bootstrap gui/<uid>`:
-- `ProgramArguments`: the built binary's absolute path, `--config` and `--data-dir`;
+On the Mac host, under a LaunchAgent (Q28): the agent runs there today (D18), and the repository has no Docker image yet. `gremlin-scheduler install --config <file> --data-dir <dir>` sets it up, as asked (D55), and `gremlin-scheduler uninstall` removes it.
+
+`install` takes these steps in order, and a failure at any of them exits 1 with its reason:
+1. It refuses on any system but macOS, pointing to the README's systemd unit.
+2. It checks the config as `check` does.
+3. It creates the data directory with mode 0700 if it doesn't exist, and `stderr.log` in it with mode 0600, since launchd would create that file with the umask's mode (R25.5).
+4. It boots out an agent already loaded as `local.gremlin-scheduler`, found with `launchctl print`, and then waits, up to `stop_grace` plus 15 s, until the data directory's lock is free, since launchctl(1) doesn't say whether `bootout` waits for the process to end. A lock held with no agent loaded, such as by a scheduler started in a terminal, fails the install at once, and so does one still held after the wait, before anything is loaded.
+5. It writes `~/Library/LaunchAgents/local.gremlin-scheduler.plist`, creating the folder if needed. When a plist is already there, it says that it replaces it and prints what the agent now runs, so that an install from a second checkout repoints the agent loudly, not silently (R25.5).
+6. It loads the plist with `launchctl bootstrap gui/<uid>`.
+7. It waits up to 10 s for a `ready` record written after the load, then prints the plist's path and each job's next fire. Without one, it prints the end of `stderr.log`, says that the agent is loaded and `uninstall` removes it, and exits 1.
+
+The plist is written by hand, with `&`, `<` and `>` escaped, so no plist crate is needed:
+- `Label`: `local.gremlin-scheduler`, so one scheduler is installed per user, and `install` again replaces it;
+- `ProgramArguments`: the absolute path of the binary `install` runs as, from `current_exe`, then `run`, `--config` and `--data-dir`, with absolute paths, since a plist expands neither `~` nor `$HOME`;
 - `KeepAlive`, which implies `RunAtLoad`, so that launchd starts it at login and again whenever it exits;
-- `WorkingDirectory`, the checkout, since launchd otherwise starts a job in `/` (R25.2);
-- `EnvironmentVariables` with `PATH` and `LANG`, which launchd doesn't set and `.env` can't (R25.5);
-- `ProcessType` set to `Interactive`: without it launchd throttles the job's CPU and I/O, and likely its runs' **[M]**, and `Standard` is the same as leaving it out (R25.2);
-- `StandardErrorPath`, so that a start that fails, such as on a config error, says why: launchd sends stderr to `/dev/null` unless it is set, and `KeepAlive` starts the scheduler again, at most once every 10 s (R25.2);
-- `ExitTimeOut` above `stop_grace` (decision 9).
+- `WorkingDirectory`: the data directory, since launchd otherwise starts a job in `/` (R25.2), and runs start in their own `working_dir` anyway;
+- `EnvironmentVariables`: the `PATH` and `LANG`, and `LC_ALL` when set, that `install` runs with. launchd sets only a short `PATH` and no `LANG`, and `.env` can set neither (R25.5), while runs, their shell commands and their MCP servers need both. `install` prints them, and running it from another shell takes that shell's;
+- `ProcessType`: `Interactive`. Without it launchd throttles the job's CPU and I/O, and likely its runs' **[M]**, and `Standard` is the same as leaving it out (R25.2);
+- `StandardErrorPath`: the data directory's `stderr.log`, so that a start that fails, such as on a config edited since, says why: launchd sends stderr to `/dev/null` unless it is set, and `KeepAlive` starts the scheduler again, at most once every 10 s (R25.2);
+- `ExitTimeOut`: `stop_grace` plus 15 s (decision 9). A later change to `stop_grace` needs `install` again.
 
-A LaunchAgent runs while its user is logged in, since `gui/<uid>` exists only with a GUI login (R25.5). A process launchd starts likely can't reach `~/Documents`, `~/Desktop`, `~/Downloads` or iCloud Drive **[M]** (R25.2), so the README says to keep the checkout, the data directory and every file a task touches outside them, and S11 checks it on a spare Mac. `launchctl kill HUP` rereads the config, and `launchctl bootout` stops the scheduler for good. A systemd user service and a container get shorter notes; the container follows with the image (4.9).
+`uninstall` boots the agent out if it is loaded and deletes its plist, printing what it removed, and leaves the config and the data directory. With nothing installed it says so and exits 0. It refuses on any system but macOS.
+
+**No test touches the real launchd.** `install` and `uninstall` take the system's name, the home directory, the user's id, the binary's path, the environment, the waits' limits and a runner for `launchctl` as arguments. Tests give them a temporary home and a fake runner that records each call and answers as `launchctl` would, on Linux as on macOS, where cargo-mutants runs. Two small functions hand them the real ones: `/bin/launchctl` by its absolute path, `HOME`, rustix's `getuid` and `current_exe`. A test that called them would load or remove a LaunchAgent on the machine running it, as R25.5 warns, so no test calls them, the binary's tests never run `install` or `uninstall`, and cargo-mutants skips those two functions (decision 13). S11 checks the real install on a spare Mac.
+
+A LaunchAgent runs while its user is logged in, since `gui/<uid>` exists only with a GUI login (R25.5). A process launchd starts likely can't reach `~/Documents`, `~/Desktop`, `~/Downloads` or iCloud Drive **[M]** (R25.2), so the README says to keep the binary, the config, the data directory and every file a task touches outside them, and S11 checks it. The README installs the binary with `cargo install --path . --locked` in `packages/scheduler`, where rustup finds the pinned toolchain, into `~/.cargo/bin`, so that the plist names a path that a rebuild or `cargo clean` in the checkout doesn't touch. It shows `launchctl kill SIGHUP gui/<uid>/local.gremlin-scheduler`, which rereads the config, and `launchctl print`, which shows the agent's state. A systemd user service and a container get shorter notes, written by hand; the container follows with the image (4.9).
+
+Alternatives: the README's plist alone, as this design first had it, which leaves every key for the user to get right; one label per data directory, which allows several installed schedulers at the cost of naming each; and `install` copying the binary to a folder of its own, which `cargo install` already does.
 
 ### 17. A command when a run fails
 
@@ -321,7 +355,10 @@ Alternatives: the log alone, which leaves a failure at 3am unseen until someone 
 - [On macOS, a process launchd starts, and likely its runs, can't reach `~/Documents`, `~/Desktop` or iCloud Drive (R25.2)] → The README says so, and S11 checks it on a spare Mac.
 - [If the scheduler itself crashes on macOS, its runs go on: each is in a group of its own, which launchd's kill doesn't reach. The restarted scheduler doesn't know them, so no timeout bounds them, and a job's next fire can start beside one] → A small, tested crate, and `KeepAlive`; under systemd and Docker the runs end with the scheduler.
 - [A SIGKILL after `stop_grace` leaves the agent's detached shell commands and MCP servers running (decision 7)] → `stop_grace` above the agent's own cleanup time.
-- [launchd's and Docker's own stop timeouts are shorter than `stop_grace`] → The README's examples set `ExitTimeOut` and `stop_grace_period` above it.
+- [launchd's and Docker's own stop timeouts are shorter than `stop_grace`] → `install` sets `ExitTimeOut` above it, and the README's compose example `stop_grace_period`.
+- [`install` and `uninstall` change the user's launchd, which no test may touch] → They take a runner and a home directory, which tests fake; only two small functions hand them the real ones, and cargo-mutants skips those two; S11 checks the real install on a spare Mac.
+- [`install` copies `PATH` from the shell it runs in, which may hold entries a run doesn't need, or lack ones it does] → It prints what it wrote, and `install` from another shell takes that shell's.
+- [One label per user, so an install from a second checkout repoints the agent (R25.5)] → `install` says that it replaces the plist, and prints what the agent now runs.
 - [Up to 60 s late after a wake, and later in Docker Desktop's VM until its clock is next stepped (R26.1)] → Accepted by D54; exact timers can follow (S15).
 - [Runs started together on a fresh or migrating data folder fail (R25.5)] → Out of scope here; the README warns until the store's change lands (S13).
 - [Schedules follow the system's zone without `timezone`, so a container runs in UTC unless `TZ` is set (D53)] → The README says so.
@@ -333,8 +370,8 @@ Alternatives: the log alone, which leaves a failure at 3am unseen until someone 
 
 ## Migration Plan
 
-Nothing to migrate: the package is new and nothing depends on it. A user builds it with `bun run --filter @mecha-gremlin/scheduler build`, writes a config, and starts it from a LaunchAgent, as the README shows first (decision 16), or from a systemd user service or a container. Removing it means stopping that service and deleting the package.
+Nothing to migrate: the package is new and nothing depends on it. On a Mac, a user installs the binary with `cargo install --path . --locked` in `packages/scheduler`, writes a config, checks it with `gremlin-scheduler check`, and runs `gremlin-scheduler install` (decision 16). On Linux, a systemd user service or a container starts `gremlin-scheduler run`, as the README shows. Removing it means `gremlin-scheduler uninstall` and `cargo uninstall gremlin-scheduler`.
 
 ## Open Questions
 
-None left. Q28, Q29 and Q30, and the change's own two questions, were answered on 2026-11-10: where it runs first (decision 16), the variables a run gets (decision 7), the command a failed run starts (decision 17), `--check` (decision 2) and the log's rotation (decision 11).
+None left. Q28, Q29 and Q30, and the change's own two questions, were answered on 2026-11-10: where it runs first (decision 16), the variables a run gets (decision 7), the command a failed run starts (decision 17), `check` (decision 2) and the log's rotation (decision 11).

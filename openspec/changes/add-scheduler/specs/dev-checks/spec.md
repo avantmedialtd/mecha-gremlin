@@ -16,7 +16,7 @@ The scheduler package's `check` script SHALL run `cargo fmt --check`, `cargo cli
 - **THEN** the scheduler's format check, clippy and tests run on `ubuntu-latest` and on `macos-latest`
 
 ### Requirement: Mutation testing catches every mutant in the scheduler
-`bun run mutation:scheduler` SHALL run cargo-mutants over the scheduler, under the repository's memory guard, and SHALL fail when a mutant survives or times out. CI SHALL run it on Linux, and its job SHALL fail when it fails. Only an equivalent or unreachable mutant SHALL be turned off: by an `exclude_re` entry in `.cargo/mutants.toml` that matches it alone, or by `#[mutants::skip]` on a function whose every mutant is equivalent or unreachable, each with its reason in a comment on the line above.
+`bun run mutation:scheduler` SHALL run cargo-mutants over the scheduler, under the repository's memory guard, and SHALL fail when a mutant survives or times out. CI SHALL run it on Linux, and its job SHALL fail when it fails. Only an equivalent or unreachable mutant SHALL be turned off: by an `exclude_re` entry in `.cargo/mutants.toml` that matches it alone, or by `#[mutants::skip]` on a function whose every mutant is equivalent or unreachable, each with its reason in a comment on the line above. The one exception SHALL be the two functions that hand the scheduler's `install` and `uninstall` the real `launchctl` and home directory, which SHALL carry `#[mutants::skip]` with that reason, since no test may call them (Requirement: The scheduler's tests leave the machine's launchd alone).
 
 #### Scenario: A surviving mutant
 - **WHEN** a mutant of the scheduler survives its tests
@@ -29,6 +29,17 @@ The scheduler package's `check` script SHALL run `cargo fmt --check`, `cargo cli
 #### Scenario: A mutant that runs away with memory
 - **WHEN** a mutant makes the scheduler or its tests grow past the memory guard's limit
 - **THEN** the guard kills that process, and cargo-mutants goes on to the next mutant
+
+### Requirement: The scheduler's tests leave the machine's launchd alone
+No test of the scheduler SHALL run `launchctl` or write in the real `~/Library/LaunchAgents`, in `bun run check`, in `bun run mutation:scheduler` or in CI. `install` and `uninstall` SHALL be tested against a fake runner and a temporary home, and the binary's tests SHALL NOT run them.
+
+#### Scenario: Checks on a Mac
+- **WHEN** `bun run check` or `bun run mutation:scheduler` runs on a Mac
+- **THEN** no LaunchAgent is written, loaded or removed
+
+#### Scenario: A mutant of install
+- **WHEN** a mutant of `install` drops one of its checks
+- **THEN** its tests still call only the fake runner, and it writes only in the tests' temporary folders
 
 ### Requirement: The scheduler's dependencies are checked for advisories
 CI SHALL run `cargo deny check advisories` over the scheduler's dependencies, report only, as it runs `bun audit`: the step SHALL show as failed when a dependency has an advisory, and the job SHALL still pass.
