@@ -9,7 +9,7 @@ The agent is a one-shot CLI: from the repository's root, `bun run agent <task fi
 - **D53:** schedules follow the system's zone unless the config names a `timezone`.
 - **D54:** it sleeps at most 60 s between looks at the wall clock.
 
-Constraints: the scheduler stays small ("its functionality will be limited"), runs on macOS hosts and in Linux containers, whichever comes first (Q28), and meets the repository's bar in Rust's tools (C24). It knows nothing of the agent: a job is a command.
+Constraints: the scheduler stays small ("its functionality will be limited"), runs first on a Mac host under a LaunchAgent and later in Linux containers (Q28), and meets the repository's bar in Rust's tools (C24). It knows nothing of the agent: a job is a command.
 
 ## Goals / Non-Goals
 
@@ -264,6 +264,19 @@ It keeps the workflow's rules: the `if:` that builds a same-repository PR only t
 - **Every wait in a test is bounded.** A test that waits for a record or an exit gives up after a deadline and kills the binary. A mutant that hangs the scheduler then fails a test rather than timing out.
 - **Mutation testing** must catch every mutant. cargo-mutants makes fewer mutants than Stryker (R26.4), so the tests check literals and whole conditions by hand.
 
+### 16. Where it runs first
+
+On the Mac host, under a LaunchAgent (Q28): the agent runs there today (D18), and the repository has no Docker image yet. The README leads with the plist, loaded with `launchctl bootstrap gui/<uid>`:
+- `ProgramArguments`: the built binary's absolute path, `--config` and `--data-dir`;
+- `KeepAlive`, which implies `RunAtLoad`, so that launchd starts it at login and again whenever it exits;
+- `WorkingDirectory`, the checkout, since launchd otherwise starts a job in `/` (R25.2);
+- `EnvironmentVariables` with `PATH` and `LANG`, which launchd doesn't set and `.env` can't (R25.5);
+- `ProcessType` set to `Interactive`: without it launchd throttles the job's CPU and I/O, and likely its runs' **[M]**, and `Standard` is the same as leaving it out (R25.2);
+- `StandardErrorPath`, so that a start that fails, such as on a config error, says why: launchd sends stderr to `/dev/null` unless it is set, and `KeepAlive` starts the scheduler again, at most once every 10 s (R25.2);
+- `ExitTimeOut` above `stop_grace` (decision 9).
+
+A LaunchAgent runs while its user is logged in, since `gui/<uid>` exists only with a GUI login (R25.5). A process launchd starts likely can't reach `~/Documents`, `~/Desktop`, `~/Downloads` or iCloud Drive **[M]** (R25.2), so the README says to keep the checkout, the data directory and every file a task touches outside them, and S11 checks it on a spare Mac. `launchctl kill HUP` rereads the config, and `launchctl bootout` stops the scheduler for good. A systemd user service and a container get shorter notes; the container follows with the image (4.9).
+
 ## Risks / Trade-offs
 
 - [A second toolchain, supply chain and pipeline (C24)] → One small crate with eight dependencies, cargo-deny, and a CI job that adds no time to `Check and test`.
@@ -283,11 +296,10 @@ It keeps the workflow's rules: the `if:` that builds a same-repository PR only t
 
 ## Migration Plan
 
-Nothing to migrate: the package is new and nothing depends on it. A user builds it with `bun run --filter @mecha-gremlin/scheduler build`, writes a config, and starts it from a LaunchAgent, a systemd user service or a container, as the README shows. Removing it means stopping that service and deleting the package.
+Nothing to migrate: the package is new and nothing depends on it. A user builds it with `bun run --filter @mecha-gremlin/scheduler build`, writes a config, and starts it from a LaunchAgent, as the README shows first (decision 16), or from a systemd user service or a container. Removing it means stopping that service and deleting the package.
 
 ## Open Questions
 
-- Where does the scheduler run first, on a Mac host or in the container (Q28)?
 - Should a run be told its slot time, and that it is catching up (Q29)?
 - How should a failed run reach the user (Q30, Q1)?
 - Would a mode that prints each job's next fires, without running anything, be worth adding?
