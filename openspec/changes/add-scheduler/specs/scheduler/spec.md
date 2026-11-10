@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Start with a config and a data directory
-The scheduler SHALL be a binary, `gremlin-scheduler`, started as `gremlin-scheduler --config <file> --data-dir <dir>`, each option given exactly once. `--help` SHALL print the usage to stdout and `--version` the version, each exiting 0. A missing option, a missing value, a repeated option or any other argument SHALL exit 1 with the usage on stderr. The data directory SHALL exist and be a directory, or the start SHALL exit 1 naming it. The scheduler SHALL check the config (Requirement: The config is checked before anything runs), take the lock (Requirement: One scheduler per data directory), open its log, record `ready`, and then decide at once what fell due (Requirement: A missed fire runs once), before its first wait.
+The scheduler SHALL be a binary, `gremlin-scheduler`, started as `gremlin-scheduler --config <file> --data-dir <dir>`, each option given exactly once, or as `gremlin-scheduler --config <file> --check` (Requirement: --check prints each job's next fires). `--help` SHALL print the usage to stdout and `--version` the version, each exiting 0. A missing option, a missing value, a repeated option, `--check` with `--data-dir`, or any other argument SHALL exit 1 with the usage on stderr. The data directory SHALL exist and be a directory, or the start SHALL exit 1 naming it. The scheduler SHALL check the config (Requirement: The config is checked before anything runs), take the lock (Requirement: One scheduler per data directory), open its log, record `ready`, and then decide at once what fell due (Requirement: A missed fire runs once), before its first wait.
 
 #### Scenario: A clean start
 - **WHEN** the scheduler starts with a valid config and an existing data directory
@@ -22,6 +22,21 @@ The scheduler SHALL be a binary, `gremlin-scheduler`, started as `gremlin-schedu
 #### Scenario: A data directory that doesn't exist
 - **WHEN** `--data-dir` names a path that doesn't exist, or a file
 - **THEN** the scheduler exits 1, and stderr names the path
+
+### Requirement: --check prints each job's next fires
+`gremlin-scheduler --config <file> --check` SHALL check the config as a start does (Requirement: The config is checked before anything runs), print to stdout the zone, as the `ready` record names it, and then, for each job in the config's order, its name and its next 5 fires after now, each in ISO 8601 with the zone's UTC offset, and exit 0. A config that fails its check SHALL exit 1, with the check's message on stderr. `--check` SHALL need no data directory, take no lock, write no file and start no run.
+
+#### Scenario: Checking a config
+- **WHEN** a config whose `timezone` is America/New_York has one job, named `daily`, with the schedule `0 7 * * *`, and `--check` runs at 2026-11-10T13:00Z
+- **THEN** stdout names `America/New_York` and `daily`, and gives the fires from `2026-11-11T07:00:00-05:00` to `2026-11-15T07:00:00-05:00`, one per day; the scheduler exits 0 and writes no file
+
+#### Scenario: Checking a broken config
+- **WHEN** `--check` runs on a config whose job holds `schedul = "0 7 * * *"`
+- **THEN** it exits 1, and stderr names `schedul` and its line
+
+#### Scenario: --check with a data directory
+- **WHEN** the scheduler starts with `--config`, `--check` and `--data-dir`
+- **THEN** it exits 1 with the usage on stderr
 
 ### Requirement: The config is checked before anything runs
 The config SHALL be TOML. Its top level SHALL take `timezone`, `working_dir`, `command`, `env`, `timeout`, `stop_grace`, `keep_runs` and `on_failure`, and one `[[job]]` table per job; a config with no jobs SHALL be valid, and the scheduler SHALL idle. A job SHALL take `name`, `schedule`, `args`, `command`, `working_dir`, `env`, `timeout`, `catch_up` and `on_failure`. A job SHALL have a `name` and a `schedule`, and a `command` of its own or the top level's. The defaults SHALL be: the system's zone, the config file's folder as `working_dir`, `timeout` `1h`, `stop_grace` `30s`, `keep_runs` 50, `catch_up` true and no `on_failure`. An empty `on_failure` SHALL mean none, so that a job can turn off the top level's. A relative `working_dir` SHALL resolve against the config file's folder; `command`, `args` and `on_failure` SHALL reach the program as written.

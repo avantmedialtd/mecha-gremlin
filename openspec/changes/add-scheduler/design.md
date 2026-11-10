@@ -58,7 +58,9 @@ Alternatives: `crates/` beside `packages/` with a root Cargo workspace, as Turbo
 
 ### 2. The command line
 
-`gremlin-scheduler --config <file> --data-dir <dir>`, both required, each given once. `--help` prints the usage and `--version` the version, each exiting 0. Any other argument, a missing value or a repeated option exits 1 with the usage on stderr. The arguments are parsed by hand; a parser crate isn't worth it for two options.
+`gremlin-scheduler --config <file> --data-dir <dir>`, both required, each given once. `--help` prints the usage and `--version` the version, each exiting 0. Any other argument, a missing value, a repeated option or `--check` with `--data-dir` exits 1 with the usage on stderr. The arguments are parsed by hand; a parser crate isn't worth it for three options.
+
+`gremlin-scheduler --config <file> --check` checks the config as a start does, prints the zone and each job's next 5 fires in ISO 8601 with the zone's offset, and exits 0, or 1 with the check's message on stderr. It takes no data directory and no lock, writes no file and starts no run, so it can run beside a running scheduler: before a reload, whose refusal otherwise shows only in `scheduler.log`, and to see what a schedule means across DST and the either-day rule (decision 4). supercronic's `-test` only says that a crontab is valid (R26.2), and R25.2 read calendars with `systemd-analyze calendar`.
 
 The start, in order, each failure exiting 1 with its reason on stderr: read and check the config (decision 3); check that the data directory exists and is a directory; take the lock (decision 10); open `scheduler.log`; record `ready` with the zone and each job's next fire; decide at once what fell due (decision 6); then enter the loop. Errors go to stderr until the log is open, and to the log after.
 
@@ -255,10 +257,12 @@ It keeps the workflow's rules: the `if:` that builds a same-repository PR only t
   - due and missed fires on fixed timestamps, in Europe/London and America/New_York at their 2026 and 2027 transitions, for fixed-time and interval schedules;
   - the 90 s boundary, the backward step, the start from the newest log and a new job;
   - the zone read from `TZ` and from `/etc/localtime`;
+  - `--check`'s fires at a fixed time;
   - retention, log names, the records' JSON, and the refusal to signal a group below 2.
 - **The loop** is tested in-process with an injected clock and a fake that stands in for starting runs: overlap, timeouts, the `on_failure` command and its 60 s limit, the stop sequence and reload, with no real waiting.
 - **The binary's tests** run it for real. A run starts at once, with no wait for a minute, when a test seeds a job's folder with a log whose start is older than the job's latest fire: the start's decision catches it up. They cover:
   - missing, unknown and repeated options, `--help` and `--version`;
+  - `--check` on a valid and a broken config, writing nothing;
   - a bad config and a missing data directory;
   - a held lock, and a start after SIGKILL;
   - a run's output, environment, `GREMLIN_` variables and records;
@@ -324,5 +328,4 @@ Nothing to migrate: the package is new and nothing depends on it. A user builds 
 
 ## Open Questions
 
-- Would a mode that prints each job's next fires, without running anything, be worth adding?
 - Should `scheduler.log` rotate?

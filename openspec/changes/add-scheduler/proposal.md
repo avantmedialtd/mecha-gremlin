@@ -4,7 +4,7 @@ Nothing starts the agent on a schedule, though running unattended on a schedule 
 
 ## What Changes
 
-- Add `packages/scheduler`, a Rust package whose binary, `gremlin-scheduler`, takes `--config <file>` and `--data-dir <dir>`, both required.
+- Add `packages/scheduler`, a Rust package whose binary, `gremlin-scheduler`, takes `--config <file>` and `--data-dir <dir>`, both required. `--config <file> --check` checks a config and prints each job's next 5 fires, without running anything.
 - **The config, in TOML.** At the top, defaults: an optional `timezone`, `working_dir`, `command`, `env`, `timeout`, `stop_grace`, `keep_runs` and `on_failure`. Then one `[[job]]` table per job: its `name`, its `schedule`, the `args` it adds to the command, and optional `command`, `working_dir`, `env`, `timeout`, `catch_up` and `on_failure` of its own. A file that isn't valid TOML, a key it doesn't know, a schedule that doesn't parse, an unknown zone or a duplicate name fails the start.
 - **Schedules** are five cron fields, with `*`, lists, ranges, steps and three-letter names, or a nickname such as `@daily`, read in the config's `timezone`, or in the system's when it names none (D53). Where croner takes more, such as `L`, `W`, `#` or a seconds field, the scheduler refuses it, so that a schedule means what it means to cron.
 - **Settled by this design:** it takes the Brief's recommendation for D12, croner-rust, the newest release, pinned in `Cargo.lock`, with DST and day-field tests.
