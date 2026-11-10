@@ -25,7 +25,7 @@ Constraints: the scheduler stays small ("its functionality will be limited"), ru
 - Knowing the agent: its store, task files, frontmatter or `.env` beyond starting in the folder that holds it.
 - The store's migration race when runs start together (R25.5, S13), which a store change fixes.
 - The Docker image and compose file (none exist yet), and installing a LaunchAgent or systemd unit from code: the README shows them.
-- The operating system's exact wall-clock timers (D54, S15), a zone per job, overlap's `queue` (D16), retries, dependencies between jobs, alerts (Q1, Q30) and telling a run its slot (Q29).
+- The operating system's exact wall-clock timers (D54, S15), a zone per job, overlap's `queue` (D16), retries, dependencies between jobs, alerts (Q1, Q30), and showing a run's slot to the model, which the agent would do (Q29).
 
 ## Decisions
 
@@ -165,6 +165,7 @@ At the start, each job's last look is the start time of its newest run log, read
 A run is `command` plus `args`, started with `std::process::Command`:
 - in `working_dir`, so that the agent finds `.env` there;
 - with the scheduler's own environment, then the top `env`, then the job's;
+- with three variables of its own over all of those (Q29): `GREMLIN_JOB`, the job's name; `GREMLIN_SLOT`, the fire it runs for, in ISO 8601 with the zone's UTC offset, `2026-11-10T07:00:00+00:00`; and `GREMLIN_CATCH_UP`, `1` when it catches up a missed fire, and removed otherwise. Kubernetes records a Job's slot the same way, in RFC 3339 in the CronJob's zone (R25.5). The agent's shell tool passes none of them on to the model's commands, so showing them to the model is a change to the agent of its own;
 - in its own process group (`process_group(0)`), so that a timeout or a stop reaches every process that stays in it;
 - with stdin from `/dev/null`, and stdout and stderr both appended to `jobs/<name>/<start>.log`.
 
@@ -257,7 +258,7 @@ It keeps the workflow's rules: the `if:` that builds a same-repository PR only t
   - missing, unknown and repeated options, `--help` and `--version`;
   - a bad config and a missing data directory;
   - a held lock, and a start after SIGKILL;
-  - a run's output, environment and records;
+  - a run's output, environment, `GREMLIN_` variables and records;
   - a timeout, and a run that ignores SIGTERM;
   - SIGTERM while idle and with a run going;
   - SIGHUP with a valid and a broken config.
@@ -300,7 +301,6 @@ Nothing to migrate: the package is new and nothing depends on it. A user builds 
 
 ## Open Questions
 
-- Should a run be told its slot time, and that it is catching up (Q29)?
 - How should a failed run reach the user (Q30, Q1)?
 - Would a mode that prints each job's next fires, without running anything, be worth adding?
 - Should `scheduler.log` rotate?

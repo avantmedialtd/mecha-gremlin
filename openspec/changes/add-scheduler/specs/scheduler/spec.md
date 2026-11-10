@@ -158,11 +158,23 @@ At each decision, for each job, the scheduler SHALL take the job's latest fire a
 - **THEN** the job doesn't run until 07:00 the next day
 
 ### Requirement: A run is the job's command, in its own process group, with its output in a log
-A run SHALL be the job's `command`, or the top level's, followed by the job's `args`. It SHALL start in the job's `working_dir`, or the top level's, with the scheduler's own environment, then the top level's `env`, then the job's, a later value replacing an earlier one. It SHALL run in a process group of its own, with stdin empty, and its stdout and stderr appended to `jobs/<name>/<start>.log` in the data directory, where `<start>` is its UTC start time, written as `2026-11-09T07-00-00Z`. The job's folder SHALL have mode 0700 and the log mode 0600. The scheduler SHALL record `started` when the run starts and `exited` when it ends (Requirement: The scheduler's own log). A run that can't start SHALL be recorded as `error`, naming the job and the reason, and the job SHALL keep its schedule.
+A run SHALL be the job's `command`, or the top level's, followed by the job's `args`. It SHALL start in the job's `working_dir`, or the top level's, with the scheduler's own environment, then the top level's `env`, then the job's, a later value replacing an earlier one. Over all of those, it SHALL get `GREMLIN_JOB`, the job's name; `GREMLIN_SLOT`, the fire it runs for, in ISO 8601 with the zone's UTC offset; and `GREMLIN_CATCH_UP`, set to `1` when the run catches up a missed fire and removed otherwise. It SHALL run in a process group of its own, with stdin empty, and its stdout and stderr appended to `jobs/<name>/<start>.log` in the data directory, where `<start>` is its UTC start time, written as `2026-11-09T07-00-00Z`. The job's folder SHALL have mode 0700 and the log mode 0600. The scheduler SHALL record `started` when the run starts and `exited` when it ends (Requirement: The scheduler's own log). A run that can't start SHALL be recorded as `error`, naming the job and the reason, and the job SHALL keep its schedule.
 
 #### Scenario: The command, folder and environment
 - **WHEN** a job sets `args = ["tasks/a.md"]` under a top-level `command = ["/bin/sh", "-c", "pwd; echo $A $B", "run"]`, `working_dir = "/tmp/w"` and `env = { A = "1", B = "top" }`, and its own `env = { B = "job" }`
 - **THEN** its run starts in `/tmp/w` with `tasks/a.md` as its last argument, and its log holds `/tmp/w` and `1 job`
+
+#### Scenario: A run on time knows its slot
+- **WHEN** a job named `digest`, with the schedule `0 7 * * *` in the zone Europe/London, starts on time at 2026-11-10T07:00:05Z
+- **THEN** its run's environment holds `GREMLIN_JOB=digest` and `GREMLIN_SLOT=2026-11-10T07:00:00+00:00`, and no `GREMLIN_CATCH_UP`
+
+#### Scenario: A run that catches up knows it
+- **WHEN** a job with the schedule `0 7 * * *` in the zone America/New_York catches up its 07:00 fire at 2026-11-10T16:12Z
+- **THEN** its run's environment holds `GREMLIN_SLOT=2026-11-10T07:00:00-05:00` and `GREMLIN_CATCH_UP=1`
+
+#### Scenario: The config can't set the run's variables
+- **WHEN** the top level's `env` sets `GREMLIN_SLOT = "x"` and `GREMLIN_CATCH_UP = "1"`, and a job's run starts on time
+- **THEN** the run's `GREMLIN_SLOT` is its fire's time, and the run has no `GREMLIN_CATCH_UP`
 
 #### Scenario: The output and its log
 - **WHEN** a run writes to stdout and to stderr
