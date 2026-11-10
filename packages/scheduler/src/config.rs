@@ -5,8 +5,10 @@ use std::path::{self, Path, PathBuf};
 use std::time::Duration;
 
 use jiff::Timestamp;
+use jiff::civil::DateTime;
 use serde::Deserialize;
 use toml::Spanned;
+use toml::value::Datetime;
 
 use crate::schedule::{self, Schedule, Zone};
 
@@ -37,7 +39,9 @@ struct Top {
 #[serde(deny_unknown_fields)]
 struct JobTable {
     name: Spanned<String>,
-    schedule: Spanned<String>,
+    schedule: Option<Spanned<String>>,
+    start: Option<Spanned<Datetime>>,
+    every: Option<Spanned<String>>,
     #[serde(default)]
     args: Vec<String>,
     command: Option<Spanned<Vec<String>>>,
@@ -121,6 +125,127 @@ impl Source<'_> {
 
         Ok(())
     }
+
+    fn schedule(&self, table: &Spanned<JobTable>, now: Timestamp) -> Result<Schedule, String> {
+        let job = table.get_ref();
+        let name = job.name.get_ref();
+        let beside = |key: &str, span: Range<usize>| {
+            self.at(
+                Some(span),
+                &format!(
+                    "the job `{name}` has `{key}` beside `schedule`: a job takes `schedule`, or `start` and `every`"
+                ),
+            )
+        };
+
+        match (&job.schedule, &job.start, &job.every) {
+            (Some(schedule), None, None) => {
+                schedule::parse(schedule.get_ref(), now).map_err(|reason| {
+                    self.at(
+                        Some(schedule.span()),
+                        &format!(
+                            "the job `{name}` has the schedule `{}`, which {reason}",
+                            schedule.get_ref()
+                        ),
+                    )
+                })
+            }
+            (None, Some(start), Some(every)) => self.interval(name, start, every, now),
+            (Some(_), Some(start), _) => Err(beside("start", start.span())),
+            (Some(_), None, Some(every)) => Err(beside("every", every.span())),
+            (None, Some(start), None) => Err(self.at(
+                Some(start.span()),
+                &format!("the job `{name}` has `start` without `every`"),
+            )),
+            (None, None, Some(every)) => Err(self.at(
+                Some(every.span()),
+                &format!("the job `{name}` has `every` without `start`"),
+            )),
+            (None, None, None) => Err(self.at(
+                Some(table.span()),
+                &format!(
+                    "the job `{name}` has no schedule: it needs `schedule`, or `start` and `every`"
+                ),
+            )),
+        }
+    }
+
+    fn interval(
+        &self,
+        name: &str,
+        start: &Spanned<Datetime>,
+        every: &Spanned<String>,
+        now: Timestamp,
+    ) -> Result<Schedule, String> {
+        let Some(from) = local(start.get_ref()) else {
+            return Err(self.at(
+                Some(start.span()),
+                &format!(
+                    "`start` must be a date and a time without an offset, such as 2026-11-15T07:00, not `{}`",
+                    start.get_ref()
+                ),
+            ));
+        };
+
+        let Some(count) = days(every.get_ref()) else {
+            return Err(self.at(
+                Some(every.span()),
+                &format!(
+                    "`every` must be a whole number of days above 0 followed by d, such as 30d, not `{}`",
+                    every.get_ref()
+                ),
+            ));
+        };
+
+        schedule::days(from, count, now).map_err(|reason| {
+            self.at(
+                Some(every.span()),
+                &format!(
+                    "the job `{name}`, every {count} days from {}, {reason}",
+                    start.get_ref()
+                ),
+            )
+        })
+    }
+}
+
+// toml checks each field's range, but takes a leap second, :60, which jiff refuses.
+fn local(datetime: &Datetime) -> Option<DateTime> {
+    let (Some(date), Some(time), None) = (datetime.date, datetime.time, datetime.offset) else {
+        return None;
+    };
+
+    let small = |value: u8| i8::try_from(value).ok();
+
+    DateTime::new(
+        i16::try_from(date.year).ok()?,
+        small(date.month)?,
+        small(date.day)?,
+        small(time.hour)?,
+        small(time.minute)?,
+        small(time.second.unwrap_or(0))?,
+        i32::try_from(time.nanosecond.unwrap_or(0)).ok()?,
+    )
+    .ok()
+}
+
+// A day in `every` is a calendar day, so the duration grammar of `timeout` and `stop_grace` keeps
+// no `d` (D57).
+fn days(text: &str) -> Option<i64> {
+    let number = text.strip_suffix('d')?;
+
+    // parse() would take a leading `+` too.
+    if !number.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+
+    let count: i64 = number.parse().ok()?;
+
+    if count == 0 {
+        return None;
+    }
+
+    Some(count)
 }
 
 pub fn duration(text: &str) -> Option<Duration> {
@@ -235,15 +360,7 @@ pub fn load(path: &Path, now: Timestamp) -> Result<Config, String> {
             ));
         }
 
-        let schedule = schedule::parse(job.schedule.get_ref(), now).map_err(|reason| {
-            source.at(
-                Some(job.schedule.span()),
-                &format!(
-                    "the job `{name}` has the schedule `{}`, which {reason}",
-                    job.schedule.get_ref()
-                ),
-            )
-        })?;
+        let schedule = source.schedule(table, now)?;
 
         let Some(command) = job.command.as_ref().or(top.command.as_ref()) else {
             return Err(source.at(
@@ -520,9 +637,183 @@ on_failure = ["/bin/own", "arg"]
         let unscheduled = refusal("command = [\"/bin/true\"]\n\n[[job]]\nname = \"a\"\n");
 
         assert!(unnamed.contains("missing field `name`"), "{unnamed}");
+        assert_eq!(
+            unscheduled,
+            "line 3: the job `a` has no schedule: it needs `schedule`, or `start` and `every`"
+        );
+    }
+
+    #[test]
+    fn both_kinds_of_schedule_in_one_config() {
+        let config = loaded(
+            r#"
+timezone = "Europe/London"
+command = ["/bin/true"]
+
+[[job]]
+name = "daily"
+schedule = "0 7 * * *"
+
+[[job]]
+name = "refresh"
+start = 2026-11-15T07:00
+every = "30d"
+
+[[job]]
+name = "begun"
+start = 2026-01-01T07:00
+every = "30d"
+
+[[job]]
+name = "exact"
+start = 2026-11-15T07:00:30.25
+every = "1d"
+"#,
+        );
+        let from = now().to_zoned(config.zone.as_ref().unwrap().tz.clone());
+        let fires = |job: &Job| -> Vec<String> {
+            job.schedule
+                .fires(&from, 2)
+                .iter()
+                .map(schedule::with_offset)
+                .collect()
+        };
+
+        let [daily, refresh, begun, exact] = config.jobs.as_slice() else {
+            panic!("expected four jobs");
+        };
+
+        assert_eq!(
+            fires(daily),
+            ["2026-11-11T07:00:00+00:00", "2026-11-12T07:00:00+00:00"]
+        );
+        assert_eq!(
+            fires(refresh),
+            ["2026-11-15T07:00:00+00:00", "2026-12-15T07:00:00+00:00"]
+        );
+        assert_eq!(
+            fires(begun),
+            ["2026-11-27T07:00:00+00:00", "2026-12-27T07:00:00+00:00"]
+        );
+        assert_eq!(
+            fires(exact),
+            [
+                "2026-11-15T07:00:30.25+00:00",
+                "2026-11-16T07:00:30.25+00:00"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_day_intervals_keys_apart_or_beside_schedule() {
+        let job = |keys: &str| {
+            refusal(&format!(
+                "command = [\"/bin/true\"]\n\n[[job]]\nname = \"daily\"\n{keys}\n"
+            ))
+        };
+
+        assert_eq!(
+            job("schedule = \"0 7 * * *\"\nevery = \"30d\""),
+            "line 6: the job `daily` has `every` beside `schedule`: a job takes `schedule`, or `start` and `every`"
+        );
+        assert_eq!(
+            job("schedule = \"0 7 * * *\"\nstart = 2026-11-15T07:00\nevery = \"30d\""),
+            "line 6: the job `daily` has `start` beside `schedule`: a job takes `schedule`, or `start` and `every`"
+        );
+        assert_eq!(
+            job("start = 2026-11-15T07:00"),
+            "line 5: the job `daily` has `start` without `every`"
+        );
+        assert_eq!(
+            job("start = 2026-11-15"),
+            "line 5: the job `daily` has `start` without `every`"
+        );
+        assert_eq!(
+            job("every = \"30d\""),
+            "line 5: the job `daily` has `every` without `start`"
+        );
+        assert_eq!(
+            job(""),
+            "line 3: the job `daily` has no schedule: it needs `schedule`, or `start` and `every`"
+        );
+    }
+
+    #[test]
+    fn a_start_is_a_date_and_a_time_without_an_offset() {
+        let start = |value: &str| {
+            refusal(&format!(
+                "command = [\"/bin/true\"]\n\n[[job]]\nname = \"refresh\"\nstart = {value}\nevery = \"0d\"\n"
+            ))
+        };
+
+        for value in [
+            "2026-11-15",
+            "07:00",
+            "2026-11-15T07:00Z",
+            "2026-11-15T07:00-05:00",
+            "2026-12-31T23:59:60",
+        ] {
+            assert_eq!(
+                start(value),
+                format!(
+                    "line 5: `start` must be a date and a time without an offset, such as 2026-11-15T07:00, not `{value}`"
+                )
+            );
+        }
+
+        let quoted = start("\"2026-11-15T07:00\"");
+
         assert!(
-            unscheduled.contains("missing field `schedule`"),
-            "{unscheduled}"
+            quoted.starts_with(
+                "line 5: invalid type: string \"2026-11-15T07:00\", expected a TOML datetime"
+            ),
+            "{quoted}"
+        );
+    }
+
+    #[test]
+    fn every_is_a_whole_number_of_days() {
+        let every = |value: &str| {
+            refusal(&format!(
+                "command = [\"/bin/true\"]\n\n[[job]]\nname = \"refresh\"\nstart = 2026-11-15T07:00\nevery = \"{value}\"\n"
+            ))
+        };
+
+        for value in ["30", "0d", "+30d", "30 d", "4w"] {
+            assert_eq!(
+                every(value),
+                format!(
+                    "line 6: `every` must be a whole number of days above 0 followed by d, such as 30d, not `{value}`"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn day_counts() {
+        assert_eq!(days("30d"), Some(30));
+        assert_eq!(days("1d"), Some(1));
+        assert_eq!(days("9223372036854775807d"), Some(i64::MAX));
+        assert_eq!(days("0d"), None);
+        assert_eq!(days("30"), None);
+        assert_eq!(days("+30d"), None);
+        assert_eq!(days("30 d"), None);
+        assert_eq!(days("4w"), None);
+        assert_eq!(days("30D"), None);
+        assert_eq!(days("d"), None);
+        assert_eq!(days(""), None);
+        assert_eq!(days("99999999999999999999d"), None);
+    }
+
+    #[test]
+    fn a_day_interval_with_no_fire_after_now_names_the_job() {
+        let message = refusal(
+            "command = [\"/bin/true\"]\n\n[[job]]\nname = \"refresh\"\nstart = 2026-01-01T07:00\nevery = \"3000000d\"\n",
+        );
+
+        assert_eq!(
+            message,
+            "line 6: the job `refresh`, every 3000000 days from 2026-01-01T07:00, never fires again: its next fire would come after the year 9999"
         );
     }
 

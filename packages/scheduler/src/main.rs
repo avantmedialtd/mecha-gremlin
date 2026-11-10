@@ -24,7 +24,7 @@ use crate::events::Event;
 use crate::install::{Answer, Host};
 use crate::log::{Level, Log, time};
 use crate::runs::{Children, Ended, Launch, Outcome, Starter};
-use crate::schedule::{Due, Zone};
+use crate::schedule::{Due, Schedule, Zone};
 
 const USAGE: &str = "Usage:
   gremlin-scheduler run --config <file> --data-dir <dir>
@@ -147,6 +147,21 @@ fn zone_of(config: &Config, source: &ZoneSource) -> Zone {
         .unwrap_or_else(|| schedule::system_zone(source.tz.as_deref(), &source.localtime))
 }
 
+// A run that starts late is named for when it started, so a restart doesn't run it again. Without a
+// log, a cron job doesn't run its past, and a day interval counts every slot since its start as
+// unseen, so its latest that has passed runs once (D59).
+fn first_look(data_dir: &Path, job: &Job, now: Timestamp) -> Timestamp {
+    if let Some(start) = runs::newest_start(&data_dir.join("jobs").join(&job.name)) {
+        return start;
+    }
+
+    if matches!(job.schedule, Schedule::Days(_)) {
+        return Timestamp::MIN;
+    }
+
+    now
+}
+
 fn tenths(duration: Duration) -> f64 {
     (duration.as_secs_f64() * 10.0).round() / 10.0
 }
@@ -231,12 +246,10 @@ impl<S: Starter> Scheduler<S> {
         source: ZoneSource,
         now: Timestamp,
     ) -> Scheduler<S> {
-        // A run that starts late is named for when it started, so a restart doesn't run it again,
-        // and a new job doesn't run its past.
         let looks = config
             .jobs
             .iter()
-            .map(|job| runs::newest_start(&data_dir.join("jobs").join(&job.name)).unwrap_or(now))
+            .map(|job| first_look(&data_dir, job, now))
             .collect();
         let zone = zone_of(&config, &source);
 
@@ -593,11 +606,19 @@ impl<S: Starter> Scheduler<S> {
             .jobs
             .iter()
             .map(|job| {
-                self.config
-                    .jobs
-                    .iter()
-                    .position(|old| old.name == job.name)
-                    .map_or(now, |index| self.looks[index])
+                let kept = self.config.jobs.iter().position(|old| old.name == job.name);
+
+                if let Some(index) = kept {
+                    return self.looks[index];
+                }
+
+                // A new job with a log starts from the reload: only a day interval that has never
+                // run looks back (D59).
+                if runs::newest_start(&self.data_dir.join("jobs").join(&job.name)).is_some() {
+                    return now;
+                }
+
+                first_look(&self.data_dir, job, now)
             })
             .collect();
         self.config = config;
@@ -1092,6 +1113,10 @@ mod tests {
     }
 
     const MINUTELY: &str = "timezone = \"UTC\"\nstop_grace = \"5s\"\ncommand = [\"/bin/run\"]\n\n[[job]]\nname = \"minutely\"\nschedule = \"* * * * *\"\ntimeout = \"10m\"\n";
+
+    const NO_JOBS: &str = "timezone = \"UTC\"\ncommand = [\"/bin/run\"]\n";
+
+    const WEEKLY: &str = "timezone = \"UTC\"\ncommand = [\"/bin/run\"]\n\n[[job]]\nname = \"weekly\"\nstart = 2026-11-01T07:00\nevery = \"7d\"\n";
 
     #[test]
     fn arguments_take_each_subcommands_options() {
@@ -1986,6 +2011,187 @@ hourly
             value_of(&bench.env(0), "GREMLIN_CATCH_UP"),
             Some("1".to_string())
         );
+    }
+
+    #[test]
+    fn a_day_interval_that_has_never_run_catches_up_its_latest_slot_at_the_start() {
+        let mut bench = Bench::new(WEEKLY, "2026-11-10T09:00:00Z");
+
+        let wait = bench.scheduler.wait(at("2026-11-10T09:00:00Z"), secs(0.0));
+        bench.decide("2026-11-10T09:00:00Z", 0.0);
+        bench.decide("2026-11-10T09:01:00Z", 60.0);
+
+        assert_eq!(wait, Duration::ZERO);
+        assert_eq!(bench.messages(), ["started"]);
+        assert_eq!(bench.last("started")["slot"], "2026-11-08T07:00:00.000Z");
+        let env = bench.env(0);
+        assert_eq!(
+            value_of(&env, "GREMLIN_SLOT"),
+            Some("2026-11-08T07:00:00+00:00".to_string())
+        );
+        assert_eq!(value_of(&env, "GREMLIN_CATCH_UP"), Some("1".to_string()));
+    }
+
+    #[test]
+    fn a_day_interval_that_has_never_run_skips_its_latest_slot_without_catch_up() {
+        let mut bench = Bench::new(
+            &format!("{WEEKLY}catch_up = false\n"),
+            "2026-11-10T09:00:00Z",
+        );
+
+        bench.decide("2026-11-10T09:00:00Z", 0.0);
+        let next = bench.scheduler.next_fire();
+        bench.decide("2026-11-15T07:00:00Z", 424_800.0);
+
+        assert_eq!(bench.messages(), ["skipped", "started"]);
+        let skipped = bench.last("skipped");
+        assert_eq!(skipped["slot"], "2026-11-08T07:00:00.000Z");
+        assert_eq!(skipped["reason"], "missed");
+        assert_eq!(next, Some(at("2026-11-15T07:00:00Z")));
+        assert_eq!(bench.last("started")["slot"], "2026-11-15T07:00:00.000Z");
+        assert_eq!(value_of(&bench.env(0), "GREMLIN_CATCH_UP"), None);
+    }
+
+    #[test]
+    fn a_day_interval_whose_start_is_to_come_waits_for_it() {
+        let config = "timezone = \"UTC\"\ncommand = [\"/bin/run\"]\n\n[[job]]\nname = \"refresh\"\nstart = 2026-11-15T07:00\nevery = \"30d\"\n";
+        let mut bench = Bench::new(config, "2026-11-10T09:00:00Z");
+
+        bench.scheduler.ready(at("2026-11-10T09:00:00Z"));
+        bench.decide("2026-11-10T09:00:00Z", 0.0);
+        bench.decide("2026-11-15T06:59:59Z", 424_799.0);
+        let before = bench.starts().len();
+        bench.decide("2026-11-15T07:00:03Z", 424_803.0);
+
+        assert_eq!(
+            bench.last("ready")["jobs"],
+            json!([{ "name": "refresh", "next": "2026-11-15T07:00:00.000Z" }])
+        );
+        assert_eq!(before, 0);
+        assert_eq!(bench.messages(), ["ready", "started"]);
+        assert_eq!(bench.last("started")["slot"], "2026-11-15T07:00:00.000Z");
+        assert_eq!(value_of(&bench.env(0), "GREMLIN_CATCH_UP"), None);
+    }
+
+    #[test]
+    fn a_day_interval_run_on_time_knows_its_slot() {
+        let config = "timezone = \"Europe/London\"\ncommand = [\"/bin/run\"]\n\n[[job]]\nname = \"refresh\"\nstart = 2026-11-15T07:00\nevery = \"30d\"\n";
+        let mut bench = Bench::seeded(
+            config,
+            "2026-12-15T06:59:00Z",
+            &[("refresh", "2026-11-15T07-00-01Z.log")],
+        );
+
+        bench.decide("2026-12-15T07:00:03Z", 63.0);
+
+        let env = bench.env(0);
+        assert_eq!(
+            value_of(&env, "GREMLIN_SLOT"),
+            Some("2026-12-15T07:00:00+00:00".to_string())
+        );
+        assert_eq!(env.last(), Some(&("GREMLIN_CATCH_UP".to_string(), None)));
+    }
+
+    #[test]
+    fn a_day_interval_with_a_log_starts_from_it() {
+        let mut ran = Bench::seeded(
+            WEEKLY,
+            "2026-11-10T09:00:00Z",
+            &[("weekly", "2026-11-08T07-00-02Z.log")],
+        );
+        let mut missed = Bench::seeded(
+            WEEKLY,
+            "2026-11-10T09:00:00Z",
+            &[("weekly", "2026-11-01T07-00-02Z.log")],
+        );
+
+        ran.decide("2026-11-10T09:00:00Z", 0.0);
+        missed.decide("2026-11-10T09:00:00Z", 0.0);
+
+        assert!(ran.starts().is_empty());
+        assert_eq!(missed.last("started")["slot"], "2026-11-08T07:00:00.000Z");
+    }
+
+    #[test]
+    fn a_new_cron_job_beside_a_new_day_interval_still_waits() {
+        let config = format!("{WEEKLY}\n[[job]]\nname = \"daily\"\nschedule = \"0 7 * * *\"\n");
+        let mut bench = Bench::new(&config, "2026-11-10T09:00:00Z");
+
+        bench.decide("2026-11-10T09:00:00Z", 0.0);
+
+        assert_eq!(bench.messages(), ["started"]);
+        assert_eq!(bench.last("started")["job"], "weekly");
+        assert_eq!(
+            bench.scheduler.next_fire(),
+            Some(at("2026-11-11T07:00:00Z"))
+        );
+    }
+
+    #[test]
+    fn a_day_interval_added_by_a_reload_catches_up_at_once() {
+        let mut bench = Bench::new(NO_JOBS, "2026-11-10T08:00:00Z");
+
+        bench.decide("2026-11-10T08:00:00Z", 0.0);
+        bench.rewrite(WEEKLY);
+        bench.signal(Signal::HUP, "2026-11-10T09:00:00Z", 3600.0);
+        bench.decide("2026-11-10T09:00:00Z", 3600.0);
+
+        assert_eq!(
+            bench.last("config reloaded")["jobs"],
+            json!([{ "name": "weekly", "next": "2026-11-15T07:00:00.000Z" }])
+        );
+        assert_eq!(bench.messages(), ["config reloaded", "started"]);
+        assert_eq!(bench.last("started")["slot"], "2026-11-08T07:00:00.000Z");
+        assert_eq!(
+            value_of(&bench.env(0), "GREMLIN_CATCH_UP"),
+            Some("1".to_string())
+        );
+    }
+
+    #[test]
+    fn a_day_interval_with_a_log_added_by_a_reload_starts_from_the_reload() {
+        let mut bench = Bench::seeded(
+            NO_JOBS,
+            "2026-11-10T08:00:00Z",
+            &[("weekly", "2026-11-01T07-00-02Z.log")],
+        );
+
+        bench.rewrite(WEEKLY);
+        bench.signal(Signal::HUP, "2026-11-10T09:00:00Z", 3600.0);
+        bench.decide("2026-11-10T09:00:00Z", 3600.0);
+
+        assert_eq!(bench.messages(), ["config reloaded"]);
+        assert_eq!(
+            bench.scheduler.next_fire(),
+            Some(at("2026-11-15T07:00:00Z"))
+        );
+    }
+
+    #[test]
+    fn a_day_interval_follows_the_system_zone() {
+        let config = "command = [\"/bin/run\"]\n\n[[job]]\nname = \"daily\"\nstart = 2026-11-15T07:00\nevery = \"1d\"\n";
+        let mut bench = Bench::new(config, "2026-11-15T06:00:00Z");
+        let localtime = bench.scratch.path().join("localtime");
+        symlink("/usr/share/zoneinfo/Europe/London", &localtime).unwrap();
+
+        bench.decide("2026-11-15T06:00:00Z", 0.0);
+        bench.decide("2026-11-15T07:00:10Z", 3610.0);
+        bench.exit(1, Ended::Code(0), "2026-11-15T07:00:20Z", 3620.0);
+        fs::remove_file(&localtime).unwrap();
+        symlink("/usr/share/zoneinfo/America/New_York", &localtime).unwrap();
+        bench.decide("2026-11-15T08:00:00Z", 7200.0);
+        bench.decide("2026-11-15T12:00:10Z", 21610.0);
+
+        let slots: Vec<String> = bench
+            .starts()
+            .iter()
+            .map(|start| value_of(&start.launch.env, "GREMLIN_SLOT").unwrap())
+            .collect();
+        assert_eq!(
+            slots,
+            ["2026-11-15T07:00:00+00:00", "2026-11-15T07:00:00-05:00"]
+        );
+        assert_eq!(value_of(&bench.env(1), "GREMLIN_CATCH_UP"), None);
     }
 
     #[test]

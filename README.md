@@ -327,7 +327,7 @@ Claude uses the native Messages API, not a Claude subscription or an OpenAI comp
 
 ## Scheduler
 
-`gremlin-scheduler`, in `packages/scheduler`, starts each job's command at its cron schedule's fires. A job is any command, usually the agent with a task file. The scheduler knows nothing of the agent: it reads its own TOML config and keeps its own log, and the agent's store and `.env` are the agent's business.
+`gremlin-scheduler`, in `packages/scheduler`, starts each job's command at its schedule's fires: a cron schedule's, or every N days from a start date. A job is any command, usually the agent with a task file. The scheduler knows nothing of the agent: it reads its own TOML config and keeps its own log, and the agent's store and `.env` are the agent's business.
 
 ```sh
 gremlin-scheduler run --config <file> --data-dir <dir>       # the scheduler itself
@@ -376,11 +376,13 @@ catch_up = false
 | `keep_runs` | top | `50` | how many run logs a job keeps |
 | `on_failure` | top, job | none | a command started after a run fails; `[]` means none, so a job can turn off the top's |
 | `name` | job | required | ASCII letters, digits, `-` and `_`, unique: it names the job's log folder |
-| `schedule` | job | required | five cron fields or a nickname |
+| `schedule` | job | required, or `start` and `every` in its place | five cron fields or a nickname |
+| `start` | job | none | with `every`, in place of `schedule`: a TOML local date-time, a date and a time without quotes or an offset, such as `2026-11-15T07:00` |
+| `every` | job | none | with `start`: a whole number of days followed by `d`, such as `30d` |
 | `args` | job | none | added after the command |
 | `catch_up` | job | `true` | whether a missed fire runs once |
 
-- **Strict.** The config is checked before anything runs, and again at each reload. A file that is missing, unreadable or not TOML, an unknown key or one in the wrong table, a wrong type, a job without a name, schedule or command, a name that is empty, unsafe or taken, an empty `command`, a schedule that doesn't parse or never fires, an unknown zone, a duration that isn't a whole number followed by `s`, `m` or `h`, such as `90s`, `30m` or `2h`, or that is zero, and a `keep_runs` below 1 all fail it. The error names the file, and the key and its line when there is one.
+- **Strict.** The config is checked before anything runs, and again at each reload. A file that is missing, unreadable or not TOML, an unknown key or one in the wrong table, a wrong type, a job without a name, schedule or command, a name that is empty, unsafe or taken, an empty `command`, a schedule that doesn't parse or never fires, a `schedule` beside `start` or `every`, one of `start` and `every` without the other, a `start` that is a date or a time alone or has an offset, an `every` that isn't a whole number of days above 0 followed by `d`, a day interval with no fire after now, an unknown zone, a duration that isn't a whole number followed by `s`, `m` or `h`, such as `90s`, `30m` or `2h`, or that is zero, and a `keep_runs` below 1 all fail it. The error names the file, and the key and its line when there is one.
 - **No jobs** is a valid config: the scheduler idles.
 - **Only `working_dir` is resolved.** launchd starts a job in `/`, so a relative `working_dir` is relative to the config file's folder. `command`, `args` and `on_failure` reach the program as written: in the example, `packages/agent/src/main/main.ts` resolves against `working_dir`, where the agent also finds `.env`.
 - **The defaults.** Nothing else bounds a whole agent run, and an hour covers the slowest browsing task measured. The agent's own cleanup after SIGTERM takes up to about 29 s, which `stop_grace`'s 30 s leaves time for.
@@ -393,11 +395,30 @@ A schedule is five cron fields, minute, hour, day of month, month and day of wee
 - **DST.** A schedule with a single value in both its minute and hour fields is fixed-time: in a repeated hour it fires once, at the first pass, and a fire in a skipped hour comes at the end of the gap. Any other schedule fires in both passes of a repeated hour, and not at all for the times a skipped hour removes. In New York, `30 2 * * *` fires at 03:00 EDT on 2027-03-14, `30 1 * * *` once at 01:30 EDT on 2027-11-07, and `*/30 1 * * *` at 01:00 and 01:30 in both passes. `check` shows it for any schedule.
 - **The zone** is the config's `timezone`, or the system's, read again at every wake: `TZ` when it's set, else the zone that `/etc/localtime` links to. On a Mac without `timezone`, schedules move with the Mac's zone as it travels. A container runs in UTC unless `TZ` is set. Where `/etc/localtime` is a plain file, the zone comes from a lookup that keeps its answer for 5 minutes, so a change shows within 5 minutes.
 
+### Day intervals
+
+Cron can't run a job every 30 days: `0 7 */30 * *` fires on the 1st and the 31st. A job that should gives `start` and `every` in place of `schedule`:
+
+```toml
+[[job]]
+name = "monthly-review"
+start = 2026-11-15T07:00   # no quotes: a TOML date and time, without an offset
+every = "30d"
+args = ["tasks/monthly-review.md"]
+```
+
+The job fires at the start, then every 30 days after it: on 2026-11-15, 2026-12-15, 2027-01-14 and so on, at 07:00. `start` may give seconds, and `every` takes whole days only. Each fire counts from the start, never from the run before it, so a late or missed run moves none of the fires after it. Missed fires, `catch_up = false`, overlap and the run's variables work as for a cron schedule, and `check` shows the fires.
+
+- **The local time and the zone.** A day is a calendar day: fire k is the start's date plus k × N days, at the start's time, read in the schedule's zone, the config's `timezone` or the system's, as cron fields are. So runs keep their clock time across DST changes, and move with the zone when it changes.
+- **A skipped or repeated hour.** As for a fixed-time cron schedule, a fire in a skipped hour runs at the end of the gap, and one in a repeated hour runs once, at the first pass. With `every = "1d"`, a start of `2027-03-13T02:30` in New York fires at 03:00 EDT on 2027-03-14, and at 02:30 again on the 15th.
+- **A start that has passed.** A day interval that has never run, with no run log, counts every slot since its start as unseen. When the scheduler starts, or a reload adds the job, its latest slot that has passed runs once, as a catch-up, however far back the start is, or is recorded as `skipped` with the reason `missed` under `catch_up = false`. `check` reads no data directory, so it shows only the fires to come. A cron job with no log still waits for its next fire.
+- **The gap between runs.** Across a DST change, two runs are N × 24 hours, plus or minus 1, apart, so a service that counts exactly 720 hours could see a run an hour early. After a long downtime, the run after a catch-up comes at the start's next slot, which can be fewer than N days later.
+
 ### Waiting, catching up and overlap
 
 - **The wait.** At the start, before any wait, the scheduler runs what fell due while it was stopped. It then sleeps until the earliest next fire or signal due to a run, never longer than 60 s, and reads the wall clock at every wake. The machine's sleep stops the clock the wait counts on, so after a wake a fire can be up to a minute late; an idle scheduler wakes once a minute.
 - **Missed fires.** At each wake, a job's latest fire since its last look is the only one that counts. Seen less than 90 s after it, it is on time. Seen later, because the machine slept or was off or the scheduler wasn't running, it runs once, however many fires passed, unless the job sets `catch_up = false`, which records it as `skipped` with the reason `missed`.
-- **Restarts.** A job's last look starts as the start time of its newest run log, read from the log's name, so a fire missed while the scheduler was stopped runs at its start, and a new job doesn't run its past: it waits for its next fire.
+- **Restarts.** A job's last look starts as the start time of its newest run log, read from the log's name, so a fire missed while the scheduler was stopped runs at its start, and a new cron job doesn't run its past: it waits for its next fire. A day interval that has never run catches up its latest slot instead (Day intervals).
 - **Clock steps.** A last look never moves back. After a backward step the scheduler records `clock stepped back`, and a job starts nothing until the clock passes its last look again, so no fire runs twice. After a forward step, the fire it skipped runs once, as a missed one.
 - **Overlap.** A job runs once at a time. A fire that comes while its previous run is still going is recorded as `skipped`, with the reason `running`.
 
@@ -460,7 +481,7 @@ A script can also send a mail or a message to a phone, and hold back repeats whe
 ### Signals
 
 - **SIGTERM or SIGINT** stop the scheduler. It records `stopping`, starts no more runs or `on_failure` commands, sends SIGTERM to every one still going, waits up to `stop_grace` for them to end, sends SIGKILL to the rest, records `stopped` and exits 0. Signals that come meanwhile are ignored. Whatever stops the scheduler must wait longer than `stop_grace` before its own SIGKILL.
-- **SIGHUP** rereads the config. One that passes its check replaces the old one, recorded as `config reloaded`: runs going on end with their own deadlines, a removed job starts nothing more, a kept job keeps its last look and a new one waits for its next fire. One that fails is recorded as `config refused`, with the reason, and the old one stays. `check` shows a refusal before the reload does.
+- **SIGHUP** rereads the config. One that passes its check replaces the old one, recorded as `config reloaded`: runs going on end with their own deadlines, a removed job starts nothing more, a kept job keeps its last look, and a new one waits for its next fire, unless it is a day interval that has never run, whose latest slot that has passed runs at once. One that fails is recorded as `config refused`, with the reason, and the old one stays. `check` shows a refusal before the reload does.
 
 ### On a Mac
 

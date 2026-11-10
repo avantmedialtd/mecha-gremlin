@@ -460,6 +460,47 @@ fn check_refuses_a_broken_config() {
 }
 
 #[test]
+fn check_prints_a_day_intervals_fires() {
+    let fixture = Fixture::new(
+        "timezone = \"Europe/London\"\ncommand = [\"/bin/true\"]\n\n[[job]]\nname = \"refresh\"\nstart = 2099-03-15T07:00\nevery = \"30d\"\n",
+    );
+
+    let ran = fixture.ran(&["check", "--config", fixture.config.to_str().unwrap()]);
+
+    assert_eq!(ran.status.code(), Some(0), "{}", ran.stderr);
+    assert_eq!(
+        ran.stdout,
+        "Zone: Europe/London
+
+refresh
+  2099-03-15T07:00:00+00:00
+  2099-04-14T07:00:00+01:00
+  2099-05-14T07:00:00+01:00
+  2099-06-13T07:00:00+01:00
+  2099-07-13T07:00:00+01:00
+"
+    );
+}
+
+#[test]
+fn check_refuses_every_beside_schedule() {
+    let fixture = Fixture::new(
+        "command = [\"/bin/true\"]\n\n[[job]]\nname = \"daily\"\nschedule = \"0 7 * * *\"\nevery = \"30d\"\n",
+    );
+
+    let ran = fixture.ran(&["check", "--config", fixture.config.to_str().unwrap()]);
+
+    assert_eq!(ran.status.code(), Some(1));
+    assert!(
+        ran.stderr
+            .contains("line 6: the job `daily` has `every` beside `schedule`"),
+        "{}",
+        ran.stderr
+    );
+    assert!(ran.stdout.is_empty());
+}
+
+#[test]
 fn a_bad_config_or_data_directory_starts_nothing() {
     let fixture = Fixture::new(
         "command = [\"/bin/true\"]\n\n[[job]]\nname = \"daily\"\nschedul = \"0 7 * * *\"\n",
@@ -680,6 +721,32 @@ schedule = "0 0 1 1 *"
     let yearly = fs::read_to_string(fixture.job_log("yearly")).unwrap();
     assert!(yearly.contains("job=yearly slot="), "{yearly}");
     assert!(yearly.contains(" catch=1\n"), "{yearly}");
+}
+
+#[test]
+fn a_day_interval_that_has_never_run_catches_up_at_once() {
+    // Its start is the only slot that has passed, and its next is a century away, so the start's
+    // decision catches the start up, and no other fire comes while the test runs.
+    let fixture = Fixture::new(
+        r#"timezone = "UTC"
+command = ["/bin/sh", "-c", "echo slot=$GREMLIN_SLOT catch=${GREMLIN_CATCH_UP-unset}"]
+
+[[job]]
+name = "interval"
+start = 2020-01-01T00:00
+every = "36500d"
+"#,
+    );
+    let mut scheduler = fixture.start();
+
+    let started = scheduler.wait_for_job("started", "interval");
+    scheduler.wait_for_job("exited", "interval");
+
+    assert_eq!(started["slot"], "2020-01-01T00:00:00.000Z");
+    assert_eq!(
+        fs::read_to_string(fixture.job_log("interval")).unwrap(),
+        "slot=2020-01-01T00:00:00+00:00 catch=1\n"
+    );
 }
 
 #[test]
