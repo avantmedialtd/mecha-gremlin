@@ -89,6 +89,54 @@ jobs:
               run: bun audit
               continue-on-error: true
 
+    # The scheduler runs on Mac hosts first and in Linux containers later, so its checks run on
+    # both. rustup on the runner installs the toolchain that rust-toolchain.toml pins, at the first
+    # cargo command.
+    scheduler:
+        name: Scheduler
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+        strategy:
+            # Each system's result stands on its own.
+            fail-fast: false
+            matrix:
+                os: [ubuntu-latest, macos-latest]
+        runs-on: ${{ matrix.os }}
+        timeout-minutes: 60
+        defaults:
+            run:
+                working-directory: packages/scheduler
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  persist-credentials: false
+            - run: cargo fmt --check
+            - run: cargo clippy --all-targets --locked -- -D warnings
+            - run: cargo test --locked
+            # The memory guard is a TypeScript file that Bun runs.
+            - if: matrix.os == 'ubuntu-latest'
+              uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+              with:
+                  bun-version: ${{ env.BUN_VERSION }}
+            # Prebuilt binaries, so neither tool compiles here; cargo-mutants ships them for x86_64
+            # Linux, which ubuntu-latest is.
+            - if: matrix.os == 'ubuntu-latest'
+              uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+              with:
+                  tool: cargo-mutants,cargo-deny
+            # Under the memory guard, as Stryker runs. cargo-mutants exits non-zero when a mutant
+            # survives or times out, which fails the job. Two jobs halve the time on the runner's
+            # 4 vCPUs; its book advises starting there, since cargo already builds and tests in
+            # parallel.
+            - name: Mutation testing
+              if: matrix.os == 'ubuntu-latest'
+              run: bun run mutation -j 2
+            # Report only, as `bun audit` is: the step shows as failed when a dependency has an
+            # advisory, but the job passes.
+            - name: Audit dependencies (report only)
+              if: matrix.os == 'ubuntu-latest'
+              run: cargo deny check advisories
+              continue-on-error: true
+
     mutation:
         name: Mutation testing
         needs: check

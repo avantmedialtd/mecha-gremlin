@@ -44,6 +44,10 @@
         "@mecha-gremlin/core": "workspace:*",
       },
     },
+    "packages/scheduler": {
+      "name": "@mecha-gremlin/scheduler",
+      "version": "0.0.0",
+    },
     "packages/store": {
       "name": "@mecha-gremlin/store",
       "version": "0.0.0",
@@ -334,6 +338,8 @@
     "@mecha-gremlin/core": ["@mecha-gremlin/core@workspace:packages/core"],
 
     "@mecha-gremlin/process": ["@mecha-gremlin/process@workspace:packages/process"],
+
+    "@mecha-gremlin/scheduler": ["@mecha-gremlin/scheduler@workspace:packages/scheduler"],
 
     "@mecha-gremlin/store": ["@mecha-gremlin/store@workspace:packages/store"],
 

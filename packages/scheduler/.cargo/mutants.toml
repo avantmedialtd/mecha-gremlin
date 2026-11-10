@@ -1,0 +1,8 @@
+# cargo-mutants times a mutant's tests out at 5 times the baseline's, and counts a timeout as a
+# failure. The binary's tests give up on a record or an exit after 10 s and kill the scheduler, so a
+# mutant that hangs it fails a test well inside this floor.
+minimum_test_timeout = 60
+
+# Only an equivalent or unreachable mutant is excluded, each by a pattern that matches it alone,
+# with the reason above it.
+exclude_re = []

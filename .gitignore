@@ -5,6 +5,11 @@ node_modules/
 .stryker-tmp/
 reports/
 
+# The scheduler's Rust builds, and cargo-mutants' reports, which would fail oxfmt and CSpell, and
+# whose lock.json records the host's name and user.
+target/
+mutants.out*/
+
 # playwright-cli's workspace and snapshots, for runs whose working directory is the repository.
 .playwright/
 .playwright-cli/

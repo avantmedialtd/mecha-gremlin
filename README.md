@@ -11,6 +11,7 @@ A self-hosted, scheduled agent runner, in early development. The design and its 
 | [`packages/process`](packages/process) | `@mecha-gremlin/process`: `spawnProcess`, which uses `Bun.spawn` on Bun and `node:child_process` elsewhere, and gives the process the same shape on both: its pid, a stream to write to its stdin when asked for one, its output as web streams, a promise of how it exited, and `unref()`. |
 | [`packages/store`](packages/store) | `@mecha-gremlin/store`: the data folder's SQLite database, through [TypeORM](https://typeorm.io) and [better-sqlite3](https://www.npmjs.com/package/better-sqlite3), the same on Bun and Node. `store` opens `db.sqlite` in a given folder, sets its pragmas and runs its migrations, and runs every query on a store after the one before it. `credential` keeps OAuth credentials, with a lease for their refresh, and `mcp-server` keeps the MCP servers' definitions. |
 | [`packages/agent`](packages/agent) | `@mecha-gremlin/agent`: the agent. It carries out a task in an agent loop, with a shell, file tools, skills and MCP servers' tools, and opens the store in its data folder. It runs on Bun or Node. |
+| [`packages/scheduler`](packages/scheduler) | `@mecha-gremlin/scheduler`: `gremlin-scheduler`, the repository's one Rust binary, which starts each job's command at its cron schedule's fires and keeps their logs (see [Scheduler](#scheduler)). Its `package.json` only holds scripts that run cargo. Its modules are files, with no `mod.rs`. |
 
 Inside `packages/agent/src`, the code is grouped by concern:
 - `main`: the entry points, `main.ts` for a run and `mcp.ts` for the `mcp` command, and their helpers: a run's arguments, task file and its frontmatter, log fields and failure messages; the command's arguments, times, output and help text, in `mcp-args.ts`, `mcp-time.ts`, `mcp-output.ts` and `mcp-help.ts`; and the strict parsing of options that both use, which names the option it refuses, in `options.ts`;
@@ -35,6 +36,7 @@ No package has index files: every import names the file it uses. The `package.js
 - [Node.js](https://nodejs.org) 26 or later, for `bun run agent:node` and `bun run test:node`, and so for `bun run check`.
 - A configured model: [LM Studio](https://lmstudio.ai), an OpenAI Responses endpoint, or the direct Claude API. For LM Studio, start the server (`lms server start`) and load the **named** model (`lms load <model>`, or load one in the app). The agent never loads a model on demand. A browsing task needs more context than LM Studio's default: see [Set up for browsing](#set-up-for-browsing).
 - For browsing with the example skill, [playwright-cli](https://www.npmjs.com/package/@playwright/cli) and [Google Chrome](https://www.google.com/chrome/).
+- For the scheduler, and so for `bun run check`, [rustup](https://rustup.rs). The first cargo command in `packages/scheduler` installs the toolchain its `rust-toolchain.toml` pins. For its mutation testing, cargo-mutants: `cargo install --locked cargo-mutants`.
 
 ## Run
 
@@ -323,6 +325,226 @@ Claude uses the native Messages API, not a Claude subscription or an OpenAI comp
 
 **Migrating:** Existing `.env` files must now supply every required setting, `DATA_DIR` included, and every invocation must supply a task. LM Studio no longer selects its first loaded model. Consumers of the old OpenAI-shaped core `callModel`, `toInput`, `toOutputItem`, `toFunctionTool` and `classify` exports must use Gremlin's provider-neutral core types and the agent's provider adapters instead. No persisted history migration is needed.
 
+## Scheduler
+
+`gremlin-scheduler`, in `packages/scheduler`, starts each job's command at its cron schedule's fires. A job is any command, usually the agent with a task file. The scheduler knows nothing of the agent: it reads its own TOML config and keeps its own log, and the agent's store and `.env` are the agent's business.
+
+```sh
+gremlin-scheduler run --config <file> --data-dir <dir>       # the scheduler itself
+gremlin-scheduler check --config <file>                      # check a config, print each job's next 5 fires
+gremlin-scheduler install --config <file> --data-dir <dir>   # set it up under launchd, on macOS
+gremlin-scheduler uninstall                                  # remove it from launchd
+```
+
+Each option is given once, and only to the subcommands that take it. Anything else, such as a missing or unknown subcommand, a missing option or value, a repeated option or a stray argument, exits 1 with the usage on stderr. `--help` prints the usage and `--version` the version, to stdout.
+
+`check` checks the config as `run` does, then prints the zone and each job's next 5 fires, in ISO 8601 with the zone's offset. It needs no data directory, takes no lock and writes nothing, so it can run beside a running scheduler, before a reload or to see what a schedule does across a DST change.
+
+### The config
+
+```toml
+timezone = "Europe/London"   # optional: the system's zone without it
+working_dir = "/path/to/mecha-gremlin"
+command = ["/path/to/bun", "packages/agent/src/main/main.ts"]
+env = { LOG_FORMAT = "json" }
+timeout = "1h"
+stop_grace = "30s"
+keep_runs = 50
+on_failure = ["/path/to/notify-failure.sh"]
+
+[[job]]
+name = "daily-summary"
+schedule = "0 7 * * *"
+args = ["tasks/daily-summary.md"]
+timeout = "30m"
+
+[[job]]
+name = "issue-digest"
+schedule = "*/30 9-18 * * 1-5"
+args = ["tasks/issue-digest.md"]
+catch_up = false
+```
+
+| Key | Where | Default | Meaning |
+|---|---|---|---|
+| `timezone` | top | the system's zone | an IANA zone name |
+| `working_dir` | top, job | the config file's folder | where a run starts; a relative path is relative to the config file's folder |
+| `command` | top, job | none: one of the two must set it | the program and its first arguments |
+| `env` | top, job | none | variables added to the scheduler's environment; a job's over the top's |
+| `timeout` | top, job | `1h` | how long a run may take |
+| `stop_grace` | top | `30s` | how long a run gets between SIGTERM and SIGKILL |
+| `keep_runs` | top | `50` | how many run logs a job keeps |
+| `on_failure` | top, job | none | a command started after a run fails; `[]` means none, so a job can turn off the top's |
+| `name` | job | required | ASCII letters, digits, `-` and `_`, unique: it names the job's log folder |
+| `schedule` | job | required | five cron fields or a nickname |
+| `args` | job | none | added after the command |
+| `catch_up` | job | `true` | whether a missed fire runs once |
+
+- **Strict.** The config is checked before anything runs, and again at each reload. A file that is missing, unreadable or not TOML, an unknown key or one in the wrong table, a wrong type, a job without a name, schedule or command, a name that is empty, unsafe or taken, an empty `command`, a schedule that doesn't parse or never fires, an unknown zone, a duration that isn't a whole number followed by `s`, `m` or `h`, such as `90s`, `30m` or `2h`, or that is zero, and a `keep_runs` below 1 all fail it. The error names the file, and the key and its line when there is one.
+- **No jobs** is a valid config: the scheduler idles.
+- **Only `working_dir` is resolved.** launchd starts a job in `/`, so a relative `working_dir` is relative to the config file's folder. `command`, `args` and `on_failure` reach the program as written: in the example, `packages/agent/src/main/main.ts` resolves against `working_dir`, where the agent also finds `.env`.
+- **The defaults.** Nothing else bounds a whole agent run, and an hour covers the slowest browsing task measured. The agent's own cleanup after SIGTERM takes up to about 29 s, which `stop_grace`'s 30 s leaves time for.
+
+### Schedules and the zone
+
+A schedule is five cron fields, minute, hour, day of month, month and day of week, made of digits, `*`, lists (`1,15`), ranges (`9-18`), steps (`*/30`) and three-letter month and day names in either case (`jan`, `MON-FRI`). Or it is one of `@yearly`, `@annually`, `@monthly`, `@weekly`, `@daily`, `@midnight` and `@hourly`. Anything cron doesn't have fails the check: six or seven fields, `@reboot` and other words, `?`, `L`, `W`, `#`, a `+` before the day of week, full names such as `Monday`, a name in the wrong field, an empty list item, and a schedule that can never fire, such as `0 0 30 2 *`. [croner-rust](https://github.com/Hexagon/croner-rust) reads them.
+
+- **Either day field.** When both day fields are restricted, meaning anything but a literal `*`, a day matches when either does: `0 0 */2 * 1` fires on odd days and on Mondays, where Vixie cron and cronie fire only on Mondays that fall on odd days.
+- **DST.** A schedule with a single value in both its minute and hour fields is fixed-time: in a repeated hour it fires once, at the first pass, and a fire in a skipped hour comes at the end of the gap. Any other schedule fires in both passes of a repeated hour, and not at all for the times a skipped hour removes. In New York, `30 2 * * *` fires at 03:00 EDT on 2027-03-14, `30 1 * * *` once at 01:30 EDT on 2027-11-07, and `*/30 1 * * *` at 01:00 and 01:30 in both passes. `check` shows it for any schedule.
+- **The zone** is the config's `timezone`, or the system's, read again at every wake: `TZ` when it's set, else the zone that `/etc/localtime` links to. On a Mac without `timezone`, schedules move with the Mac's zone as it travels. A container runs in UTC unless `TZ` is set. Where `/etc/localtime` is a plain file, the zone comes from a lookup that keeps its answer for 5 minutes, so a change shows within 5 minutes.
+
+### Waiting, catching up and overlap
+
+- **The wait.** At the start, before any wait, the scheduler runs what fell due while it was stopped. It then sleeps until the earliest next fire or signal due to a run, never longer than 60 s, and reads the wall clock at every wake. The machine's sleep stops the clock the wait counts on, so after a wake a fire can be up to a minute late; an idle scheduler wakes once a minute.
+- **Missed fires.** At each wake, a job's latest fire since its last look is the only one that counts. Seen less than 90 s after it, it is on time. Seen later, because the machine slept or was off or the scheduler wasn't running, it runs once, however many fires passed, unless the job sets `catch_up = false`, which records it as `skipped` with the reason `missed`.
+- **Restarts.** A job's last look starts as the start time of its newest run log, read from the log's name, so a fire missed while the scheduler was stopped runs at its start, and a new job doesn't run its past: it waits for its next fire.
+- **Clock steps.** A last look never moves back. After a backward step the scheduler records `clock stepped back`, and a job starts nothing until the clock passes its last look again, so no fire runs twice. After a forward step, the fire it skipped runs once, as a missed one.
+- **Overlap.** A job runs once at a time. A fire that comes while its previous run is still going is recorded as `skipped`, with the reason `running`.
+
+### Runs
+
+A run is the job's `command`, or the top level's, followed by the job's `args`. It starts in `working_dir`, with the scheduler's own environment, then the top level's `env`, then the job's. Over all of those it gets three variables of its own, which the config can't set:
+- `GREMLIN_JOB`: the job's name;
+- `GREMLIN_SLOT`: the fire it runs for, in ISO 8601 with the zone's offset, such as `2026-11-10T07:00:00+00:00`;
+- `GREMLIN_CATCH_UP`: `1` when it catches up a missed fire, and unset otherwise.
+
+The agent's shell tool passes none of them on to the model's commands.
+
+Each run is a process group of its own, with stdin from `/dev/null`, and its stdout and stderr go to `jobs/<name>/<start>.log` in the data directory, where `<start>` is its UTC start time, such as `2026-11-09T07-00-00Z`. The job's folder has mode 0700 and the log 0600, since a run's records hold its task and its tools' arguments. After each start, the job's oldest logs beyond `keep_runs` are deleted, never one still being written. A run that can't start, such as a missing program, records `error`, and the job keeps its schedule.
+
+**Timeouts.** A run past its `timeout` gets SIGTERM, to its whole group, and SIGKILL `stop_grace` later if the group is still there, and the scheduler records `timed out`. A run keeps the `timeout`, `stop_grace` and `on_failure` it started with, whatever a reload changes. The agent puts its shell commands and stdio MCP servers in sessions of their own, so SIGTERM reaches them only through the agent's own cleanup, and a SIGKILL after the grace leaves them running.
+
+### When a run fails
+
+A run fails when it exits with a code other than 0, ends by a signal, passes its timeout or can't start. Then its job's `on_failure` command starts, or the top level's, in the run's working directory and a process group of its own, with its output appended to the run's log. It gets the run's environment, `GREMLIN_` variables included, and three more:
+- `GREMLIN_RESULT`: `timeout` for a run that passed its timeout, whatever it then exited with; otherwise `exit-code`, `signal`, or `error` for a run that couldn't start;
+- `GREMLIN_STATUS`: the exit code, the signal's name, such as `SIGKILL`, or why the run couldn't start;
+- `GREMLIN_LOG`: the run log's absolute path.
+
+The command gets 60 s, then SIGTERM and, `stop_grace` later, SIGKILL. When it fails in any of those ways, the scheduler records `error` with a reason that names `on_failure`. A run that succeeds, a skipped fire and a run that ends while the scheduler stops start no command. Where the news goes is the script's choice. This one shows a notification on the Mac and quotes the end of the log, passing the values as arguments so that no quote in them can break the script:
+
+```sh
+#!/bin/sh
+# notify-failure.sh: gremlin-scheduler's on_failure command.
+osascript \
+    -e 'on run argv' \
+    -e 'display notification (item 2 of argv) with title (item 1 of argv)' \
+    -e 'end run' \
+    "$GREMLIN_JOB failed" "$GREMLIN_RESULT: $GREMLIN_STATUS"
+tail -n 20 "$GREMLIN_LOG" >&2
+```
+
+A script can also send a mail or a message to a phone, and hold back repeats when a job fails at every fire. A job that pings an outside check every few minutes watches the scheduler itself: the pings stop when it does.
+
+### The data directory
+
+- **`scheduler.log`** holds the scheduler's own records, one JSON object per line, with `time` in ISO 8601 UTC, `level` and `message`, then fields, as the agent's JSON records are. A time in a field is written as `time` is, and U+007F to U+009F are escaped. It has mode 0600. Once it reaches 10 MiB, it becomes `scheduler.log.1`, replacing an older one, and a new file starts, so it holds months of a job every 5 minutes. Before the log is open, errors go to stderr.
+
+  | Level | Message | Fields |
+  |---|---|---|
+  | `info` | `ready` | `zone`, and `jobs`: each job's `name` and `next` fire |
+  | `info` | `started` | `job`, `slot`, `pid`, and `log`: the run log's path in the data directory |
+  | `info` | `exited` | `job`, `code` or `signal` (a name, such as `SIGKILL`), and `seconds`, to a tenth |
+  | `info` | `skipped` | `job`, `slot`, and `reason`: `running` or `missed` |
+  | `warn` | `timed out` | `job` and `pid` |
+  | `error` | `error` | `job` and `reason`: a run that couldn't start, or an `on_failure` command that failed |
+  | `warn` | `clock stepped back` | `from` and `to` |
+  | `info` | `config reloaded` | `jobs`, as in `ready` |
+  | `warn` | `config refused` | `reason` |
+  | `info` | `stopping` | `signal` |
+  | `info` | `stopped` | none |
+- **`lock`**, which the scheduler holds while it runs, so that one scheduler serves a data directory. A second one exits 1, saying that another scheduler is using it. The kernel drops the lock when the process dies, however it dies.
+- **`jobs/<name>/`**, each job's run logs.
+- **`stderr.log`**, under launchd: what the scheduler wrote to stderr, such as why a start failed.
+
+### Signals
+
+- **SIGTERM or SIGINT** stop the scheduler. It records `stopping`, starts no more runs or `on_failure` commands, sends SIGTERM to every one still going, waits up to `stop_grace` for them to end, sends SIGKILL to the rest, records `stopped` and exits 0. Signals that come meanwhile are ignored. Whatever stops the scheduler must wait longer than `stop_grace` before its own SIGKILL.
+- **SIGHUP** rereads the config. One that passes its check replaces the old one, recorded as `config reloaded`: runs going on end with their own deadlines, a removed job starts nothing more, a kept job keeps its last look and a new one waits for its next fire. One that fails is recorded as `config refused`, with the reason, and the old one stays. `check` shows a refusal before the reload does.
+
+### On a Mac
+
+The scheduler runs on the Mac host first, under a LaunchAgent:
+
+```sh
+cd packages/scheduler
+cargo install --path . --locked                                 # the binary, into ~/.cargo/bin
+gremlin-scheduler check --config ~/gremlin/scheduler.toml
+gremlin-scheduler install --config ~/gremlin/scheduler.toml --data-dir ~/gremlin/data
+```
+
+`cargo install` in `packages/scheduler` builds with the pinned toolchain, and puts the binary where a rebuild or `cargo clean` in the checkout doesn't touch it. `install` refuses on any system but macOS, checks the config, and creates the data directory, mode 0700, and `stderr.log` in it, mode 0600. It boots out an agent already loaded and waits, up to `stop_grace` plus 15 s, for the data directory's lock to be free; a lock held when no agent was loaded, such as by a scheduler started in a terminal, fails the install. It then writes `~/Library/LaunchAgents/local.gremlin-scheduler.plist`, saying when it replaces one and what the agent now runs, loads it with `launchctl bootstrap`, and waits up to 10 s for a `ready` record. Without one, it prints the end of `stderr.log`, and says that the agent is loaded and `uninstall` removes it. The plist holds:
+- `Label`: `local.gremlin-scheduler`, so one scheduler is installed per user, and an install from a second checkout repoints it;
+- `ProgramArguments`: the binary's absolute path, then `run`, `--config` and `--data-dir`, with absolute paths, since a plist expands neither `~` nor `$HOME`;
+- `KeepAlive`, which starts the scheduler at login and again whenever it exits;
+- `WorkingDirectory`: the data directory, since launchd otherwise starts a job in `/`;
+- `EnvironmentVariables`: the `PATH` and `LANG`, and `LC_ALL` when set, that `install` ran with. launchd sets only a short `PATH` and no `LANG`, and `.env` can set neither, while runs, their shell commands and their MCP servers need both. `install` prints them;
+- `ProcessType`: `Interactive`, since launchd throttles the CPU and I/O of a job without it, and `Standard` is the same as leaving it out;
+- `StandardErrorPath`: `stderr.log`, since launchd otherwise sends stderr to `/dev/null`, which would hide why a start failed;
+- `ExitTimeOut`: `stop_grace` plus 15 s, so that launchd's SIGKILL comes after the scheduler's own grace.
+
+Then:
+
+```sh
+launchctl kill SIGHUP gui/$(id -u)/local.gremlin-scheduler   # reread the config
+launchctl print gui/$(id -u)/local.gremlin-scheduler         # see the agent's state
+gremlin-scheduler uninstall                                  # boot it out and delete the plist
+cargo uninstall gremlin-scheduler
+```
+
+- **Install again** after a change to `stop_grace`, which sets `ExitTimeOut`, or from another shell to take that shell's `PATH`.
+- **`uninstall`** leaves the config and the data directory. With nothing installed, it says so.
+- **The privacy limit.** A process launchd starts, and likely its runs, can't reach `~/Documents`, `~/Desktop`, `~/Downloads` or iCloud Drive. Keep the binary, the config, the data directory, the checkout and every file a task touches outside them.
+- **Only while logged in.** A LaunchAgent runs in the user's GUI session.
+- **A crash.** Each run is a process group of its own, which launchd's kill doesn't reach, so if the scheduler itself crashes, its runs go on. `KeepAlive` starts it again, but it doesn't know them, so no timeout bounds them, and a job's next fire can start beside one.
+
+### Under systemd
+
+On Linux, a user service written by hand, in `~/.config/systemd/user/gremlin-scheduler.service`:
+
+```ini
+[Unit]
+Description=gremlin-scheduler
+
+[Service]
+ExecStart=%h/.cargo/bin/gremlin-scheduler run --config %h/gremlin/scheduler.toml --data-dir %h/gremlin/data
+ExecReload=/bin/kill -HUP $MAINPID
+Environment=PATH=%h/.bun/bin:/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8
+Restart=always
+# SIGTERM to the scheduler alone, which stops its runs itself, then SIGKILL to what's left after
+# this, which must be above stop_grace.
+KillMode=mixed
+TimeoutStopSec=45
+
+[Install]
+WantedBy=default.target
+```
+
+`systemctl --user enable --now gremlin-scheduler` starts it, `systemctl --user reload gremlin-scheduler` rereads the config, and `loginctl enable-linger` keeps it running while you're logged out. Under systemd, runs end with the scheduler.
+
+### In a container
+
+The repository has no image yet. In compose, the scheduler would be the main process, handling SIGTERM itself:
+
+```yaml
+services:
+    scheduler:
+        image: your-image-with-bun-the-checkout-and-gremlin-scheduler
+        command: [gremlin-scheduler, run, --config, /config/scheduler.toml, --data-dir, /data]
+        init: true
+        stop_grace_period: 45s
+        environment:
+            TZ: Europe/London
+        volumes:
+            - gremlin-data:/data
+```
+
+`init: true` reaps the runs' orphaned grandchildren. `stop_grace_period` must be above `stop_grace`, since Docker's own is 10 s. Without `TZ`, schedules run in UTC. Build the binary in the image's own Debian or older, since one built on newer Debian needs a newer glibc.
+
+### Runs started together on a fresh data folder
+
+Runs started in the same second on a fresh data folder, or after an update that ships a store migration, can fail with `database is locked` or `table … already exists`, since each run migrates the store as it opens it. Until the store migrates once before runs start, run the agent once by hand on a new data folder, or after such an update, before the scheduler starts runs on it, and keep schedules that fire together apart by a minute.
+
 ## Develop
 
 ```sh
@@ -332,9 +554,12 @@ bun run typecheck      # tsc --noEmit over the whole workspace
 bun run lint           # oxlint, with type information; warnings fail too
 bun run spellcheck     # CSpell, over code and docs alike
 bun run format         # oxfmt: 4-space indentation, single quotes; format:check only checks
-bun run check          # format:check, lint, spellcheck, typecheck, test and test:node, as CI would run them
+bun run check          # format:check, lint, spellcheck, typecheck, test, test:node and the scheduler's check
 bun run mutation       # Stryker mutation testing on Bun, which fails below 100%; report in reports/mutation/
+bun run mutation:scheduler   # cargo-mutants over the scheduler, which fails on any mutant missed or timed out
 ```
+
+The scheduler's own scripts, in `packages/scheduler`, run cargo: `check` runs `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings` and `cargo test --locked`, `mutation` runs cargo-mutants, and `build` a release build.
 
 - **Formatting.** oxfmt formats code and config files. Markdown, `openspec/`, `.claude/` and `.opencode/` are excluded in `.oxfmtrc.json`, so prose documents and generated command files keep their layout.
 - **Spelling.** CSpell checks every file git doesn't ignore, except `bun.lock` and the command files OpenSpec generates under `.claude/commands/` and `.opencode/`.
@@ -369,10 +594,17 @@ bun run mutation       # Stryker mutation testing on Bun, which fails below 100%
 - **Mutation testing runs under a memory guard.** A mutant can make a loop endless, and Stryker's hit limit can't end one that catches the error the limit throws, as the stdio transport's `drain` does. Such a loop that keeps what each turn makes grows by hundreds of megabytes a second, since Bun's heap has no limit. Stryker's timeout gives a mutant that slow tests cover minutes, so two or three such mutants side by side filled CI's runner and took it down.
   - `bun run mutation` therefore starts Stryker through [`test/memory-guard.ts`](test/memory-guard.ts). Every half second, it lists Stryker and the processes under it, and kills any that holds more than 2 GiB. `MEMORY_LIMIT_MIB` sets another limit.
   - Stryker restarts a test runner killed this way and tries its mutant once more, then reports a runtime error, which the mutation score leaves out.
+  - `bun run mutation:scheduler` runs cargo-mutants under the same guard, since Rust's heap has no limit either.
+- **The scheduler meets the same bar in Rust's tools:** rustfmt, clippy with warnings denied, its tests, and cargo-mutants.
+  - Its unit tests sit beside the code, in `#[cfg(test)]` modules, and test the loop in-process, with the clock and the runs faked. `tests/binary.rs` runs the built binary for real, starting runs at once by seeding a job's folder with an old log. Every wait in a test is bounded and kills the binary when it passes, so a mutant that hangs the scheduler fails a test rather than timing out.
+  - cargo-mutants fails on any mutant that survives or times out, and its timeout floor sits in `.cargo/mutants.toml`. It makes coarser mutants than Stryker, so the tests check literals and whole conditions by hand. Only an equivalent or unreachable mutant is turned off, by an `exclude_re` entry in `.cargo/mutants.toml` that matches it alone, or by `#[mutants::skip]` on a function whose every mutant is, each with its reason above it.
+  - **No test touches the machine's launchd.** `install` and `uninstall` take the system's name, the home directory, the user's id, the binary's path, the environment, the waits' limits and a runner for `launchctl`, which their tests fake, with a temporary home. Two small functions hand them the real ones, and carry `#[mutants::skip]`, since a test that called them would change the launchd of the machine running it. The binary's tests never run `install` or `uninstall`.
+  - rustfmt can't enforce the repository's blank-line rules on stable Rust, so review does. `clippy::mod_module_files` enforces the counterpart of no index files: no `mod.rs`.
+  - `.gitignore` keeps `target/` and cargo-mutants' `mutants.out*/` out of git, and `stryker.config.mjs` keeps the package out of Stryker's sandbox, which copies every file it doesn't ignore, whatever `.gitignore` says. oxfmt formats the package's `package.json` and TOML files, CSpell checks its Rust, and both leave `Cargo.lock` alone.
 
 ## CI
 
-GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) builds every pushed branch, and pull requests from forks. It runs two jobs:
+GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) builds every pushed branch, and pull requests from forks. It runs three jobs:
 
 1. **Check and test:**
    - a frozen install, then the format check, lint, spell check and typecheck;
@@ -380,5 +612,8 @@ GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) builds e
    - the agent, started on Node against a port where nothing listens, with a data folder in the runner's temporary directory. It opens the store and runs the migrations first, then must exit with 1, saying it can't reach LM Studio. The tests load the code through Vite, so this is the one check that Node itself loads it;
    - `bun audit`, report only: the step shows as failed when there are advisories, but the job still passes.
 2. **Mutation testing:** once the checks pass, Stryker runs on Bun, under the memory guard, and uploads its HTML report as the `mutation-report` artifact. The job fails if any mutant survives. It sets up only Bun, not Node.
+3. **Scheduler,** beside the checks, in `packages/scheduler`:
+   - on `ubuntu-latest` and on `macos-latest`, since the scheduler runs on Mac hosts and in Linux containers: the format check, clippy and the tests. The runner's rustup installs the pinned toolchain at the first cargo command;
+   - on `ubuntu-latest` only, with cargo-mutants and cargo-deny installed by `taiki-e/install-action`: cargo-mutants under the memory guard, which fails the job on a mutant that survives or times out, and `cargo deny check advisories`, report only, as `bun audit` is.
 
 Actions are pinned to commit SHAs, and there is deliberately no dependency cache shared between builds.

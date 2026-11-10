@@ -1,0 +1,5 @@
+# CI runs `cargo deny check advisories` alone, report only, as it runs `bun audit`; the other
+# sections keep cargo-deny's defaults.
+[advisories]
+# Each ignored advisory needs its reason: { id = "RUSTSEC-…", reason = "…" }.
+ignore = []

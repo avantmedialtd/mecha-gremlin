@@ -1,0 +1,6 @@
+# rustup installs this toolchain on the first cargo command run in this folder. It moves with the
+# repository's rule of the newest release of every tool.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

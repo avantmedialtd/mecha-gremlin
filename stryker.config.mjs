@@ -13,6 +13,9 @@ export default {
     vitest: { configFile: 'vitest.config.ts', related: false },
     coverageAnalysis: 'perTest',
     mutate: ['packages/*/src/**/*.ts'],
+    // Stryker copies every file it doesn't ignore into its sandbox, whatever .gitignore says, and a
+    // build leaves over 100 MB in the scheduler's target/; cargo-mutants tests the scheduler.
+    ignorePatterns: ['/packages/scheduler'],
     reporters: ['clear-text', 'progress', 'html'],
     // Every mutant must be caught. Only an equivalent or unreachable one may be disabled, with a
     // `// Stryker disable next-line` comment that says why.

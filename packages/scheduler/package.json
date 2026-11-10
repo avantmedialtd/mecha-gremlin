@@ -1,0 +1,11 @@
+{
+    "name": "@mecha-gremlin/scheduler",
+    "version": "0.0.0",
+    "private": true,
+    "description": "gremlin-scheduler, a Rust binary: starts each job's command at its cron schedule's fires, and keeps their logs",
+    "scripts": {
+        "check": "cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked",
+        "mutation": "bun ../../test/memory-guard.ts cargo mutants",
+        "build": "cargo build --release --locked"
+    }
+}
