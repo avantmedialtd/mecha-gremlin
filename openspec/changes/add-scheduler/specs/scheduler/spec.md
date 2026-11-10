@@ -24,7 +24,7 @@ The scheduler SHALL be a binary, `gremlin-scheduler`, started as `gremlin-schedu
 - **THEN** the scheduler exits 1, and stderr names the path
 
 ### Requirement: The config is checked before anything runs
-The config SHALL be TOML. Its top level SHALL take `timezone`, `working_dir`, `command`, `env`, `timeout`, `stop_grace` and `keep_runs`, and one `[[job]]` table per job; a config with no jobs SHALL be valid, and the scheduler SHALL idle. A job SHALL take `name`, `schedule`, `args`, `command`, `working_dir`, `env`, `timeout` and `catch_up`. A job SHALL have a `name` and a `schedule`, and a `command` of its own or the top level's. The defaults SHALL be: the system's zone, the config file's folder as `working_dir`, `timeout` `1h`, `stop_grace` `30s`, `keep_runs` 50 and `catch_up` true. A relative `working_dir` SHALL resolve against the config file's folder; `command` and `args` SHALL reach the program as written.
+The config SHALL be TOML. Its top level SHALL take `timezone`, `working_dir`, `command`, `env`, `timeout`, `stop_grace`, `keep_runs` and `on_failure`, and one `[[job]]` table per job; a config with no jobs SHALL be valid, and the scheduler SHALL idle. A job SHALL take `name`, `schedule`, `args`, `command`, `working_dir`, `env`, `timeout`, `catch_up` and `on_failure`. A job SHALL have a `name` and a `schedule`, and a `command` of its own or the top level's. The defaults SHALL be: the system's zone, the config file's folder as `working_dir`, `timeout` `1h`, `stop_grace` `30s`, `keep_runs` 50, `catch_up` true and no `on_failure`. An empty `on_failure` SHALL mean none, so that a job can turn off the top level's. A relative `working_dir` SHALL resolve against the config file's folder; `command`, `args` and `on_failure` SHALL reach the program as written.
 
 The check SHALL fail, before any run, on:
 - a config file that is missing, can't be read or isn't valid TOML;
@@ -210,6 +210,46 @@ Each run SHALL have a deadline, its start plus the job's `timeout`, or the top l
 - **WHEN** the group the scheduler is asked to signal is 0 or 1
 - **THEN** it sends no signal
 
+### Requirement: A failed run starts the job's on_failure command
+When a run exits with a code other than 0, ends by a signal, passes its timeout or can't start, the scheduler SHALL start its job's `on_failure` command, or the top level's, unless there is none. The command SHALL start in the run's working directory, in a process group of its own, with stdin empty and its stdout and stderr appended to the run's log, with the run's environment and three more variables:
+- `GREMLIN_RESULT`: `timeout` for a run that passed its timeout, whatever it then exited with, and otherwise `exit-code`, `signal`, or `error` for a run that couldn't start;
+- `GREMLIN_STATUS`: the run's exit code, the name of the signal that ended it, or the reason it couldn't start;
+- `GREMLIN_LOG`: the run log's absolute path.
+
+The command SHALL get 60 s, then SIGTERM to its process group, and SIGKILL `stop_grace` later if the group is still there. It SHALL NOT count as the job's run. A run SHALL use the `on_failure` of the config it started under. A run that exits 0 without passing its timeout, a skipped fire, and a run that ends while the scheduler is stopping SHALL start no command. When the command exits with a code other than 0, ends by a signal, passes its 60 s or can't start, the scheduler SHALL record `error` with the job and a reason that names `on_failure`, and SHALL start nothing more for that run.
+
+#### Scenario: A run that exits with code 1
+- **WHEN** a job named `digest` has `on_failure = ["/bin/sh", "-c", "echo failed: $GREMLIN_JOB $GREMLIN_RESULT $GREMLIN_STATUS"]`, and its run exits with code 1
+- **THEN** the command runs once, and the run's log ends with `failed: digest exit-code 1`
+
+#### Scenario: A run that passes its timeout
+- **WHEN** a job with `timeout = "2s"` and an `on_failure` command runs `sleep 60`
+- **THEN** once the run has ended, the command runs with `GREMLIN_RESULT=timeout` and `GREMLIN_STATUS=SIGTERM`
+
+#### Scenario: A program that doesn't exist
+- **WHEN** a job's command names a program that doesn't exist, and the top level sets `on_failure`
+- **THEN** the command runs with `GREMLIN_RESULT=error`, the reason in `GREMLIN_STATUS`, and the run log's absolute path in `GREMLIN_LOG`
+
+#### Scenario: A run that succeeds, and a skipped fire
+- **WHEN** a job with an `on_failure` command has a run that exits 0, and then a fire skipped with the reason `missed`
+- **THEN** the command doesn't run
+
+#### Scenario: A job that turns it off
+- **WHEN** the top level sets `on_failure`, a job sets `on_failure = []`, and the job's run exits with code 1
+- **THEN** no command runs
+
+#### Scenario: The command fails
+- **WHEN** a run fails, and its `on_failure` command exits with code 2
+- **THEN** an `error` record gives the `job` and a `reason` that names `on_failure` and the code 2, and no other command starts
+
+#### Scenario: A command that takes too long
+- **WHEN** a run's `on_failure` command is still going 60 s after it started
+- **THEN** its process group gets SIGTERM, and an `error` record gives the `job` and a `reason` that names `on_failure`
+
+#### Scenario: Stopped with a run going
+- **WHEN** the scheduler gets SIGTERM while a run of a job with an `on_failure` command is going
+- **THEN** the run's process group gets SIGTERM, and no command starts when the run ends
+
 ### Requirement: Each job keeps its newest logs
 After each run starts, the scheduler SHALL delete the job's oldest run logs beyond its `keep_runs`, and SHALL NOT delete the log of a run that is still going.
 
@@ -224,7 +264,7 @@ The scheduler SHALL append its records to `scheduler.log` in the data directory,
 - `info` `exited`: `job`, `code` or `signal` (a name, such as `SIGKILL`), and `seconds`, to a tenth;
 - `info` `skipped`: `job`, `slot`, and `reason`, `running` or `missed`;
 - `warn` `timed out`: `job` and `pid`;
-- `error` `error`: `job` and `reason`;
+- `error` `error`: `job` and `reason`, for a run that couldn't start or an `on_failure` command that failed;
 - `warn` `clock stepped back`: `from` and `to`;
 - `info` `config reloaded`: `jobs`, as in `ready`;
 - `warn` `config refused`: `reason`;
@@ -255,7 +295,7 @@ The scheduler SHALL hold an exclusive lock on `lock` in the data directory, crea
 - **THEN** a scheduler started next with the same data directory starts
 
 ### Requirement: SIGTERM and SIGINT stop the scheduler and its runs
-On SIGTERM or SIGINT the scheduler SHALL record `stopping`, start no more runs, send SIGTERM to every running run's process group, wait up to `stop_grace` for them to end, send SIGKILL to any group still there, record `stopped`, and exit 0. Further signals during the stop SHALL be ignored.
+On SIGTERM or SIGINT the scheduler SHALL record `stopping`, start no more runs and no `on_failure` command, send SIGTERM to the process group of every run and `on_failure` command still going, wait up to `stop_grace` for them to end, send SIGKILL to any group still there, record `stopped`, and exit 0. Further signals during the stop SHALL be ignored.
 
 #### Scenario: Stopped while idle
 - **WHEN** the scheduler gets SIGTERM with no run going

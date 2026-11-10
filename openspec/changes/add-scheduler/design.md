@@ -18,6 +18,7 @@ Constraints: the scheduler stays small ("its functionality will be limited"), ru
 - Behave the same after a sleep, a suspend, a clock step or a restart on macOS and Linux: a missed fire runs once, and a backward step runs nothing twice.
 - Keep each run's output, and the scheduler's own record of what it did, in the data directory.
 - Bound every run with a timeout, and never start a job twice at once.
+- Tell the user when a run fails, through a command of their own (Q30).
 - Stay small: one binary of about 1 MB, about 2 MiB resident (R26.3), no async runtime.
 - Meet the repository's bar: formatted, linted with warnings denied, tested, and every mutant caught.
 
@@ -25,7 +26,7 @@ Constraints: the scheduler stays small ("its functionality will be limited"), ru
 - Knowing the agent: its store, task files, frontmatter or `.env` beyond starting in the folder that holds it.
 - The store's migration race when runs start together (R25.5, S13), which a store change fixes.
 - The Docker image and compose file (none exist yet), and installing a LaunchAgent or systemd unit from code: the README shows them.
-- The operating system's exact wall-clock timers (D54, S15), a zone per job, overlap's `queue` (D16), retries, dependencies between jobs, alerts (Q1, Q30), and showing a run's slot to the model, which the agent would do (Q29).
+- The operating system's exact wall-clock timers (D54, S15), a zone per job, overlap's `queue` (D16), retries, dependencies between jobs, the agent's own alerts and where its results go (Q1), and showing a run's slot to the model, which the agent would do (Q29).
 
 ## Decisions
 
@@ -71,6 +72,7 @@ env = { LOG_FORMAT = "json" }
 timeout = "1h"
 stop_grace = "30s"
 keep_runs = 50
+on_failure = ["/path/to/notify-failure.sh"]
 
 [[job]]
 name = "daily-summary"
@@ -94,6 +96,7 @@ catch_up = false
 | `timeout` | top, job | `1h` | how long a run may take |
 | `stop_grace` | top | `30s` | how long a run gets between SIGTERM and SIGKILL |
 | `keep_runs` | top | `50` | how many run logs a job keeps |
+| `on_failure` | top, job | none | a command run after a run fails (decision 17); `[]` means none, so a job can turn off the top's |
 | `name` | job | required | ASCII letters, digits, `-` and `_`, at least one, unique: it names the job's log folder |
 | `schedule` | job | required | five cron fields or a nickname (decision 4) |
 | `args` | job | none | added after the command |
@@ -102,7 +105,7 @@ catch_up = false
 - **Strict.** A file that is missing, can't be read or isn't valid TOML, an unknown key, a key in the wrong table, a wrong type, a missing, duplicate or unsafe name, a schedule that doesn't parse or never fires, an unknown zone, an empty `command`, a duration that doesn't parse or is zero, or a `keep_runs` below 1 fails the check, with the key and its line. serde's `deny_unknown_fields` and the toml crate's spans give both.
 - **No jobs** is a valid config: the scheduler idles, and a reload to such a config pauses every job.
 - **Durations** are a whole number and a unit, `s`, `m` or `h` (`90s`, `30m`, `2h`), parsed by hand.
-- **Only `working_dir` is a path the scheduler resolves:** a relative one against the config file's folder, not the working directory, since launchd starts a job in `/` (R25.2). `command` and `args` reach the program as written, so the example's `packages/agent/src/main/main.ts` resolves against `working_dir`.
+- **Only `working_dir` is a path the scheduler resolves:** a relative one against the config file's folder, not the working directory, since launchd starts a job in `/` (R25.2). `command`, `args` and `on_failure` reach the program as written, so the example's `packages/agent/src/main/main.ts` resolves against `working_dir`.
 - **`timeout` has a default.** Nothing else bounds a whole agent run (R25.5), and an hour covers the slowest browsing tasks measured. A job that needs longer sets its own.
 - **`stop_grace` defaults to 30 s,** since the agent's cleanup after SIGTERM takes up to about 28 s, or 29 with a command running, worked out from its code's constants: MCP servers close in up to 16 s, then the sweep's `ps` gets up to 10 s and its group a 2 s grace (R25.5).
 
@@ -177,14 +180,14 @@ The agent puts its shell commands and stdio MCP servers in sessions of their own
 
 ### 8. Timeouts
 
-Each run has a deadline, its start plus `timeout`, and the wait counts down to the nearest deadline or pending SIGKILL. At the deadline the run's group gets SIGTERM, and `stop_grace` later SIGKILL if it is still there, recorded as `timed out`. A run keeps the `timeout` and `stop_grace` it started with, whatever a reload changes, so a run of a job a reload removed is still bounded.
+Each run has a deadline, its start plus `timeout`, and the wait counts down to the nearest deadline or pending SIGKILL. At the deadline the run's group gets SIGTERM, and `stop_grace` later SIGKILL if it is still there, recorded as `timed out`. A run keeps the `timeout`, `stop_grace` and `on_failure` it started with, whatever a reload changes, so a run of a job a reload removed is still bounded.
 
 The group kill goes through rustix, since the standard library can't signal a process group (R26.3). A run's group is kept as the `Pid` that `Pid::from_child` gives (rustix's `std` feature), taken before the waiter takes the `Child`, and no function returns it as an integer. cargo-mutants replaces an integer-returning body with 0, 1 and -1, and a group of 1 is `kill(-1)`: every process the scheduler may signal, the user's whole session in a test. As the agent's sweep refuses pid 1 and below, the scheduler sends nothing to a group below 2.
 
 ### 9. Signals
 
 A thread holds signal-hook's iterator for SIGTERM, SIGINT and SIGHUP, and sends each to the loop.
-- **SIGTERM or SIGINT:** record `stopping`, stop starting runs, send SIGTERM to every running group, wait up to `stop_grace` for them to exit, send SIGKILL to the rest, record `stopped` and exit 0. Signals that arrive meanwhile are ignored.
+- **SIGTERM or SIGINT:** record `stopping`, stop starting runs and `on_failure` commands, send SIGTERM to every running group, theirs included, wait up to `stop_grace` for them to exit, send SIGKILL to the rest, record `stopped` and exit 0. Signals that arrive meanwhile are ignored.
 - **SIGHUP:** read and check the config again. A config that passes replaces the old one and records `config reloaded`: running runs go on to their end with their own deadlines, a removed job starts nothing more, a kept job keeps its last look, and a new job's last look is the time of the reload. One that fails records `config refused`, with its reason, and the old one stays.
 
 What stops the scheduler must wait longer than `stop_grace`. launchd sends SIGKILL `ExitTimeOut` seconds after SIGTERM, 20 s by default in its last open-source release, and Docker sends it after its stop grace, 10 s by default (R25.4, R25.5). So the README's LaunchAgent sets `ExitTimeOut`, and its compose example `stop_grace_period`, above `stop_grace`. Under Docker the scheduler would be the main process. It handles SIGTERM itself, and compose's `init: true` reaps orphaned grandchildren.
@@ -204,7 +207,7 @@ The scheduler appends one JSON object per line to `<data-dir>/scheduler.log`, cr
 | `info` | `exited` | `job`, `code` or `signal` (a name, such as `SIGKILL`), and `seconds`, to a tenth |
 | `info` | `skipped` | `job`, `slot`, and `reason`: `running` or `missed` |
 | `warn` | `timed out` | `job` and `pid` |
-| `error` | `error` | `job` and `reason` |
+| `error` | `error` | `job` and `reason`: a run that couldn't start, or an `on_failure` command that failed |
 | `warn` | `clock stepped back` | `from` and `to` |
 | `info` | `config reloaded` | `jobs`, as in `ready` |
 | `warn` | `config refused` | `reason` |
@@ -253,12 +256,13 @@ It keeps the workflow's rules: the `if:` that builds a same-repository PR only t
   - the 90 s boundary, the backward step, the start from the newest log and a new job;
   - the zone read from `TZ` and from `/etc/localtime`;
   - retention, log names, the records' JSON, and the refusal to signal a group below 2.
-- **The loop** is tested in-process with an injected clock and a fake that stands in for starting runs: overlap, timeouts, the stop sequence and reload, with no real waiting.
+- **The loop** is tested in-process with an injected clock and a fake that stands in for starting runs: overlap, timeouts, the `on_failure` command and its 60 s limit, the stop sequence and reload, with no real waiting.
 - **The binary's tests** run it for real. A run starts at once, with no wait for a minute, when a test seeds a job's folder with a log whose start is older than the job's latest fire: the start's decision catches it up. They cover:
   - missing, unknown and repeated options, `--help` and `--version`;
   - a bad config and a missing data directory;
   - a held lock, and a start after SIGKILL;
   - a run's output, environment, `GREMLIN_` variables and records;
+  - an `on_failure` command after a run that exits 1, and none after one that exits 0;
   - a timeout, and a run that ignores SIGTERM;
   - SIGTERM while idle and with a run going;
   - SIGHUP with a valid and a broken config.
@@ -278,6 +282,23 @@ On the Mac host, under a LaunchAgent (Q28): the agent runs there today (D18), an
 
 A LaunchAgent runs while its user is logged in, since `gui/<uid>` exists only with a GUI login (R25.5). A process launchd starts likely can't reach `~/Documents`, `~/Desktop`, `~/Downloads` or iCloud Drive **[M]** (R25.2), so the README says to keep the checkout, the data directory and every file a task touches outside them, and S11 checks it on a spare Mac. `launchctl kill HUP` rereads the config, and `launchctl bootout` stops the scheduler for good. A systemd user service and a container get shorter notes; the container follows with the image (4.9).
 
+### 17. A command when a run fails
+
+A run that fails starts its job's `on_failure` command, or the top level's (Q30). A run fails when it exits with a code other than 0, ends by a signal, passes its timeout or can't start. It keeps the `on_failure` it started with, as it keeps its timeout, and `on_failure = []` means none, so that a job can turn off the top level's.
+
+The command starts as a run does: in the run's working directory and a process group of its own, with stdin from `/dev/null` and its output appended to the run's log, after the run's own. Its environment is the run's, `GREMLIN_JOB`, `GREMLIN_SLOT` and `GREMLIN_CATCH_UP` included, and three more variables, shaped like the `$MONITOR_*` variables that systemd 251 and later give an `OnFailure=` handler (R25.4):
+- `GREMLIN_RESULT`: `timeout` for a run that passed its timeout, whatever it then exited with; otherwise `exit-code`, `signal`, or `error` for a run that couldn't start;
+- `GREMLIN_STATUS`: the exit code, the signal's name, such as `SIGKILL`, or the reason the run couldn't start, as the `exited` and `error` records give them;
+- `GREMLIN_LOG`: the run log's absolute path, so that the command can quote its tail.
+
+What the command does with them is the user's choice: a notification, a mail or a message to a phone. The scheduler knows no service, and a script can hold back repeats when a job fails at every fire, as OpenClaw's alerts wait for 2 failures in a row (R25.4).
+
+The command gets 60 s, then SIGTERM to its group and SIGKILL `stop_grace` later, through the function that signals runs (decision 8): a notification takes seconds, and a hung one mustn't linger. It doesn't count as the job's run, so it delays no fire. When it fails in any of the four ways, the scheduler records `error` with the job and a reason that names `on_failure`, and runs nothing more for it. A run that exits 0, a skipped fire, and a run that ends while the scheduler stops start no command, and the stop signals commands still going as it signals runs (decision 9).
+
+A dead-man's switch for the scheduler itself, Q1's other half, needs no feature: a job that pings an outside check every few minutes stops pinging when the scheduler stops.
+
+Alternatives: the log alone, which leaves a failure at 3am unseen until someone looks; a command after every run, which would also carry success pings, though a ping job does that; and built-in mail or webhooks, which bring a service's settings into the scheduler, as ofelia's mail and Slack options do (R25.4).
+
 ## Risks / Trade-offs
 
 - [A second toolchain, supply chain and pipeline (C24)] → One small crate with eight dependencies, cargo-deny, and a CI job that adds no time to `Check and test`.
@@ -292,6 +313,8 @@ A LaunchAgent runs while its user is logged in, since `gui/<uid>` exists only wi
 - [Runs started together on a fresh or migrating data folder fail (R25.5)] → Out of scope here; the README warns until the store's change lands (S13).
 - [Schedules follow the system's zone without `timezone`, so a container runs in UTC unless `TZ` is set (D53)] → The README says so.
 - [Where `/etc/localtime` is a plain file, jiff's 5-minute cache can delay a zone change, and lose a fire in those minutes] → Rare on macOS and in the official images, where it is a link or `TZ` is set.
+- [`on_failure` runs at every failure, so a job that fails at every fire notifies at every fire] → The command decides what to send, and can hold back repeats.
+- [A broken `on_failure` command hides failures] → Its failure is an `error` record in `scheduler.log`, and the run's log holds its output.
 - [`scheduler.log` grows without a limit] → A few lines a run; rotation can follow if it matters.
 - [croner-rust is young, and fixed real bugs recently (R26.2)] → The newest release pinned in `Cargo.lock`, and DST and day-field tests.
 
@@ -301,6 +324,5 @@ Nothing to migrate: the package is new and nothing depends on it. A user builds 
 
 ## Open Questions
 
-- How should a failed run reach the user (Q30, Q1)?
 - Would a mode that prints each job's next fires, without running anything, be worth adding?
 - Should `scheduler.log` rotate?
