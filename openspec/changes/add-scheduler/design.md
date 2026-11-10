@@ -9,6 +9,11 @@ The agent is a one-shot CLI: from the repository's root, `bun run agent <task fi
 - **D53:** schedules follow the system's zone unless the config names a `timezone`.
 - **D54:** it sleeps at most 60 s between looks at the wall clock.
 
+The answers of 2026-11-10 settle the rest:
+- **Q28:** it runs on the Mac host first, under a LaunchAgent (decision 16).
+- **Q29:** each run is told its job, its slot and whether it catches up, through its environment (decision 7).
+- **Q30:** a failed run starts the job's `on_failure` command (decision 17).
+
 Constraints: the scheduler stays small ("its functionality will be limited"), runs first on a Mac host under a LaunchAgent and later in Linux containers (Q28), and meets the repository's bar in Rust's tools (C24). It knows nothing of the agent: a job is a command.
 
 ## Goals / Non-Goals
@@ -216,6 +221,10 @@ The scheduler appends one JSON object per line to `<data-dir>/scheduler.log`, cr
 | `info` | `stopping` | `signal` |
 | `info` | `stopped` | none |
 
+**Rotation.** Before each record, when `scheduler.log` has reached 10 MiB, the scheduler renames it to `scheduler.log.1`, replacing an earlier one, and starts a new file with mode 0600, so that the data directory stays bounded as `keep_runs` bounds the job logs. A run writes about 300 bytes, so 10 MiB holds about four months of a job every 5 minutes. The scheduler counts the bytes it writes from the file's size at open, so it needs no `stat` per record. Nothing reads the log back, since last looks come from the job logs' names, so rotation loses only old records. If the rename fails, it keeps writing to the open file.
+
+Alternatives: no rotation, at about 30 MB a year for a job every 5 minutes; and reopening the file at each record so that newsyslog or logrotate can rename it, which needs a system entry, and on a Mac root.
+
 ### 12. Crates
 
 The newest release of each, with only the features the code uses:
@@ -319,7 +328,7 @@ Alternatives: the log alone, which leaves a failure at 3am unseen until someone 
 - [Where `/etc/localtime` is a plain file, jiff's 5-minute cache can delay a zone change, and lose a fire in those minutes] → Rare on macOS and in the official images, where it is a link or `TZ` is set.
 - [`on_failure` runs at every failure, so a job that fails at every fire notifies at every fire] → The command decides what to send, and can hold back repeats.
 - [A broken `on_failure` command hides failures] → Its failure is an `error` record in `scheduler.log`, and the run's log holds its output.
-- [`scheduler.log` grows without a limit] → A few lines a run; rotation can follow if it matters.
+- [Rotation keeps 10–20 MiB of records, so a scheduler with a job every minute keeps weeks of them, not years] → Enough to see recent failures; `scheduler.log.1` can be copied elsewhere to keep more.
 - [croner-rust is young, and fixed real bugs recently (R26.2)] → The newest release pinned in `Cargo.lock`, and DST and day-field tests.
 
 ## Migration Plan
@@ -328,4 +337,4 @@ Nothing to migrate: the package is new and nothing depends on it. A user builds 
 
 ## Open Questions
 
-- Should `scheduler.log` rotate?
+None left. Q28, Q29 and Q30, and the change's own two questions, were answered on 2026-11-10: where it runs first (decision 16), the variables a run gets (decision 7), the command a failed run starts (decision 17), `--check` (decision 2) and the log's rotation (decision 11).

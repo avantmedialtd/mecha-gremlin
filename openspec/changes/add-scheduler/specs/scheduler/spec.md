@@ -273,7 +273,7 @@ After each run starts, the scheduler SHALL delete the job's oldest run logs beyo
 - **THEN** the job's folder holds the logs of its second and third runs only
 
 ### Requirement: The scheduler's own log
-The scheduler SHALL append its records to `scheduler.log` in the data directory, created with mode 0600, one JSON object per line. Each object SHALL hold `time`, in ISO 8601 UTC, `level` and `message`, then the record's fields, and a time in a field SHALL be written as `time` is. The characters U+007F to U+009F SHALL be written as `\u` escapes, as the agent's JSON records write them. Before the log is open, the scheduler SHALL write its errors to stderr. Its records SHALL be:
+The scheduler SHALL append its records to `scheduler.log` in the data directory, created with mode 0600, one JSON object per line. Each object SHALL hold `time`, in ISO 8601 UTC, `level` and `message`, then the record's fields, and a time in a field SHALL be written as `time` is. The characters U+007F to U+009F SHALL be written as `\u` escapes, as the agent's JSON records write them. Before the log is open, the scheduler SHALL write its errors to stderr. Before writing a record, when `scheduler.log` has reached 10 MiB, the scheduler SHALL rename it to `scheduler.log.1`, replacing any earlier one, and write the record to a new `scheduler.log`, created with mode 0600. Its records SHALL be:
 - `info` `ready`: `zone`, and `jobs`, each with its `name` and `next` fire;
 - `info` `started`: `job`, `slot`, `pid`, and `log`, the run log's path in the data directory;
 - `info` `exited`: `job`, `code` or `signal` (a name, such as `SIGKILL`), and `seconds`, to a tenth;
@@ -297,6 +297,10 @@ The scheduler SHALL append its records to `scheduler.log` in the data directory,
 #### Scenario: The log's mode
 - **WHEN** the scheduler creates `scheduler.log`
 - **THEN** the file has mode 0600
+
+#### Scenario: The log reaches 10 MiB
+- **WHEN** the data directory holds a `scheduler.log` of 10 MiB and an older `scheduler.log.1`, and the scheduler starts
+- **THEN** the 10 MiB file becomes `scheduler.log.1`, the older one is gone, and a new `scheduler.log`, with mode 0600, begins with the `ready` record
 
 ### Requirement: One scheduler per data directory
 The scheduler SHALL hold an exclusive lock on `lock` in the data directory, created with mode 0600, for as long as it runs. A scheduler that finds the lock held SHALL exit 1, saying that another scheduler is using the data directory. The lock SHALL be released when the scheduler's process ends, however it ends.
