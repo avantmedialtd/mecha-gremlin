@@ -1,4 +1,5 @@
 use std::fs;
+use std::iter;
 use std::path::Path;
 
 use croner::Cron;
@@ -140,15 +141,19 @@ pub fn parse(text: &str, now: Timestamp) -> Result<Schedule, String> {
     Ok(schedule)
 }
 
-pub fn days(start: DateTime, every: i64, now: Timestamp) -> Result<Schedule, String> {
-    let schedule = Schedule::Days(Days { start, every });
+pub fn days(start: DateTime, every: i64) -> Result<Schedule, String> {
+    // The check runs again at every start, reload and install, so it depends on neither the time
+    // nor the zone: a series that passes it once passes it for good.
+    let second = Span::new()
+        .try_days(every)
+        .ok()
+        .and_then(|offset| start.date().checked_add(offset).ok());
 
-    // The series ends at 9999-12-31 in every zone, so UTC answers for all of them.
-    if schedule.next_after(&now.to_zoned(TimeZone::UTC)).is_none() {
-        return Err("never fires again: its next fire would come after the year 9999".to_string());
+    if second.is_none() {
+        return Err("has one fire: its second would come after 9999-12-31".to_string());
     }
 
-    Ok(schedule)
+    Ok(Schedule::Days(Days { start, every }))
 }
 
 // As croner-rust places a fixed time (D57): in a repeated hour at the first pass, and in a skipped
@@ -160,7 +165,8 @@ fn place(at: DateTime, zone: &TimeZone) -> Option<Zoned> {
         return ambiguous.earlier().ok();
     };
 
-    // Read with the offset after the gap, the time falls before the jump.
+    // `TimeZone::following` yields only the transitions strictly after it, so this instant must
+    // fall before the jump.
     let before_jump = after.to_timestamp(at).ok()?;
     let jump = zone.following(before_jump).next()?;
 
@@ -172,9 +178,8 @@ impl Days {
     // moves no other. Past 9999-12-31, jiff's last date, the series ends.
     fn fire(&self, k: i64, zone: &TimeZone) -> Option<Zoned> {
         let offset = Span::new().try_days(k.checked_mul(self.every)?).ok()?;
-        let date = self.start.date().checked_add(offset).ok()?;
 
-        place(date.to_datetime(self.start.time()), zone)
+        place(self.start.checked_add(offset).ok()?, zone)
     }
 
     // A fire sits within an hour of its time on its date, so the fires on the dates nearest `at`'s
@@ -184,11 +189,12 @@ impl Days {
         let nearest = days.div_euclid(self.every);
         let zone = at.time_zone().clone();
 
-        (nearest - 1..=nearest + 1).filter_map(move |k| {
-            let k = k.max(0);
+        ((nearest - 1).max(0)..=(nearest + 1).max(0))
+            .filter_map(move |k| Some((k, self.fire(k, &zone)?)))
+    }
 
-            Some((k, self.fire(k, &zone)?))
-        })
+    fn first_after(&self, after: &Zoned) -> Option<(i64, Zoned)> {
+        self.around(after).find(|(_, fire)| fire > after)
     }
 }
 
@@ -196,10 +202,7 @@ impl Schedule {
     pub fn next_after(&self, after: &Zoned) -> Option<Zoned> {
         match self {
             Schedule::Cron(cron) => cron.find_next_occurrence(after, false).ok(),
-            Schedule::Days(days) => days
-                .around(after)
-                .map(|(_, fire)| fire)
-                .find(|fire| fire > after),
+            Schedule::Days(days) => days.first_after(after).map(|(_, fire)| fire),
         }
     }
 
@@ -218,15 +221,24 @@ impl Schedule {
         match self {
             Schedule::Cron(cron) => cron.iter_after(after.clone()).take(count).collect(),
             Schedule::Days(days) => {
-                let Some((first, _)) = days.around(after).find(|(_, fire)| fire > after) else {
+                let Some((k, first)) = days.first_after(after) else {
                     return Vec::new();
                 };
 
-                (first..)
-                    .map_while(|k| days.fire(k, after.time_zone()))
+                iter::once(first)
+                    .chain((k + 1..).map_while(|later| days.fire(later, after.time_zone())))
                     .take(count)
                     .collect()
             }
+        }
+    }
+
+    // Without a run log, a cron job doesn't run its past, and a day interval counts every slot
+    // since its start as unseen, so its latest that has passed is due (D59).
+    pub fn first_look(&self, now: Timestamp) -> Timestamp {
+        match self {
+            Schedule::Cron(_) => now,
+            Schedule::Days(_) => Timestamp::MIN,
         }
     }
 }
@@ -380,7 +392,7 @@ mod tests {
     }
 
     fn interval(start: &str, every: i64) -> Schedule {
-        days(start.parse().unwrap(), every, at("2026-11-10T13:00:00Z")).unwrap()
+        days(start.parse().unwrap(), every).unwrap()
     }
 
     fn fires_of(schedule: &Schedule, zone_name: &str, after: &str, count: usize) -> Vec<String> {
@@ -1154,36 +1166,42 @@ mod tests {
     }
 
     #[test]
-    fn a_day_interval_ends_with_the_year_9999() {
-        let refused = days(
-            "2026-01-01T07:00".parse().unwrap(),
-            3_000_000,
-            at("2026-11-10T13:00:00Z"),
-        );
-        let last_days = interval("9999-12-29T07:00", 1);
-        let past_the_last_date = interval("9999-12-30T07:00", 2);
-        let past_any_span = interval("2026-11-15T07:00", i64::MAX);
+    fn a_day_interval_of_one_fire_is_refused() {
+        let refusal = |start: &str, every: i64| days(start.parse().unwrap(), every).unwrap_err();
+        let one_fire = "has one fire: its second would come after 9999-12-31";
 
-        assert_eq!(
-            refused.unwrap_err(),
-            "never fires again: its next fire would come after the year 9999"
-        );
+        let last_second = days("9999-12-30T07:00".parse().unwrap(), 1);
+
+        assert_eq!(refusal("2026-01-01T07:00", 3_000_000), one_fire);
+        assert_eq!(refusal("9999-12-30T07:00", 2), one_fire);
+        assert_eq!(refusal("2026-11-15T07:00", i64::MAX), one_fire);
+        assert!(last_second.is_ok(), "{last_second:?}");
+    }
+
+    #[test]
+    fn a_day_interval_ends_with_the_year_9999() {
+        let last_days = interval("9999-12-29T07:00", 1);
+        let past_the_last_date = interval("9999-12-20T07:00", 5);
+
         assert_eq!(
             fires_of(&last_days, "UTC", "9999-12-28T00:00:00Z", 5),
             ["9999-12-29T07:00:00+00:00", "9999-12-30T07:00:00+00:00"]
         );
         assert_eq!(
-            fires_of(&past_the_last_date, "UTC", "9999-12-29T00:00:00Z", 5),
-            ["9999-12-30T07:00:00+00:00"]
+            fires_of(&past_the_last_date, "UTC", "9999-12-19T00:00:00Z", 5),
+            [
+                "9999-12-20T07:00:00+00:00",
+                "9999-12-25T07:00:00+00:00",
+                "9999-12-30T07:00:00+00:00"
+            ]
         );
         assert_eq!(
-            fires_of(&past_any_span, "UTC", "2026-11-10T00:00:00Z", 5),
-            ["2026-11-15T07:00:00+00:00"]
+            next(&past_the_last_date, "UTC", "9999-12-30T07:00:00Z"),
+            None
         );
-        assert_eq!(next(&past_any_span, "UTC", "2026-11-15T07:00:00Z"), None);
         assert_eq!(
-            latest(&past_any_span, "UTC", "2030-01-01T00:00:00Z"),
-            Some("2026-11-15T07:00:00+00:00".to_string())
+            latest(&past_the_last_date, "UTC", "9999-12-30T22:00:00Z"),
+            Some("9999-12-30T07:00:00+00:00".to_string())
         );
     }
 

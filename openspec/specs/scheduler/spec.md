@@ -55,9 +55,9 @@ The check SHALL fail, before any run, on:
 - a value of the wrong type;
 - a job without a name, a schedule or a command, where a `start` and an `every` together count as a schedule;
 - a job with a `schedule` beside a `start` or an `every`, or with one of `start` and `every` without the other;
-- a `start` that is a TOML local date or local time alone, or a date-time with an offset;
+- a `start` that is a TOML local date or local time alone, a date-time with an offset, or one with a fraction of a second;
 - an `every` that isn't a whole number above 0 followed by `d`;
-- a day interval with no fire after now (Requirement: A job can run every N days from a start date);
+- a day interval whose second fire would come after 9999-12-31 (Requirement: A job can run every N days from a start date);
 - a name that is empty, holds anything but ASCII letters, digits, `-` and `_`, or that two jobs share;
 - an empty `command`;
 - a schedule that doesn't parse, uses syntax cron doesn't have, or can never fire (Requirement: Schedules and the zone);
@@ -87,6 +87,10 @@ A failed check at the start SHALL exit 1, and its message SHALL name the file, a
 - **WHEN** `timeout` is `30 minutes` or `0s`, or `keep_runs` is 0
 - **THEN** the scheduler exits 1, and the message names the key
 
+#### Scenario: A value of the wrong type
+- **WHEN** `keep_runs` is the string `"50"`
+- **THEN** the scheduler exits 1, and the message names `keep_runs` and its line
+
 #### Scenario: The defaults
 - **WHEN** the config holds only a top-level `command` and one job with a `name` and a `schedule`
 - **THEN** the scheduler starts, reads the schedule in the system's zone, starts the job's runs in the config file's folder, and gives each run an hour, a 30 s stop grace and catch-up, keeping 50 logs
@@ -104,7 +108,7 @@ A failed check at the start SHALL exit 1, and its message SHALL name the file, a
 - **THEN** the scheduler exits 1, and the message names the job and the key
 
 #### Scenario: A start or an every that's wrong
-- **WHEN** a job's `start` is `2026-11-15`, `07:00`, `2026-11-15T07:00Z` or the string `"2026-11-15T07:00"`, or its `every` is `30`, `0d`, `+30d`, `30 d` or `4w`
+- **WHEN** a job's `start` is `2026-11-15`, `07:00`, `2026-11-15T07:00Z`, `2026-11-15T07:00:30.25` or the string `"2026-11-15T07:00"`, or its `every` is `30`, `0d`, `+30d`, `30 d` or `4w`
 - **THEN** the scheduler exits 1, and the message names the key and its line
 
 ### Requirement: Schedules and the zone
@@ -162,7 +166,7 @@ The scheduler SHALL wait until the earliest of the next fire of any job, the nea
 - **THEN** the job runs once, for the 07:00 slot, as a missed fire
 
 ### Requirement: A missed fire runs once
-At each decision, for each job, the scheduler SHALL take the job's latest fire after its last look and at or before now, and SHALL drop any earlier fire in that interval. That fire SHALL be on time when seen less than 90 s after it, and missed when seen 90 s or more after it. An on-time fire SHALL start the job. A missed fire SHALL start the job once, unless the job sets `catch_up = false`, in which case the scheduler SHALL record `skipped` with the reason `missed`. A fire, on time or missed, that comes while the job's previous run is still going SHALL be recorded as `skipped` with the reason `running` instead. After each decision a job's last look SHALL become now, unless now is earlier. At the start, a job's last look SHALL be the start time of its newest run log. For a job with no log, it SHALL be the scheduler's start time, except for a day interval (Requirement: A job can run every N days from a start date), whose last look SHALL be just before its first fire, so that its latest fire that has passed is missed.
+At each decision, for each job, the scheduler SHALL take the job's latest fire after its last look and at or before now, and SHALL drop any earlier fire in that interval. That fire SHALL be on time when seen less than 90 s after it, and missed when seen 90 s or more after it. An on-time fire SHALL start the job. A missed fire SHALL start the job once, unless the job sets `catch_up = false`, in which case the scheduler SHALL record `skipped` with the reason `missed`. A fire, on time or missed, that comes while the job's previous run is still going SHALL be recorded as `skipped` with the reason `running` instead. After each decision a job's last look SHALL become now, unless now is earlier. At the start, a job's last look SHALL be the start time of its newest run log. For a job with no log, it SHALL be the scheduler's start time, except for a day interval (Requirement: A job can run every N days from a start date), whose last look SHALL be just before its first fire, so that the first decision takes its latest fire that has passed, on time or missed as any fire is.
 
 #### Scenario: Asleep through one fire
 - **WHEN** a `0 7 * * *` job's last look is 06:00, and the machine sleeps until 09:00
@@ -428,7 +432,7 @@ On macOS, `gremlin-scheduler uninstall` SHALL boot out the agent loaded as `loca
 - **THEN** it says that nothing is installed, runs no `bootout`, and exits 0
 
 ### Requirement: A job can run every N days from a start date
-A job SHALL be able to give, in place of `schedule`, a `start`, a TOML local date-time with or without seconds, such as `2026-11-15T07:00`, and an `every`, a whole number of days above 0 followed by `d`, such as `30d`. Its fires SHALL be the start and every N days after it: fire k SHALL be the start's date plus k × N calendar days, at the start's time of day, for every k from 0, each computed from the start and never from the fire before it. They SHALL be read in the zone schedules are read in (Requirement: Schedules and the zone), so a fire keeps its local time across a DST change and follows a change of the system's zone. At a DST change a fire SHALL fire once in a repeated hour, at the first pass, and at the end of a skipped hour. A day interval's fires SHALL be decided, caught up, skipped, logged and shown by `check` as a cron schedule's are, and their runs SHALL get the same variables (Requirement: A missed fire runs once). A day interval with no fire after now SHALL fail the check.
+A job SHALL be able to give, in place of `schedule`, a `start`, a TOML local date-time with or without whole seconds, such as `2026-11-15T07:00`, and an `every`, a whole number of days above 0 followed by `d`, such as `30d`. Its fires SHALL be the start and every N days after it: fire k SHALL be the start's date plus k × N calendar days, at the start's time of day, for every k from 0, each computed from the start and never from the fire before it. They SHALL be read in the zone schedules are read in (Requirement: Schedules and the zone), so a fire keeps its local time across a DST change and follows a change of the system's zone. At a DST change a fire SHALL fire once in a repeated hour, at the first pass, and at the end of a skipped hour. A day interval's fires SHALL be decided, caught up, skipped, logged and shown by `check` as a cron schedule's are, and their runs SHALL get the same variables (Requirement: A missed fire runs once). A day interval whose second fire, the start's date plus N days, would come after 9999-12-31 SHALL fail the check. That check depends on neither the time nor the zone, so a config that passes it never fails it later.
 
 #### Scenario: Every 30 days
 - **WHEN** the zone is Europe/London, a job named `refresh` has `start = 2026-11-15T07:00` and `every = "30d"`, and `check` runs at 2026-11-10T12:00Z
@@ -454,7 +458,7 @@ A job SHALL be able to give, in place of `schedule`, a `start`, a TOML local dat
 - **WHEN** the config names no `timezone`, a job has `start = 2026-11-15T07:00` and `every = "1d"`, and the system's zone changes from Europe/London to America/New_York while the scheduler runs
 - **THEN** the job fires at 07:00 London time before the change, and at 07:00 New York time from the first wake after it
 
-#### Scenario: A day interval that never fires again
-- **WHEN** a job has `start = 2026-01-01T07:00` and `every = "3000000d"`, and the check runs on 2026-11-10
-- **THEN** the check fails, naming the job, since its next fire would come after the year 9999
+#### Scenario: A day interval of one fire
+- **WHEN** a job has `start = 2026-01-01T07:00` and `every = "3000000d"`
+- **THEN** the check fails whenever it runs, naming the job and `every`, since its second fire would come after 9999-12-31
 

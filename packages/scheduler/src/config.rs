@@ -126,21 +126,34 @@ impl Source<'_> {
         Ok(())
     }
 
+    // toml's `message()` leaves out the key path, which only its Display gives, and only for an
+    // error without the input.
+    fn toml_error(&self, mut error: toml::de::Error) -> String {
+        let message = error.message().to_string();
+        let span = error.span();
+        error.set_input(None);
+        let shown = error.to_string();
+        let key = shown
+            .strip_prefix(message.as_str())
+            .and_then(|rest| rest.trim().strip_prefix("in `"))
+            .and_then(|rest| rest.strip_suffix('`'));
+
+        // serde's messages for a value of the wrong type start so, and name no key. The others,
+        // such as an unknown field's, name theirs, where the path holds only its table.
+        let Some(key) = key.filter(|_| message.starts_with("invalid ")) else {
+            return self.at(span, &message);
+        };
+
+        self.at(span, &format!("`{key}`: {message}"))
+    }
+
     fn schedule(&self, table: &Spanned<JobTable>, now: Timestamp) -> Result<Schedule, String> {
         let job = table.get_ref();
         let name = job.name.get_ref();
-        let beside = |key: &str, span: Range<usize>| {
-            self.at(
-                Some(span),
-                &format!(
-                    "the job `{name}` has `{key}` beside `schedule`: a job takes `schedule`, or `start` and `every`"
-                ),
-            )
-        };
 
-        match (&job.schedule, &job.start, &job.every) {
+        let (span, problem) = match (&job.schedule, &job.start, &job.every) {
             (Some(schedule), None, None) => {
-                schedule::parse(schedule.get_ref(), now).map_err(|reason| {
+                return schedule::parse(schedule.get_ref(), now).map_err(|reason| {
                     self.at(
                         Some(schedule.span()),
                         &format!(
@@ -148,26 +161,26 @@ impl Source<'_> {
                             schedule.get_ref()
                         ),
                     )
-                })
+                });
             }
-            (None, Some(start), Some(every)) => self.interval(name, start, every, now),
-            (Some(_), Some(start), _) => Err(beside("start", start.span())),
-            (Some(_), None, Some(every)) => Err(beside("every", every.span())),
-            (None, Some(start), None) => Err(self.at(
-                Some(start.span()),
-                &format!("the job `{name}` has `start` without `every`"),
-            )),
-            (None, None, Some(every)) => Err(self.at(
-                Some(every.span()),
-                &format!("the job `{name}` has `every` without `start`"),
-            )),
-            (None, None, None) => Err(self.at(
-                Some(table.span()),
-                &format!(
-                    "the job `{name}` has no schedule: it needs `schedule`, or `start` and `every`"
-                ),
-            )),
-        }
+            (None, Some(start), Some(every)) => return self.interval(name, start, every),
+            (Some(_), Some(start), _) => (
+                start.span(),
+                "has `start` beside `schedule`: a job takes `schedule`, or `start` and `every`",
+            ),
+            (Some(_), None, Some(every)) => (
+                every.span(),
+                "has `every` beside `schedule`: a job takes `schedule`, or `start` and `every`",
+            ),
+            (None, Some(start), None) => (start.span(), "has `start` without `every`"),
+            (None, None, Some(every)) => (every.span(), "has `every` without `start`"),
+            (None, None, None) => (
+                table.span(),
+                "has no schedule: it needs `schedule`, or `start` and `every`",
+            ),
+        };
+
+        Err(self.at(Some(span), &format!("the job `{name}` {problem}")))
     }
 
     fn interval(
@@ -175,7 +188,6 @@ impl Source<'_> {
         name: &str,
         start: &Spanned<Datetime>,
         every: &Spanned<String>,
-        now: Timestamp,
     ) -> Result<Schedule, String> {
         let Some(from) = local(start.get_ref()) else {
             return Err(self.at(
@@ -197,7 +209,7 @@ impl Source<'_> {
             ));
         };
 
-        schedule::days(from, count, now).map_err(|reason| {
+        schedule::days(from, count).map_err(|reason| {
             self.at(
                 Some(every.span()),
                 &format!(
@@ -215,6 +227,12 @@ fn local(datetime: &Datetime) -> Option<DateTime> {
         return None;
     };
 
+    // Run logs are named to the second, so the look a restart reads back from one would fall
+    // before a fractional slot, which would then run again.
+    if time.nanosecond.unwrap_or(0) != 0 {
+        return None;
+    }
+
     let small = |value: u8| i8::try_from(value).ok();
 
     DateTime::new(
@@ -224,28 +242,30 @@ fn local(datetime: &Datetime) -> Option<DateTime> {
         small(time.hour)?,
         small(time.minute)?,
         small(time.second.unwrap_or(0))?,
-        i32::try_from(time.nanosecond.unwrap_or(0)).ok()?,
+        0,
     )
     .ok()
 }
 
-// A day in `every` is a calendar day, so the duration grammar of `timeout` and `stop_grace` keeps
-// no `d` (D57).
-fn days(text: &str) -> Option<i64> {
-    let number = text.strip_suffix('d')?;
-
+fn whole(number: &str) -> Option<u64> {
     // parse() would take a leading `+` too.
     if !number.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
 
-    let count: i64 = number.parse().ok()?;
+    let count: u64 = number.parse().ok()?;
 
     if count == 0 {
         return None;
     }
 
     Some(count)
+}
+
+// A day in `every` is a calendar day, so the duration grammar of `timeout` and `stop_grace` keeps
+// no `d` (D57).
+fn days(text: &str) -> Option<i64> {
+    i64::try_from(whole(text.strip_suffix('d')?)?).ok()
 }
 
 pub fn duration(text: &str) -> Option<Duration> {
@@ -258,18 +278,7 @@ pub fn duration(text: &str) -> Option<Duration> {
         _ => return None,
     };
 
-    // parse() would take a leading `+` too.
-    if !number.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-
-    let count: u64 = number.parse().ok()?;
-
-    if count == 0 {
-        return None;
-    }
-
-    count.checked_mul(seconds).map(Duration::from_secs)
+    whole(number)?.checked_mul(seconds).map(Duration::from_secs)
 }
 
 fn valid_name(name: &str) -> bool {
@@ -303,8 +312,7 @@ pub fn load(path: &Path, now: Timestamp) -> Result<Config, String> {
         path: &path,
         text: &text,
     };
-    let top: Top =
-        toml::from_str(&text).map_err(|error| source.at(error.span(), error.message()))?;
+    let top: Top = toml::from_str(&text).map_err(|error| source.toml_error(error))?;
     let folder = path.parent().unwrap_or(Path::new("/"));
     let zone = top
         .timezone
@@ -428,9 +436,13 @@ mod tests {
     }
 
     fn refusal(text: &str) -> String {
+        refusal_at(text, now())
+    }
+
+    fn refusal_at(text: &str, at: Timestamp) -> String {
         let scratch = Scratch::new();
         let path = write(&scratch, text);
-        let message = load(&path, now()).unwrap_err();
+        let message = load(&path, at).unwrap_err();
         let prefix = format!("{}: ", path.display());
 
         assert!(
@@ -625,10 +637,15 @@ on_failure = ["/bin/own", "arg"]
     }
 
     #[test]
-    fn a_value_of_the_wrong_type() {
-        let message = refusal("command = \"/bin/true\"\n");
-
-        assert!(message.starts_with("line 1: invalid type"), "{message}");
+    fn a_value_of_the_wrong_type_names_its_key() {
+        assert_eq!(
+            refusal("command = \"/bin/true\"\n"),
+            "line 1: `command`: invalid type: string \"/bin/true\", expected a sequence"
+        );
+        assert_eq!(
+            refusal("command = [\"/bin/true\"]\nkeep_runs = \"50\"\n"),
+            "line 2: `keep_runs`: invalid type: string \"50\", expected i64"
+        );
     }
 
     #[test]
@@ -666,7 +683,7 @@ every = "30d"
 
 [[job]]
 name = "exact"
-start = 2026-11-15T07:00:30.25
+start = 2026-11-15T07:00:30
 every = "1d"
 "#,
         );
@@ -697,10 +714,7 @@ every = "1d"
         );
         assert_eq!(
             fires(exact),
-            [
-                "2026-11-15T07:00:30.25+00:00",
-                "2026-11-16T07:00:30.25+00:00"
-            ]
+            ["2026-11-15T07:00:30+00:00", "2026-11-16T07:00:30+00:00"]
         );
     }
 
@@ -751,6 +765,7 @@ every = "1d"
             "07:00",
             "2026-11-15T07:00Z",
             "2026-11-15T07:00-05:00",
+            "2026-11-15T07:00:30.25",
             "2026-12-31T23:59:60",
         ] {
             assert_eq!(
@@ -761,13 +776,9 @@ every = "1d"
             );
         }
 
-        let quoted = start("\"2026-11-15T07:00\"");
-
-        assert!(
-            quoted.starts_with(
-                "line 5: invalid type: string \"2026-11-15T07:00\", expected a TOML datetime"
-            ),
-            "{quoted}"
+        assert_eq!(
+            start("\"2026-11-15T07:00\""),
+            "line 5: `job.start`: invalid type: string \"2026-11-15T07:00\", expected a TOML datetime"
         );
     }
 
@@ -794,6 +805,7 @@ every = "1d"
         assert_eq!(days("30d"), Some(30));
         assert_eq!(days("1d"), Some(1));
         assert_eq!(days("9223372036854775807d"), Some(i64::MAX));
+        assert_eq!(days("9223372036854775808d"), None);
         assert_eq!(days("0d"), None);
         assert_eq!(days("30"), None);
         assert_eq!(days("+30d"), None);
@@ -806,15 +818,17 @@ every = "1d"
     }
 
     #[test]
-    fn a_day_interval_with_no_fire_after_now_names_the_job() {
-        let message = refusal(
-            "command = [\"/bin/true\"]\n\n[[job]]\nname = \"refresh\"\nstart = 2026-01-01T07:00\nevery = \"3000000d\"\n",
-        );
+    fn a_day_interval_of_one_fire_is_refused_whenever_it_is_checked() {
+        let config = "command = [\"/bin/true\"]\n\n[[job]]\nname = \"refresh\"\nstart = 2026-01-01T07:00\nevery = \"3000000d\"\n";
+
+        let before_the_start = refusal_at(config, "2025-06-01T00:00:00Z".parse().unwrap());
+        let after_the_start = refusal(config);
 
         assert_eq!(
-            message,
-            "line 6: the job `refresh`, every 3000000 days from 2026-01-01T07:00, never fires again: its next fire would come after the year 9999"
+            after_the_start,
+            "line 6: the job `refresh`, every 3000000 days from 2026-01-01T07:00, has one fire: its second would come after 9999-12-31"
         );
+        assert_eq!(before_the_start, after_the_start);
     }
 
     #[test]

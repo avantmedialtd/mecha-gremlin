@@ -2,7 +2,7 @@
 name = "gremlin-scheduler"
 version = "0.0.0"
 edition = "2024"
-description = "Starts each job's command at its cron schedule's fires, and keeps their logs"
+description = "Starts each job's command at its schedule's fires, cron or every N days from a start date, and keeps their logs"
 license = "MIT"
 publish = false
 

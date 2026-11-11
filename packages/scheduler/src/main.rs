@@ -24,7 +24,7 @@ use crate::events::Event;
 use crate::install::{Answer, Host};
 use crate::log::{Level, Log, time};
 use crate::runs::{Children, Ended, Launch, Outcome, Starter};
-use crate::schedule::{Due, Schedule, Zone};
+use crate::schedule::{Due, Zone};
 
 const USAGE: &str = "Usage:
   gremlin-scheduler run --config <file> --data-dir <dir>
@@ -147,21 +147,6 @@ fn zone_of(config: &Config, source: &ZoneSource) -> Zone {
         .unwrap_or_else(|| schedule::system_zone(source.tz.as_deref(), &source.localtime))
 }
 
-// A run that starts late is named for when it started, so a restart doesn't run it again. Without a
-// log, a cron job doesn't run its past, and a day interval counts every slot since its start as
-// unseen, so its latest that has passed runs once (D59).
-fn first_look(data_dir: &Path, job: &Job, now: Timestamp) -> Timestamp {
-    if let Some(start) = runs::newest_start(&data_dir.join("jobs").join(&job.name)) {
-        return start;
-    }
-
-    if matches!(job.schedule, Schedule::Days(_)) {
-        return Timestamp::MIN;
-    }
-
-    now
-}
-
 fn tenths(duration: Duration) -> f64 {
     (duration.as_secs_f64() * 10.0).round() / 10.0
 }
@@ -246,10 +231,14 @@ impl<S: Starter> Scheduler<S> {
         source: ZoneSource,
         now: Timestamp,
     ) -> Scheduler<S> {
+        // A run that starts late is named for when it started, so a restart doesn't run it again.
         let looks = config
             .jobs
             .iter()
-            .map(|job| first_look(&data_dir, job, now))
+            .map(|job| {
+                runs::newest_start(&data_dir.join("jobs").join(&job.name))
+                    .unwrap_or_else(|| job.schedule.first_look(now))
+            })
             .collect();
         let zone = zone_of(&config, &source);
 
@@ -612,13 +601,13 @@ impl<S: Starter> Scheduler<S> {
                     return self.looks[index];
                 }
 
-                // A new job with a log starts from the reload: only a day interval that has never
-                // run looks back (D59).
+                // The spec's SIGHUP rule: a job a reload adds starts from the reload, not from an
+                // old log.
                 if runs::newest_start(&self.data_dir.join("jobs").join(&job.name)).is_some() {
                     return now;
                 }
 
-                first_look(&self.data_dir, job, now)
+                job.schedule.first_look(now)
             })
             .collect();
         self.config = config;
